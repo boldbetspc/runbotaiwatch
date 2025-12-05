@@ -1,0 +1,107 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║                    🎯 RUNBOTAIWATCH - 7-PAGE CAROUSEL                      ║
+║                         QUICK REFERENCE GUIDE                              ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+📱 PAGE LAYOUT (Left/Right Swipeable)
+═══════════════════════════════════════════════════════════════════════════
+
+┌─ Page 0 ──────────────┐    ┌─ Page 1 ──────────────┐    ┌─ Page 2 ──────────────┐
+│  START/STOP BUTTON    │    │  AI COACH ANIMATION   │    │  AI COACHING FEEDBACK │
+│                       │    │                       │    │                       │
+│    ◯ ← Large Green    │    │  ◎ ← Animated Avatar  │    │  [Pace Check Card]    │
+│    Play Button        │    │  with Equalizer Bars  │    │  [Energy Card]        │
+│                       │    │                       │    │  [Motivation Card]    │
+│ "Ready to Run?"       │    │ "AI Coach"            │    │  [Form Card]          │
+└───────────────────────┘    └───────────────────────┘    └───────────────────────┘
+         ↓ Swipe              ↓ Swipe                        ↓ Swipe
+┌─ Page 3 ──────────────┐    ┌─ Page 4 ──────────────┐    ┌─ Page 5 ──────────────┐
+│  DISTANCE & TIME      │    │  PACE METRICS         │    │  CALORIES & HR        │
+│                       │    │                       │    │                       │
+│ ┌─────────┬─────────┐ │    │ ┌─────────┬─────────┐
+Showing Recent Messages
+
+Build target RunbotAIWatch of project RunbotAIWatch with configuration Debug
+/Users/ranga/Desktop/Runbot/RunbotAIWatch/RunbotAIWatch.xcodeproj: error: Signing for "RunbotAIWatch" requires a development team. Select a development team in the Signing & Capabilities editor. (in target 'RunbotAIWatch' from project 'RunbotAIWatch')
+
+
+/Users/ranga/Desktop/Runbot/RunbotAIWatch/RunbotAIWatch.xcodeproj: Signing for "RunbotAIWatch" requires a development team. Select a development team in the Signing & Capabilities editor.
+
+
+Build target RunbotAIW Watch App of project RunbotAIWatch with configuration Debug
+/Users/ranga/Desktop/Runbot/RunbotAIWatch/RunbotAIWatch.xcodeproj: error: Signing for "RunbotAIW Watch App" requires a development team. Select a development team in the Signing & Capabilities editor. (in target 'RunbotAIW Watch App' from project 'RunbotAIWatch')
+
+
+/Users/ranga/Desktop/Runbot/RunbotAIWatch/RunbotAIWatch.xcodeproj: Signing for "RunbotAIW Watch App" requires a development team. Select a development team in the Signing & Capabilities editor.
+
+ │    │ ┌─────────┬─────────┐ │
+│ │Distance │  Time   │ │    │ │ Current │  Avg   │ │    │ │Calories │   HR    │ │
+│ │ 0.00 km │00:00 m  │ │    │ │ Pace    │ Pace   │ │    │ │ 0 kcal  │ 0 bpm  │ │
+│ └─────────┴─────────┘ │    │ └─────────┴─────────┘ │    │ └─────────┴─────────┘ │
+│                       │    │                       │    │                       │
+└───────────────────────┘    └───────────────────────┘    └───────────────────────┘
+         ↓ Swipe              ↓ Swipe
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         Page 6: SETTINGS (Scrollable)                       │
+│                                                                             │
+│  ⚙️ COACH PERSONALITY                                                      │
+│     ◉ Pacer  ○ Strategist  ○ Finisher                                      │
+│                                                                             │
+│  ⚡ ENERGY LEVEL                                                           │
+│     ◉ Low  ○ Medium  ○ High                                                │
+│                                                                             │
+│  📏 FEEDBACK FREQUENCY                                                     │
+│     ◉ Every 1km  ○ 2km  ○ 5km  ○ 10km                                     │
+│                                                                             │
+│  ┌─────────────────────────┐                                               │
+│  │  🚪 LOGOUT              │  ← Red Gradient Button                        │
+│  └─────────────────────────┘                                               │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+═══════════════════════════════════════════════════════════════════════════
+
+🎨 COLOR SCHEME
+───────────────
+• Background:        Dark gradient (black → deep blue)
+• Primary Accent:    Cyan (#00FFFF)
+• Start Button:      Green gradient
+• Logout Button:     Red gradient
+• Energy Icon:       Orange
+• Feedback Freq:     Purple
+
+═══════════════════════════════════════════════════════════════════════════
+
+✨ KEY FEATURES
+───────────────
+✅ Full-screen swipeable pages (TabView)
+✅ 7 indicator dots at top (cyan when active)
+✅ Animated AI coach with 16 equalizer bars
+✅ 3 different running stats pages (2 tiles each)
+✅ Scrollable AI coaching feedback cards
+✅ Vertical scrollable settings with 3 categories
+✅ Wave animation updating at 0.05s intervals
+✅ Smooth gradient transitions
+✅ Watch-optimized typography
+✅ No FAB button - start button on dedicated page
+
+═══════════════════════════════════════════════════════════════════════════
+
+🚀 TO RUN
+─────────
+1. Open: RunbotAIWatch.xcodeproj in Xcode
+2. Select: RunbotAIWatch scheme
+3. Target: Apple Watch SE 3 (40mm) Simulator
+4. Press: ⌘R to build and run
+
+═══════════════════════════════════════════════════════════════════════════
+
+📝 FILE CHANGES
+───────────────
+Modified:
+  • MainRunbotView.swift - Complete 7-page restructure
+  • Assets.xcassets/ai_coach_avatar.imageset/Contents.json - Image config
+
+Created:
+  • This reference guide
+
+═══════════════════════════════════════════════════════════════════════════

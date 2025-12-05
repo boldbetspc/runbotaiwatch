@@ -1,0 +1,355 @@
+import Foundation
+import Network
+import Combine
+
+// MARK: - WatchOS Mem0 Manager
+/// Optimized Mem0 integration for watchOS with caching, batching, and offline support
+final class Mem0Manager: ObservableObject {
+    static let shared = Mem0Manager()
+    
+    // MARK: - Published State
+    @Published var isOnline = true
+    
+    // MARK: - Configuration
+    private let supabaseURL: String
+    private let supabaseKey: String
+    
+    // Cache settings - optimized for battery
+    private let cacheTTL: TimeInterval = 600 // 10 minutes (vs 5 min iOS)
+    private var cache: [String: CacheEntry] = [:]
+    
+    // Batch writing settings
+    private let batchFlushInterval: TimeInterval = 30 // 30 seconds (vs 10s iOS)
+    private let maxBatchSize = 3 // Smaller for watch
+    private var writeQueue: [QueuedWrite] = []
+    private var flushTimer: Timer?
+    
+    // Network monitoring
+    private let networkMonitor = NWPathMonitor()
+    private let monitorQueue = DispatchQueue(label: "mem0.network.monitor")
+    
+    // MARK: - Types
+    
+    private struct CacheEntry {
+        let results: [String]
+        let timestamp: Date
+    }
+    
+    private struct QueuedWrite: Codable {
+        let userId: String
+        let text: String
+        let category: String
+        let metadata: [String: String]
+        let timestamp: Date
+    }
+    
+    // MARK: - Initialization
+    
+    private init() {
+        if let config = ConfigLoader.loadConfig() {
+            self.supabaseURL = (config["SUPABASE_URL"] as? String) ?? ""
+            self.supabaseKey = (config["SUPABASE_ANON_KEY"] as? String) ?? ""
+        } else {
+            self.supabaseURL = ""
+            self.supabaseKey = ""
+        }
+        
+        setupNetworkMonitoring()
+        loadOfflineQueue()
+        startBatchFlushTimer()
+    }
+    
+    deinit {
+        flushTimer?.invalidate()
+        networkMonitor.cancel()
+    }
+    
+    // MARK: - Public API
+    
+    /// Search Mem0 for relevant memories
+    func search(
+        userId: String,
+        query: String,
+        category: String? = nil,
+        limit: Int = 5
+    ) async -> [String] {
+        // Check cache first
+        let cacheKey = "\(userId):\(query.hashValue):\(category ?? "")"
+        if let cached = getCachedResult(key: cacheKey) {
+            print("📦 [Mem0] Cache hit for: \(query.prefix(30))...")
+            return cached
+        }
+        
+        // Fetch from API
+        guard isOnline else {
+            print("📴 [Mem0] Offline - returning empty results")
+            return []
+        }
+        
+        let results = await fetchFromAPI(
+            userId: userId,
+            query: query,
+            category: category,
+            limit: limit
+        )
+        
+        // Cache results
+        cacheResult(key: cacheKey, results: results)
+        
+        return results
+    }
+    
+    /// Add memory to Mem0 (batched for efficiency)
+    func add(
+        userId: String,
+        text: String,
+        category: String,
+        metadata: [String: String] = [:]
+    ) {
+        var enrichedMetadata = metadata
+        enrichedMetadata["platform"] = "watchOS"
+        enrichedMetadata["timestamp"] = ISO8601DateFormatter().string(from: Date())
+        
+        let write = QueuedWrite(
+            userId: userId,
+            text: text,
+            category: category,
+            metadata: enrichedMetadata,
+            timestamp: Date()
+        )
+        
+        writeQueue.append(write)
+        saveOfflineQueue()
+        
+        // Flush immediately if queue is full
+        if writeQueue.count >= maxBatchSize {
+            Task { await flushWriteQueue() }
+        }
+        
+        // Invalidate related cache entries
+        invalidateCache(userId: userId, category: category)
+        
+        print("📝 [Mem0] Queued write: \(category) (queue size: \(writeQueue.count))")
+    }
+    
+    /// Force flush all queued writes
+    func flushNow() async {
+        await flushWriteQueue()
+    }
+    
+    // MARK: - Network Monitoring
+    
+    private func setupNetworkMonitoring() {
+        networkMonitor.pathUpdateHandler = { [weak self] path in
+            DispatchQueue.main.async {
+                let wasOffline = !(self?.isOnline ?? true)
+                self?.isOnline = (path.status == .satisfied)
+                
+                // Flush queue when coming back online
+                if wasOffline && self?.isOnline == true {
+                    print("🌐 [Mem0] Network restored - flushing offline queue")
+                    Task { await self?.flushWriteQueue() }
+                }
+            }
+        }
+        networkMonitor.start(queue: monitorQueue)
+    }
+    
+    // MARK: - Caching
+    
+    private func getCachedResult(key: String) -> [String]? {
+        guard let entry = cache[key] else { return nil }
+        
+        // Check TTL
+        if Date().timeIntervalSince(entry.timestamp) > cacheTTL {
+            cache.removeValue(forKey: key)
+            return nil
+        }
+        
+        return entry.results
+    }
+    
+    private func cacheResult(key: String, results: [String]) {
+        cache[key] = CacheEntry(results: results, timestamp: Date())
+    }
+    
+    private func invalidateCache(userId: String, category: String) {
+        // Remove all cache entries for this user/category
+        cache = cache.filter { key, _ in
+            !key.hasPrefix(userId) || !key.contains(category)
+        }
+    }
+    
+    // MARK: - Batch Writing
+    
+    private func startBatchFlushTimer() {
+        flushTimer?.invalidate()
+        flushTimer = Timer.scheduledTimer(withTimeInterval: batchFlushInterval, repeats: true) { [weak self] _ in
+            Task { await self?.flushWriteQueue() }
+        }
+    }
+    
+    private func flushWriteQueue() async {
+        guard !writeQueue.isEmpty else { return }
+        guard isOnline else {
+            print("📴 [Mem0] Offline - writes remain queued (\(writeQueue.count) items)")
+            return
+        }
+        
+        let itemsToFlush = writeQueue
+        writeQueue.removeAll()
+        saveOfflineQueue()
+        
+        print("📤 [Mem0] Flushing \(itemsToFlush.count) queued writes...")
+        
+        for write in itemsToFlush {
+            let success = await writeToAPI(
+                userId: write.userId,
+                text: write.text,
+                category: write.category,
+                metadata: write.metadata
+            )
+            
+            if !success {
+                // Re-queue failed writes
+                writeQueue.append(write)
+            }
+        }
+        
+        if !writeQueue.isEmpty {
+            saveOfflineQueue()
+            print("⚠️ [Mem0] \(writeQueue.count) writes failed, re-queued")
+        } else {
+            print("✅ [Mem0] All writes flushed successfully")
+        }
+    }
+    
+    // MARK: - Offline Queue Persistence
+    
+    private func saveOfflineQueue() {
+        if let data = try? JSONEncoder().encode(writeQueue) {
+            UserDefaults.standard.set(data, forKey: "mem0_offline_queue")
+        }
+    }
+    
+    private func loadOfflineQueue() {
+        if let data = UserDefaults.standard.data(forKey: "mem0_offline_queue"),
+           let queue = try? JSONDecoder().decode([QueuedWrite].self, from: data) {
+            writeQueue = queue
+            print("📂 [Mem0] Loaded \(queue.count) offline queued writes")
+        }
+    }
+    
+    // MARK: - API Calls
+    
+    private func fetchFromAPI(
+        userId: String,
+        query: String,
+        category: String?,
+        limit: Int
+    ) async -> [String] {
+        guard !supabaseURL.isEmpty else { return [] }
+        
+        let proxyURL = "\(supabaseURL)/functions/v1/mem0-proxy"
+        guard let url = URL(string: proxyURL) else { return [] }
+        
+        do {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(supabaseKey, forHTTPHeaderField: "apikey")
+            request.setValue(getAuthToken(), forHTTPHeaderField: "Authorization")
+            request.timeoutInterval = 10 // Shorter timeout for watch
+            
+            var body: [String: Any] = [
+                "action": "search",
+                "user_id": userId,
+                "query": query,
+                "limit": limit
+            ]
+            if let category = category {
+                body["category"] = category
+            }
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            
+            let config = URLSessionConfiguration.default
+            config.waitsForConnectivity = true
+            config.allowsCellularAccess = true
+            let session = URLSession(configuration: config)
+            
+            let (data, response) = try await session.data(for: request)
+            
+            if let http = response as? HTTPURLResponse, http.statusCode == 200,
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let results = json["results"] as? [[String: Any]] {
+                return results.compactMap { $0["memory"] as? String }
+            }
+        } catch {
+            print("⚠️ [Mem0] Search failed: \(error.localizedDescription)")
+        }
+        
+        return []
+    }
+    
+    private func writeToAPI(
+        userId: String,
+        text: String,
+        category: String,
+        metadata: [String: String]
+    ) async -> Bool {
+        guard !supabaseURL.isEmpty else { return false }
+        
+        let proxyURL = "\(supabaseURL)/functions/v1/mem0-proxy"
+        guard let url = URL(string: proxyURL) else { return false }
+        
+        do {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(supabaseKey, forHTTPHeaderField: "apikey")
+            request.setValue(getAuthToken(), forHTTPHeaderField: "Authorization")
+            request.timeoutInterval = 15
+            
+            let body: [String: Any] = [
+                "action": "add",
+                "user_id": userId,
+                "text": text,
+                "category": category,
+                "metadata": metadata
+            ]
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            
+            let (_, response) = try await URLSession.shared.data(for: request)
+            
+            if let http = response as? HTTPURLResponse, http.statusCode == 200 {
+                return true
+            }
+        } catch {
+            print("⚠️ [Mem0] Write failed: \(error.localizedDescription)")
+        }
+        
+        return false
+    }
+    
+    // MARK: - Helpers
+    
+    private func getAuthToken() -> String {
+        if let token = UserDefaults.standard.string(forKey: "sessionToken") {
+            return "Bearer \(token)"
+        }
+        return "Bearer \(supabaseKey)"
+    }
+    
+    // MARK: - Legacy Compatibility
+    
+    /// Legacy method for backward compatibility
+    func fetchInsights(for userId: String) async -> String {
+        let results = await search(
+            userId: userId,
+            query: "running performance, pacing patterns, fatigue moments",
+            category: "RUNNING_DATA",
+            limit: 5
+        )
+        return results.joined(separator: "\n")
+    }
+}

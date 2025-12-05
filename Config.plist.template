@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>SUPABASE_URL</key>
+	<string>YOUR_SUPABASE_URL_HERE</string>
+	<key>SUPABASE_ANON_KEY</key>
+	<string>YOUR_SUPABASE_ANON_KEY_HERE</string>
+	<key>OPENAI_API_KEY</key>
+	<string>YOUR_OPENAI_API_KEY_HERE</string>
+	<key>MEM0_API_KEY</key>
+	<string>YOUR_MEM0_API_KEY_HERE</string>
+	<key>MEM0_USER_ID</key>
+	<string>runbot_watch_user</string>
+</dict>
+</plist>
