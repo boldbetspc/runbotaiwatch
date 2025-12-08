@@ -6,6 +6,44 @@
 	objectVersion = 70;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		26CE3E7A2EE6391F00CA9CB9 /* RunbotAIWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 261B1A892EE30D150041BB64 /* RunbotAIWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		AA30RES /* Config.plist in Resources */ = {isa = PBXBuildFile; fileRef = AA30 /* Config.plist */; };
+		AICOACHGIF1 /* RunbotAIWatch/ai_coach.gif in Resources */ = {isa = PBXBuildFile; fileRef = AICOACHGIF2 /* RunbotAIWatch/ai_coach.gif */; };
+		IOS9 /* RunbotAIWatchiOSApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = IOS3 /* RunbotAIWatchiOSApp.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		26CE3E7B2EE6391F00CA9CB9 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = PROJ /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 261B1A882EE30D150041BB64;
+			remoteInfo = RunbotAIWatch;
+		};
+		PROXY1A2B3C4D5E6F7G8H9I0J1K2L3M4 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = PROJ /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = EXT73646956WID9DU92QF9K4KU1B;
+			remoteInfo = RunbotAIWatchExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		26CE3E7D2EE6391F00CA9CB9 /* Embed Watch Content */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
+			dstSubfolderSpec = 16;
+			files = (
+				26CE3E7A2EE6391F00CA9CB9 /* RunbotAIWatch.app in Embed Watch Content */,
+			);
+			name = "Embed Watch Content";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		261B1A892EE30D150041BB64 /* RunbotAIWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = RunbotAIWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA30 /* Config.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Config.plist; sourceTree = SOURCE_ROOT; };
@@ -15,18 +53,76 @@
 		AA40 /* AVFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AVFoundation.framework; path = System/Library/Frameworks/AVFoundation.framework; sourceTree = SDKROOT; };
 		AA42 /* Combine.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Combine.framework; path = System/Library/Frameworks/Combine.framework; sourceTree = SDKROOT; };
 		AA44 /* WatchKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WatchKit.framework; path = System/Library/Frameworks/WatchKit.framework; sourceTree = SDKROOT; };
+		AICOACHGIF2 /* RunbotAIWatch/ai_coach.gif */ = {isa = PBXFileReference; lastKnownFileType = image.gif; path = RunbotAIWatch/ai_coach.gif; sourceTree = "<group>"; };
+		APPSTUB2 /* RunbotAIWatch/AppStub.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunbotAIWatch/AppStub.swift; sourceTree = "<group>"; };
 		BB52 /* HealthKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = HealthKit.framework; path = System/Library/Frameworks/HealthKit.framework; sourceTree = SDKROOT; };
 		BB54 /* WatchConnectivity.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WatchConnectivity.framework; path = System/Library/Frameworks/WatchConnectivity.framework; sourceTree = SDKROOT; };
 		BB56 /* Network.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Network.framework; path = System/Library/Frameworks/Network.framework; sourceTree = SDKROOT; };
 		CC1 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		EXT1M9B9X8ESM23YI27GPEGFNUSH /* RunbotAIWatchExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = RunbotAIWatchExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		EXT2KB3D21M85JYVO91XZTL6M1CE /* RunbotAIWatchExtension/Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = RunbotAIWatchExtension/Info.plist; sourceTree = "<group>"; };
+		IOS1A892EE30D150041BB65 /* RunbotAIWatch iOS Wrapper.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "RunbotAIWatch iOS Wrapper.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		IOS2 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		IOS3 /* RunbotAIWatchiOSApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunbotAIWatchiOSApp.swift; sourceTree = "<group>"; };
+		IOS4 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		26C7A4642EE5FEE000E2CE66 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Models/AICoachManager.swift,
+				Models/AuthenticationManager.swift,
+				Models/HealthManager.swift,
+				Models/HeartZoneCalculator.swift,
+				Models/KeychainManager.swift,
+				Models/Mem0Manager.swift,
+				Models/RunDataModels.swift,
+				Models/RunTracker.swift,
+				Models/SessionCleanupManager.swift,
+				Models/SupabaseManager.swift,
+				Models/UserPreferences.swift,
+				Models/VoiceManager.swift,
+				Models/WatchConnectivityManager.swift,
+				RunbotAIWatchApp.swift,
+				Views/AuthenticationView.swift,
+				Views/ContentView.swift,
+				Views/MainRunbotView.swift,
+				Views/RunningView.swift,
+				Views/SettingsView.swift,
+			);
+			target = 261B1A882EE30D150041BB64 /* RunbotAIWatch */;
+		};
+		26C7A4652EE5FF9E00E2CE66 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				AppStub.swift,
+				Assets.xcassets,
+			);
+			target = EXT73646956WID9DU92QF9K4KU1B /* RunbotAIWatchExtension */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		261B1A8D2EE30D150041BB64 /* RunbotAIWatch */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = RunbotAIWatch; sourceTree = "<group>"; };
+		261B1A8D2EE30D150041BB64 /* RunbotAIWatch */ = {isa = PBXFileSystemSynchronizedRootGroup; exceptions = (26C7A4642EE5FEE000E2CE66 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, 26C7A4652EE5FF9E00E2CE66 /* PBXFileSystemSynchronizedBuildFileExceptionSet */, ); explicitFileTypes = {}; explicitFolders = (); path = RunbotAIWatch; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		261B1A862EE30D150041BB64 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EXT4ZNWAT4R0LZR2KJ9Q10477SO /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		IOS6 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -40,6 +136,7 @@
 			isa = PBXGroup;
 			children = (
 				AA30 /* Config.plist */,
+				AICOACHGIF2 /* RunbotAIWatch/ai_coach.gif */,
 			);
 			name = "Recovered References";
 			sourceTree = "<group>";
@@ -48,8 +145,18 @@
 			isa = PBXGroup;
 			children = (
 				261B1A892EE30D150041BB64 /* RunbotAIWatch.app */,
+				IOS1A892EE30D150041BB65 /* RunbotAIWatch iOS Wrapper.app */,
+				EXT1M9B9X8ESM23YI27GPEGFNUSH /* RunbotAIWatchExtension.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		EXT3L4Q707SOUE2QOMLTI07GB2A1 /* RunbotAIWatchExtension */ = {
+			isa = PBXGroup;
+			children = (
+				EXT2KB3D21M85JYVO91XZTL6M1CE /* RunbotAIWatchExtension/Info.plist */,
+			);
+			path = RunbotAIWatchExtension;
 			sourceTree = "<group>";
 		};
 		GG1 /* Frameworks */ = {
@@ -68,11 +175,24 @@
 			name = Frameworks;
 			sourceTree = "<group>";
 		};
+		IOS5 /* RunbotAIWatch iOS Wrapper */ = {
+			isa = PBXGroup;
+			children = (
+				IOS3 /* RunbotAIWatchiOSApp.swift */,
+				IOS2 /* Info.plist */,
+				IOS4 /* Assets.xcassets */,
+			);
+			path = "RunbotAIWatch iOS Wrapper";
+			sourceTree = "<group>";
+		};
 		ROOT = {
 			isa = PBXGroup;
 			children = (
+				APPSTUB2 /* RunbotAIWatch/AppStub.swift */,
 				CC1 /* Info.plist */,
 				261B1A8D2EE30D150041BB64 /* RunbotAIWatch */,
+				EXT3L4Q707SOUE2QOMLTI07GB2A1 /* RunbotAIWatchExtension */,
+				IOS5 /* RunbotAIWatch iOS Wrapper */,
 				EE1 /* Products */,
 				GG1 /* Frameworks */,
 				261B1A812EE30C300041BB64 /* Recovered References */,
@@ -93,15 +213,56 @@
 			buildRules = (
 			);
 			dependencies = (
-			);
-			fileSystemSynchronizedGroups = (
-				261B1A8D2EE30D150041BB64 /* RunbotAIWatch */,
+				DEP1A2B3C4D5E6F7G8H9I0J1K2L3M4 /* PBXTargetDependency */,
 			);
 			name = RunbotAIWatch;
 			packageProductDependencies = (
 			);
 			productName = RunbotAIWatch;
 			productReference = 261B1A892EE30D150041BB64 /* RunbotAIWatch.app */;
+			productType = "com.apple.product-type.application";
+		};
+		EXT73646956WID9DU92QF9K4KU1B /* RunbotAIWatchExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = EXT8S1FAH7KRCJOGDQJUH6A4VK01 /* Build configuration list for PBXNativeTarget "RunbotAIWatchExtension" */;
+			buildPhases = (
+				EXT6XM7JW99ZSQNZMI9LM3KFR2RU /* Sources */,
+				EXT4ZNWAT4R0LZR2KJ9Q10477SO /* Frameworks */,
+				EXT588EWHNFOBZ3HWQBG3VNKCMPU /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				261B1A8D2EE30D150041BB64 /* RunbotAIWatch */,
+			);
+			name = RunbotAIWatchExtension;
+			packageProductDependencies = (
+			);
+			productName = RunbotAIWatchExtension;
+			productReference = EXT1M9B9X8ESM23YI27GPEGFNUSH /* RunbotAIWatchExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		IOS10 /* RunbotAIWatch iOS Wrapper */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = IOS11 /* Build configuration list for PBXNativeTarget "RunbotAIWatch iOS Wrapper" */;
+			buildPhases = (
+				IOS8 /* Sources */,
+				IOS6 /* Frameworks */,
+				IOS7 /* Resources */,
+				26CE3E7D2EE6391F00CA9CB9 /* Embed Watch Content */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				26CE3E7C2EE6391F00CA9CB9 /* PBXTargetDependency */,
+			);
+			name = "RunbotAIWatch iOS Wrapper";
+			packageProductDependencies = (
+			);
+			productName = "RunbotAIWatch iOS Wrapper";
+			productReference = IOS1A892EE30D150041BB65 /* RunbotAIWatch iOS Wrapper.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -115,6 +276,12 @@
 				LastUpgradeCheck = 2610;
 				TargetAttributes = {
 					261B1A882EE30D150041BB64 = {
+						CreatedOnToolsVersion = 26.1.1;
+					};
+					EXT73646956WID9DU92QF9K4KU1B = {
+						CreatedOnToolsVersion = 26.1.1;
+					};
+					IOS10 = {
 						CreatedOnToolsVersion = 26.1.1;
 					};
 				};
@@ -133,12 +300,30 @@
 			projectRoot = "";
 			targets = (
 				261B1A882EE30D150041BB64 /* RunbotAIWatch */,
+				EXT73646956WID9DU92QF9K4KU1B /* RunbotAIWatchExtension */,
+				IOS10 /* RunbotAIWatch iOS Wrapper */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		261B1A872EE30D150041BB64 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA30RES /* Config.plist in Resources */,
+				AICOACHGIF1 /* RunbotAIWatch/ai_coach.gif in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		EXT588EWHNFOBZ3HWQBG3VNKCMPU /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		IOS7 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -155,7 +340,35 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		EXT6XM7JW99ZSQNZMI9LM3KFR2RU /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		IOS8 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				IOS9 /* RunbotAIWatchiOSApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		26CE3E7C2EE6391F00CA9CB9 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 261B1A882EE30D150041BB64 /* RunbotAIWatch */;
+			targetProxy = 26CE3E7B2EE6391F00CA9CB9 /* PBXContainerItemProxy */;
+		};
+		DEP1A2B3C4D5E6F7G8H9I0J1K2L3M4 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = EXT73646956WID9DU92QF9K4KU1B /* RunbotAIWatchExtension */;
+			targetProxy = PROXY1A2B3C4D5E6F7G8H9I0J1K2L3M4 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		261B1AAB2EE30D170041BB64 /* Debug */ = {
@@ -164,6 +377,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_ENTITLEMENTS = RunbotAIWatch/RunbotAIWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -176,22 +390,21 @@
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "RunbotAI Watch reads your heart rate to provide personalized AI coaching and track your workout intensity";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "RunbotAI Watch saves your workouts to Apple Health to track your running progress";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "RunbotAI Watch needs your location to track your running route and distance";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "RunbotAI Watch needs microphone access for voice-led AI coaching during your runs";
 				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;
 				INFOPLIST_KEY_WKApplication = YES;
-				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.runbotai.watchapp;
+				ONLY_ACTIVE_ARCH = NO;
+				PRODUCT_BUNDLE_IDENTIFIER = com.runbotai.ioswrapper.watchapp;
 				PRODUCT_NAME = RunbotAIWatch;
 				SDKROOT = watchos;
-				SKIP_INSTALL = NO;
+				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SUPPORTED_PLATFORMS = watchos;
+				SUPPORTED_PLATFORMS = "watchsimulator watchos";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -209,6 +422,7 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_ENTITLEMENTS = RunbotAIWatch/RunbotAIWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -221,22 +435,21 @@
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "RunbotAI Watch reads your heart rate to provide personalized AI coaching and track your workout intensity";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "RunbotAI Watch saves your workouts to Apple Health to track your running progress";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "RunbotAI Watch needs your location to track your running route and distance";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "RunbotAI Watch needs microphone access for voice-led AI coaching during your runs";
 				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;
 				INFOPLIST_KEY_WKApplication = YES;
-				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.runbotai.watchapp;
+				ONLY_ACTIVE_ARCH = NO;
+				PRODUCT_BUNDLE_IDENTIFIER = com.runbotai.ioswrapper.watchapp;
 				PRODUCT_NAME = RunbotAIWatch;
 				SDKROOT = watchos;
-				SKIP_INSTALL = NO;
+				SKIP_INSTALL = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SUPPORTED_PLATFORMS = watchos;
+				SUPPORTED_PLATFORMS = "watchsimulator watchos";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -245,6 +458,138 @@
 				TARGETED_DEVICE_FAMILY = 4;
 				VALIDATE_PRODUCT = YES;
 				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Release;
+		};
+		EXT10JQOR2AQ00L97HALUCQ8NAWWT /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = RunbotAIWatch/RunbotAIWatch.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = U67HW5F63Z;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = RunbotAIWatchExtension/Info.plist;
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "RunbotAI Watch reads your heart rate to provide personalized AI coaching and track your workout intensity";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "RunbotAI Watch saves your workouts to Apple Health to track your running progress";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "RunbotAI Watch needs your location to track your running route and distance";
+				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;
+				INFOPLIST_KEY_WKApplication = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.runbotai.ioswrapper.watchapp.extension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Release;
+		};
+		EXT9VOITTHWXSUYDGL6H6J62CRB8 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = RunbotAIWatch/RunbotAIWatch.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = U67HW5F63Z;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = RunbotAIWatchExtension/Info.plist;
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "RunbotAI Watch reads your heart rate to provide personalized AI coaching and track your workout intensity";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "RunbotAI Watch saves your workouts to Apple Health to track your running progress";
+				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "RunbotAI Watch needs your location to track your running route and distance";
+				INFOPLIST_KEY_UIUserInterfaceStyle = Dark;
+				INFOPLIST_KEY_WKApplication = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.runbotai.ioswrapper.watchapp.extension;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Debug;
+		};
+		IOS12 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = U67HW5F63Z;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "RunbotAIWatch iOS Wrapper/Info.plist";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.lifestyle";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 15.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.runbotai.ioswrapper;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		IOS13 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = U67HW5F63Z;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "RunbotAIWatch iOS Wrapper/Info.plist";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.lifestyle";
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				IPHONEOS_DEPLOYMENT_TARGET = 15.6;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.runbotai.ioswrapper;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -307,14 +652,14 @@
 				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Runbot Watch";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "We need your location to track your running route";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "We need microphone access for voice coaching";
 				INFOPLIST_KEY_WKApplication = YES;
 				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.6;
 				MARKETING_VERSION = 1.0;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
-				ONLY_ACTIVE_ARCH = YES;
-				PRODUCT_BUNDLE_IDENTIFIER = com.runbotai.watchapp;
+				ONLY_ACTIVE_ARCH = NO;
+				PRODUCT_BUNDLE_IDENTIFIER = com.runbotai.ioswrapper.watchapp;
 				PRODUCT_NAME = RunbotAIWatch;
 				SDKROOT = watchos;
 				SKIP_INSTALL = NO;
@@ -325,7 +670,7 @@
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 4;
-				WATCHOS_DEPLOYMENT_TARGET = 9.6;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
 			};
 			name = Debug;
 		};
@@ -370,6 +715,7 @@
 				DEVELOPMENT_TEAM = U67HW5F63Z;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu17;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -382,14 +728,14 @@
 				INFOPLIST_FILE = Info.plist;
 				INFOPLIST_KEY_CFBundleDisplayName = "Runbot Watch";
 				INFOPLIST_KEY_NSLocationWhenInUseUsageDescription = "We need your location to track your running route";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "We need microphone access for voice coaching";
 				INFOPLIST_KEY_WKApplication = YES;
 				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.6;
 				MARKETING_VERSION = 1.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
-				ONLY_ACTIVE_ARCH = YES;
-				PRODUCT_BUNDLE_IDENTIFIER = com.runbotai.watchapp;
+				ONLY_ACTIVE_ARCH = NO;
+				PRODUCT_BUNDLE_IDENTIFIER = com.runbotai.ioswrapper.watchapp;
 				PRODUCT_NAME = RunbotAIWatch;
 				SDKROOT = watchos;
 				SKIP_INSTALL = NO;
@@ -401,7 +747,7 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = 4;
 				VALIDATE_PRODUCT = YES;
-				WATCHOS_DEPLOYMENT_TARGET = 9.6;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
 			};
 			name = Release;
 		};
@@ -413,6 +759,24 @@
 			buildConfigurations = (
 				261B1AAB2EE30D170041BB64 /* Debug */,
 				261B1AAC2EE30D170041BB64 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		EXT8S1FAH7KRCJOGDQJUH6A4VK01 /* Build configuration list for PBXNativeTarget "RunbotAIWatchExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				EXT9VOITTHWXSUYDGL6H6J62CRB8 /* Debug */,
+				EXT10JQOR2AQ00L97HALUCQ8NAWWT /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		IOS11 /* Build configuration list for PBXNativeTarget "RunbotAIWatch iOS Wrapper" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				IOS12 /* Debug */,
+				IOS13 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

@@ -127,7 +127,7 @@ class SupabaseManager: ObservableObject {
         
         do {
             let formatter = ISO8601DateFormatter()
-            let endTimeString: Any = runData.endTime.map { formatter.string(from: $0) } ?? NSNull()
+            let _: Any = runData.endTime.map { formatter.string(from: $0) } ?? NSNull()
             
             // Get start/end coordinates from locations
             let startLat = runData.locations.first?.latitude
@@ -422,7 +422,7 @@ class SupabaseManager: ObservableObject {
             patchRequest.setValue("return=minimal", forHTTPHeaderField: "Prefer")
             patchRequest.httpBody = try JSONSerialization.data(withJSONObject: hrPayload)
             
-            let (patchData, patchResponse) = try await session.data(for: patchRequest)
+            let (_, patchResponse) = try await session.data(for: patchRequest)
             
             if let httpResponse = patchResponse as? HTTPURLResponse,
                (httpResponse.statusCode == 200 || httpResponse.statusCode == 204) {

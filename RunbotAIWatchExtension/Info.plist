@@ -28,9 +28,10 @@
 	<string>Dark</string>
 	<key>WKApplication</key>
 	<true/>
-	<key>WKCompanionAppBundleIdentifier</key>
-	<string>com.runbotai.ioswrapper</string>
 	<key>WKRunsIndependentlyOfCompanionApp</key>
+	<true/>
+	<key>WKWatchOnly</key>
 	<true/>
 </dict>
 </plist>
+

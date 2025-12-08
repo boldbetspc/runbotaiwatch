@@ -50,7 +50,7 @@ struct GIFImage: View {
                 startAnimation()
             }
         }
-        .onChange(of: isAnimating) { newValue in
+        .onChange(of: isAnimating) { oldValue, newValue in
             print("🎬 [GIF] Animation state changed: \(newValue) (was: \(shouldAnimate))")
             shouldAnimate = newValue
             if newValue {
@@ -239,13 +239,14 @@ struct MainRunbotView: View {
         case aiCoach          // AI Coach FIRST after start
         case runStats         // Combined stats
         case heartZone
+        case heartZoneChart   // New page for pie chart
         case energyPulse      // ECG-style pace visualization
         case trainVisualization
         case settings
     }
     
     private var carouselPages: [CarouselPage] {
-        [.startStop, .aiCoach, .runStats, .heartZone, .energyPulse, .trainVisualization, .settings]
+        [.startStop, .aiCoach, .runStats, .heartZone, .heartZoneChart, .energyPulse, .trainVisualization, .settings]
     }
     
     var body: some View {
@@ -285,7 +286,7 @@ struct MainRunbotView: View {
                 .ignoresSafeArea()
             }
         }
-        .onChange(of: supabaseManager.tokenExpired) { expired in
+        .onChange(of: supabaseManager.tokenExpired) { oldValue, expired in
             if expired {
                 print("🔴 [MainRunbotView] Token expired - logging out user")
                 authManager.logout()
@@ -321,7 +322,7 @@ struct MainRunbotView: View {
                 }
             }
         }
-        .onChange(of: authManager.isAuthenticated) { isAuth in
+        .onChange(of: authManager.isAuthenticated) { oldValue, isAuth in
             if isAuth, let userId = authManager.currentUser?.id {
                 print("🔵 User logged in, initializing session and loading PR model")
                 supabaseManager.initializeSession(for: userId)
@@ -331,7 +332,7 @@ struct MainRunbotView: View {
                 }
             }
         }
-        .onChange(of: selectedMode) { _ in
+        .onChange(of: selectedMode) { _, _ in
             withAnimation {
                 carouselSelection = .startStop
             }
@@ -381,6 +382,8 @@ struct MainRunbotView: View {
             combinedStatsPage()
         case .heartZone:
             heartZonePage()
+        case .heartZoneChart:
+            heartZoneChartPage()
         case .energyPulse:
             energyPulseViewPage()
         case .trainVisualization:
@@ -717,7 +720,7 @@ struct MainRunbotView: View {
                     .shadow(color: isSpeaking ? .rbAccent.opacity(0.4) : .clear, radius: 12)
                 }
                 .padding(.top, 4)
-                .onChange(of: isSpeaking) { speaking in
+                .onChange(of: isSpeaking) { oldValue, speaking in
                     print("🎤 [AI Coach Page] Speaking state changed: \(speaking)")
                     if speaking {
                         print("▶️ [AI Coach] Starting GIF animation and voice wave")
@@ -748,7 +751,7 @@ struct MainRunbotView: View {
                 
                 // Feedback text
                 ScrollView {
-                    Text(feedbackText.isEmpty ? (isRunning ? "Listening..." : "Start a run for AI coaching") : feedbackText)
+                    Text(feedbackText.isEmpty ? (isRunning ? "Waiting for feedback..." : "Start a run for AI coaching") : feedbackText)
                         .font(.system(size: 11, weight: feedbackText.isEmpty ? .regular : .medium))
                         .foregroundColor(feedbackText.isEmpty ? .white.opacity(0.4) : .white.opacity(0.9))
                         .multilineTextAlignment(.center)
@@ -779,9 +782,9 @@ struct MainRunbotView: View {
         let isSlower = paceDiff > 0.1
         
         VStack(spacing: 4) {
-            // Dual Pace Visualization - Next-Gen Dynamic
-            HStack(spacing: 8) {
-                // Current Pace - Left (Hero)
+            // Dual Pace Visualization - Next-Gen Dynamic (Smaller, Closer)
+            HStack(spacing: 4) {
+                // Current Pace - Left (Smaller, Closer)
                 ZStack {
                     // Pulsing outer glow
                                 Circle()
@@ -793,11 +796,11 @@ struct MainRunbotView: View {
                                     Color.clear
                                 ],
                                 center: .center,
-                                startRadius: 25,
-                                endRadius: 50
+                                startRadius: 20,
+                                endRadius: 40
                             )
                         )
-                        .frame(width: 100, height: 100)
+                        .frame(width: 75, height: 75)
                         .scaleEffect(1.0 + sin(wavePhase * 0.15) * 0.1)
                         .opacity(0.6 + sin(wavePhase * 0.12) * 0.3)
                     
@@ -810,9 +813,9 @@ struct MainRunbotView: View {
                                 center: .center,
                                 angle: .degrees(Double(wavePhase * 5))
                             ),
-                            style: StrokeStyle(lineWidth: 4, lineCap: .round)
+                            style: StrokeStyle(lineWidth: 3, lineCap: .round)
                         )
-                        .frame(width: 85, height: 85)
+                        .frame(width: 65, height: 65)
                         .rotationEffect(.degrees(Double(wavePhase * 5)))
                     
                     // Inner glow
@@ -821,28 +824,28 @@ struct MainRunbotView: View {
                             RadialGradient(
                                 colors: [currentPaceClr.opacity(0.3), Color.clear],
                                 center: .center,
-                                startRadius: 15,
-                                endRadius: 40
+                                startRadius: 12,
+                                endRadius: 32
                             )
                         )
-                        .frame(width: 80, height: 80)
+                        .frame(width: 60, height: 60)
                     
-                    VStack(spacing: 2) {
+                    VStack(spacing: 1) {
                         Text(formatPace(currentPace))
-                            .font(.system(size: 32, weight: .black, design: .rounded))
+                            .font(.system(size: 24, weight: .black, design: .rounded))
                             .foregroundColor(currentPaceClr)
-                            .shadow(color: currentPaceClr.opacity(0.5), radius: 8)
+                            .shadow(color: currentPaceClr.opacity(0.5), radius: 6)
                             .scaleEffect(1.0 + (isFaster ? 0.05 : (isSlower ? -0.03 : 0)))
                         
                         Text("CURRENT")
-                            .font(.system(size: 7, weight: .bold, design: .rounded))
+                            .font(.system(size: 6, weight: .bold, design: .rounded))
                             .foregroundColor(.white.opacity(0.6))
-                            .tracking(1)
+                            .tracking(0.5)
                     }
                 }
-                .frame(width: 100, height: 100)
+                .frame(width: 75, height: 75)
                 
-                // Average Pace - Right (Hero)
+                // Average Pace - Right (Smaller, Closer)
                 ZStack {
                     // Pulsing outer glow
                     Circle()
@@ -854,18 +857,18 @@ struct MainRunbotView: View {
                                     Color.clear
                                 ],
                                 center: .center,
-                                startRadius: 25,
-                                endRadius: 50
+                                startRadius: 20,
+                                endRadius: 40
                             )
                         )
-                        .frame(width: 100, height: 100)
+                        .frame(width: 75, height: 75)
                         .scaleEffect(1.0 + sin(wavePhase * 0.12) * 0.08)
                         .opacity(0.5 + sin(wavePhase * 0.1) * 0.25)
                     
                     // Static ring (less animated than current)
                     Circle()
                         .stroke(avgPaceClr.opacity(0.4), lineWidth: 3)
-                        .frame(width: 85, height: 85)
+                        .frame(width: 65, height: 65)
                     
                     // Inner glow
                     Circle()
@@ -873,25 +876,25 @@ struct MainRunbotView: View {
                             RadialGradient(
                                 colors: [avgPaceClr.opacity(0.25), Color.clear],
                                 center: .center,
-                                startRadius: 15,
-                                endRadius: 40
+                                startRadius: 12,
+                                endRadius: 32
                             )
                         )
-                        .frame(width: 80, height: 80)
+                        .frame(width: 60, height: 60)
                     
-                    VStack(spacing: 2) {
+                    VStack(spacing: 1) {
                         Text(formatPace(avgPace))
-                            .font(.system(size: 32, weight: .black, design: .rounded))
+                            .font(.system(size: 24, weight: .black, design: .rounded))
                             .foregroundColor(avgPaceClr)
-                            .shadow(color: avgPaceClr.opacity(0.5), radius: 8)
+                            .shadow(color: avgPaceClr.opacity(0.5), radius: 6)
                         
                         Text("AVERAGE")
-                            .font(.system(size: 7, weight: .bold, design: .rounded))
+                            .font(.system(size: 6, weight: .bold, design: .rounded))
                             .foregroundColor(.white.opacity(0.6))
-                            .tracking(1)
+                            .tracking(0.5)
                     }
                 }
-                .frame(width: 100, height: 100)
+                .frame(width: 75, height: 75)
             }
             .padding(.top, 6)
             .padding(.horizontal, 4)
@@ -992,7 +995,7 @@ struct MainRunbotView: View {
             if isRunning {
                 let currentHR = healthManager.currentHeartRate
                 let currentZone = healthManager.currentZone
-                let zonePercentages = healthManager.zonePercentages
+                let _ = healthManager.zonePercentages
                 let adaptiveGuidance = healthManager.adaptiveGuidance
                 
                 // Heart rate display with real data
@@ -1072,43 +1075,6 @@ struct MainRunbotView: View {
                         .padding(.top, 2)
                 }
                 
-                // Zone Distribution (compact)
-                VStack(spacing: 2) {
-                    ForEach([1, 2, 3, 4, 5], id: \.self) { zone in
-                        let percentage = zonePercentages[zone] ?? 0
-                        if percentage > 0.5 {
-                            HStack(spacing: 4) {
-                                Circle()
-                                    .fill(HeartZoneCalculator.zoneColor(for: zone))
-                                    .frame(width: 5, height: 5)
-                                Text("Z\(zone)")
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundColor(.white.opacity(0.6))
-                                    .frame(width: 16, alignment: .leading)
-                                
-                                GeometryReader { geo in
-                                ZStack(alignment: .leading) {
-                                        Rectangle()
-                                        .fill(Color.white.opacity(0.1))
-                                        Rectangle()
-                                        .fill(HeartZoneCalculator.zoneColor(for: zone))
-                                            .frame(width: geo.size.width * CGFloat(percentage / 100.0))
-                                    }
-                                }
-                                .frame(height: 4)
-                                .cornerRadius(2)
-                                
-                                Text(String(format: "%.0f%%", percentage))
-                                    .font(.system(size: 8, weight: .bold))
-                                    .foregroundColor(.white.opacity(0.7))
-                                    .frame(width: 26, alignment: .trailing)
-                            }
-                        }
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.top, 4)
-                
                 if currentHR == nil {
                     Text("Waiting for heart rate...")
                         .font(.system(size: 8))
@@ -1128,6 +1094,123 @@ struct MainRunbotView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    
+    // MARK: - ❤️ Heart Zone Chart Page (Pie Chart)
+    private func heartZoneChartPage() -> some View {
+        let _ = healthManager.zonePercentages
+        
+        // Calculate pie chart data (must be outside ViewBuilder)
+        let zonePercentages = healthManager.zonePercentages
+        let zones = [1, 2, 3, 4, 5]
+        let total = zonePercentages.values.reduce(0.0, +)
+        var angles: [(zone: Int, start: Double, end: Double)] = []
+        var currentStart: Double = -90
+        for zone in zones {
+            let percentage = zonePercentages[zone] ?? 0.0
+            if percentage > 0 && total > 0 {
+                let angle = (percentage / total) * 360.0
+                angles.append((zone: zone, start: currentStart, end: currentStart + angle))
+                currentStart += angle
+            }
+        }
+        
+        return VStack(spacing: 8) {
+            Text("Zone Distribution")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(.rbAccent)
+                .padding(.top, 8)
+            
+            if isRunning && !zonePercentages.isEmpty && !angles.isEmpty {
+                // Pie Chart
+                ZStack {
+                    ForEach(angles, id: \.zone) { angleData in
+                        Path { path in
+                            path.move(to: CGPoint(x: 70, y: 70))
+                            path.addArc(
+                                center: CGPoint(x: 70, y: 70),
+                                radius: 60,
+                                startAngle: Angle(degrees: angleData.start),
+                                endAngle: Angle(degrees: angleData.end),
+                                clockwise: false
+                            )
+                            path.closeSubpath()
+                        }
+                        .fill(HeartZoneCalculator.zoneColor(for: angleData.zone))
+                        
+                        // Zone label
+                        let labelAngle = angleData.start + (angleData.end - angleData.start) / 2.0
+                        let labelRadius: CGFloat = 45
+                        let labelX = 70 + CGFloat(cos(labelAngle * .pi / 180.0)) * labelRadius
+                        let labelY = 70 + CGFloat(sin(labelAngle * .pi / 180.0)) * labelRadius
+                        
+                        Text("Z\(angleData.zone)")
+                            .font(.system(size: 8, weight: .bold))
+                            .foregroundColor(.white)
+                            .position(x: labelX, y: labelY)
+                    }
+                    
+                    // Center circle
+                    Circle()
+                        .fill(Color.black)
+                        .frame(width: 50, height: 50)
+                    
+                    VStack(spacing: 0) {
+                        Text("Total")
+                            .font(.system(size: 7))
+                            .foregroundColor(.white.opacity(0.6))
+                        Text(String(format: "%.0f%%", total))
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(.white)
+                    }
+                }
+                .frame(width: 140, height: 140)
+                .padding(.vertical, 8)
+                
+                // Legend
+                VStack(spacing: 4) {
+                    ForEach(Array([1, 2, 3, 4, 5]), id: \.self) { zone in
+                        let percentage = zonePercentages[zone] ?? 0.0
+                        if percentage > 0 {
+                            HStack(spacing: 6) {
+                                Circle()
+                                    .fill(HeartZoneCalculator.zoneColor(for: zone))
+                                    .frame(width: 8, height: 8)
+                                
+                                Text("Z\(zone): \(HeartZoneCalculator.zoneName(for: zone))")
+                                    .font(.system(size: 9))
+                                    .foregroundColor(.white.opacity(0.8))
+                                
+                                Spacer()
+                                
+                                Text(String(format: "%.1f%%", percentage))
+                                    .font(.system(size: 9, weight: .semibold))
+                                    .foregroundColor(HeartZoneCalculator.zoneColor(for: zone))
+                            }
+                            .padding(.horizontal, 12)
+                        }
+                    }
+                }
+                .padding(.top, 4)
+            } else {
+                    Spacer()
+                Image(systemName: "chart.pie.fill")
+                        .font(.system(size: 32))
+                    .foregroundColor(.rbSecondary.opacity(0.4))
+                Text("Start running to see zone distribution")
+                    .font(.system(size: 10))
+                    .foregroundColor(.white.opacity(0.3))
+                    Spacer()
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            // Refresh every 30 seconds
+            Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { _ in
+                // Force refresh by accessing zonePercentages
+                let _ = healthManager.zonePercentages
+            }
+        }
     }
     
     // MARK: - Page 2: Train Mode Visualization (Tron-style)
@@ -1785,7 +1868,7 @@ struct PulsingRings: View {
 		.onAppear {
 			if isActive { animate = true }
 		}
-		.onChange(of: isActive) { newValue in
+		.onChange(of: isActive) { _, newValue in
 			animate = newValue
 		}
 	}
@@ -1813,10 +1896,10 @@ struct VoiceWaveView: View {
 				.stroke(Color.cyan.opacity(0.25), lineWidth: 2)
 		}
 		.onAppear { if isActive { startAmplitude() } }
-		.onChange(of: isActive) { active in
+		.onChange(of: isActive) { _, active in
 			if active { startAmplitude() } else { amplitude = 0 }
 		}
-		.onChange(of: timerTick) { _ in
+		.onChange(of: timerTick) { _, _ in
 			// jitter amplitude a bit to feel reactive
 			guard isActive else { return }
 			withAnimation(.easeInOut(duration: 0.12)) {
@@ -2352,7 +2435,7 @@ struct PaceDialView: View {
         .onAppear {
             updateProgress()
         }
-        .onChange(of: currentPace) { _ in
+        .onChange(of: currentPace) { _, _ in
             updateProgress()
             checkPaceStateChange()
         }
@@ -2454,7 +2537,7 @@ struct TrainModeRaceView: View {
         .onAppear {
             displayedUserProgress = targetUserProgress
         }
-        .onChange(of: currentDistance) { newDistance in
+        .onChange(of: currentDistance) { _, newDistance in
             let newProgress = progressForDistance(newDistance)
             withAnimation(.easeInOut(duration: 0.4)) {
                 displayedUserProgress = newProgress
@@ -2545,10 +2628,10 @@ struct TrainModeRaceView: View {
             animationTime = timeline.date.timeIntervalSince1970
             displayedUserProgress = targetUserProgress
         }
-        .onChange(of: timeline.date) { newDate in
+        .onChange(of: timeline.date) { _, newDate in
             animationTime = newDate.timeIntervalSince1970
         }
-        .onChange(of: isCurrentlyOvertaking) { newValue in
+        .onChange(of: isCurrentlyOvertaking) { _, newValue in
             handleOvertakingChange(newValue)
         }
     }

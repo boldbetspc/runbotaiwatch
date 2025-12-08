@@ -7,8 +7,6 @@ class AuthenticationManager: NSObject, ObservableObject {
     @Published var currentUser: User?
     @Published var isLoading = false
     @Published var errorMessage: String?
-    @Published var showPINSetup = false // Show PIN setup after first login
-    @Published var usePINLogin = false // Show PIN entry instead of email/password
     
     private let supabaseURL: String
     private let supabaseKey: String
@@ -33,14 +31,6 @@ class AuthenticationManager: NSObject, ObservableObject {
     
     func checkAuthentication() {
         print("🔐 [AuthenticationManager] checkAuthentication() called")
-        
-        // Check if PIN is enabled
-        if keychainManager.isPINEnabled() {
-            print("🔐 [AuthenticationManager] PIN enabled - showing PIN login")
-            self.usePINLogin = true
-            self.isAuthenticated = false
-            return
-        }
         
         // Check if user session exists in UserDefaults
         if let savedUser = UserDefaults.standard.data(forKey: "currentUser"),
@@ -71,100 +61,6 @@ class AuthenticationManager: NSObject, ObservableObject {
             print("🔐 [AuthenticationManager] ❌ No saved user found - user needs to login")
             self.isAuthenticated = false
         }
-    }
-    
-    // MARK: - PIN Authentication
-    
-    /// Authenticate using PIN
-    func loginWithPIN(_ pin: String) {
-        print("🔐 [AuthenticationManager] Attempting PIN login...")
-        isLoading = true
-        errorMessage = nil
-        
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else { return }
-            
-            // Validate PIN
-            guard self.keychainManager.validatePIN(pin) else {
-                DispatchQueue.main.async {
-                    self.isLoading = false
-                    self.errorMessage = "Invalid PIN"
-                    print("🔐 [AuthenticationManager] ❌ Invalid PIN entered")
-                    
-                    // Haptic feedback for wrong PIN
-                    #if canImport(WatchKit)
-                    WKInterfaceDevice.current().play(.failure)
-                    #endif
-                }
-                return
-            }
-            
-            // PIN is valid - restore session
-            if let savedUser = UserDefaults.standard.data(forKey: "currentUser"),
-               let user = try? JSONDecoder().decode(User.self, from: savedUser),
-               let token = UserDefaults.standard.string(forKey: "sessionToken") {
-                
-                DispatchQueue.main.async {
-                    print("🔐 [AuthenticationManager] ✅ PIN validated - restoring session")
-                    print("🔐 [AuthenticationManager] User ID: \(user.id)")
-                    print("🔐 [AuthenticationManager] Email: \(user.email)")
-                    
-                    self.currentUser = user
-                    self.sessionToken = token
-                    self.isAuthenticated = true
-                    self.usePINLogin = false
-                    self.isLoading = false
-                    
-                    // Notify other managers that user is authenticated
-                    // This will be picked up by SupabaseManager, HealthManager, etc.
-                    NotificationCenter.default.post(name: NSNotification.Name("UserAuthenticated"), object: user.id)
-                    
-                    // Haptic feedback for success
-                    #if canImport(WatchKit)
-                    WKInterfaceDevice.current().play(.success)
-                    #endif
-                    
-                    print("✅ [AuthenticationManager] Full session restored - all services can use user ID: \(user.id)")
-                }
-            } else {
-                DispatchQueue.main.async {
-                    self.isLoading = false
-                    self.errorMessage = "Session expired. Please login with email."
-                    self.keychainManager.deletePIN() // Clear invalid PIN
-                    self.usePINLogin = false
-                    print("🔐 [AuthenticationManager] ❌ No saved session - PIN login failed")
-                }
-            }
-        }
-    }
-    
-    /// Setup PIN after first successful login
-    func setupPIN(_ pin: String) -> Bool {
-        print("🔐 [AuthenticationManager] Setting up PIN...")
-        
-        guard pin.count >= 4, pin.count <= 6, pin.allSatisfy({ $0.isNumber }) else {
-            print("❌ [AuthenticationManager] Invalid PIN format")
-            return false
-        }
-        
-        let success = keychainManager.savePIN(pin)
-        
-        if success {
-            print("✅ [AuthenticationManager] PIN setup successful")
-            #if canImport(WatchKit)
-            WKInterfaceDevice.current().play(.success)
-            #endif
-        }
-        
-        return success
-    }
-    
-    /// Disable PIN and return to email/password login
-    func disablePIN() {
-        print("🔐 [AuthenticationManager] Disabling PIN...")
-        keychainManager.deletePIN()
-        usePINLogin = false
-        print("✅ [AuthenticationManager] PIN disabled")
     }
     
     private func getTokenExpirationTime(_ token: String) -> TimeInterval? {
@@ -272,19 +168,13 @@ class AuthenticationManager: NSObject, ObservableObject {
                         self.isLoading = false
                         self.errorMessage = nil
                         
-                        // Save to UserDefaults for PIN login restoration
+                        // Save to UserDefaults
                         if let userData = try? JSONEncoder().encode(user) {
                             UserDefaults.standard.set(userData, forKey: "currentUser")
                         }
                         UserDefaults.standard.set(authResponse.access_token, forKey: "sessionToken")
                         print("🔐 [Auth] ✅ Session saved to UserDefaults")
                         print("🔐 [Auth] User ID: \(user.id) - available for all services")
-                        
-                        // Show PIN setup prompt for first-time users
-                        if !self.keychainManager.isPINEnabled() {
-                            self.showPINSetup = true
-                            print("🔐 [Auth] First login - showing PIN setup")
-                        }
                     }
                 } else {
                     let errorString = String(data: responseData, encoding: .utf8) ?? "Unknown error"
@@ -355,8 +245,6 @@ class AuthenticationManager: NSObject, ObservableObject {
         currentUser = nil
         sessionToken = nil
         isAuthenticated = false
-        usePINLogin = false
-        showPINSetup = false
         
         UserDefaults.standard.removeObject(forKey: "currentUser")
         UserDefaults.standard.removeObject(forKey: "sessionToken")

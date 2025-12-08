@@ -89,14 +89,7 @@ class HealthManager: NSObject, ObservableObject {
         // Check if HealthKit entitlement is available (graceful handling)
         #if os(watchOS)
         // On watchOS, check if we can actually use HealthKit
-        do {
-            let _ = try healthStore.authorizationStatus(for: HKObjectType.workoutType())
-        } catch {
-            print("⚠️ [HealthManager] HealthKit entitlement may be missing: \(error.localizedDescription)")
-            print("⚠️ [HealthManager] Continuing without HealthKit - app will work without heart rate")
-            isAuthorized = false
-            return
-        }
+        let _ = healthStore.authorizationStatus(for: HKObjectType.workoutType())
         #endif
         
         guard let heartRateType = HKQuantityType.quantityType(forIdentifier: .heartRate) else {
@@ -199,10 +192,7 @@ class HealthManager: NSObject, ObservableObject {
             workoutSession = session
             
             // Create workout builder with live data source
-            guard let builder = session.associatedWorkoutBuilder() as? HKLiveWorkoutBuilder else {
-                print("⚠️ [HealthManager] Could not create workout builder - continuing without HR")
-                return
-            }
+            let builder = session.associatedWorkoutBuilder()
             
             let dataSource = HKLiveWorkoutDataSource(healthStore: healthStore, workoutConfiguration: configuration)
             builder.dataSource = dataSource

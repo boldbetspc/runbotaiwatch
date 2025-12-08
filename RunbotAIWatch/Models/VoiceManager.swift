@@ -85,12 +85,6 @@ final class VoiceManager: NSObject, ObservableObject {
         currentText = ""
     }
     
-    /// Request microphone permission (for potential future features)
-    func requestMicrophonePermission() {
-        AVAudioSession.sharedInstance().requestRecordPermission { granted in
-            print("🎤 [Voice] Microphone permission: \(granted ? "granted" : "denied")")
-        }
-    }
     
     // MARK: - Audio Session Configuration
     
