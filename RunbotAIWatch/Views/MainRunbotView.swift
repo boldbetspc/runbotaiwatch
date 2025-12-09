@@ -338,6 +338,7 @@ struct MainRunbotView: View {
             }
         }
         // Trigger scheduled coaching on first stats update and distance milestones
+        // Enhanced with RAG-driven closed-loop performance analysis
         .onReceive(runTracker.$statsUpdate.compactMap { $0 }) { stats in
             // Kickoff once at run start when stats first arrive
             if isRunning && !didTriggerInitialCoaching {
@@ -349,7 +350,10 @@ struct MainRunbotView: View {
                     voiceManager: voiceManager,
                     runSessionId: runTracker.currentSession?.id,
                     isTrainMode: isTrainMode,
-                    shadowData: shadowData
+                    shadowData: shadowData,
+                    healthManager: healthManager,
+                    intervals: runTracker.currentSession?.intervals ?? [],
+                    runStartTime: runTracker.currentSession?.startTime
                 )
                 didTriggerInitialCoaching = true
             }
@@ -358,13 +362,17 @@ struct MainRunbotView: View {
             if freq > 0, km > lastCoachingKm, km % freq == 0 {
                 let isTrainMode = runTracker.currentSession?.mode == .train
                 let shadowData = runTracker.currentSession?.shadowRunData
+                // RAG-enhanced interval coaching with full performance analysis
                 aiCoach.startScheduledCoaching(
                     for: stats,
                     with: userPreferences.settings,
                     voiceManager: voiceManager,
                     runSessionId: runTracker.currentSession?.id,
                     isTrainMode: isTrainMode,
-                    shadowData: shadowData
+                    shadowData: shadowData,
+                    healthManager: healthManager,
+                    intervals: runTracker.currentSession?.intervals ?? [],
+                    runStartTime: runTracker.currentSession?.startTime
                 )
                 lastCoachingKm = km
             }
@@ -1702,11 +1710,13 @@ struct MainRunbotView: View {
         didTriggerInitialCoaching = true
         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
             // START-OF-RUN COACHING (personalized welcome)
+            // This also initializes RAG cache with preferences, language, Mem0 for the entire run
             aiCoach.startOfRunCoaching(
                 for: stats,
                 with: userPreferences.settings,
                 voiceManager: voiceManager,
-                runSessionId: runTracker.currentSession?.id
+                runSessionId: runTracker.currentSession?.id,
+                runnerName: userPreferences.runnerName
             )
             
             // Note: Interval coaching is triggered by distance milestones
@@ -1762,12 +1772,13 @@ struct MainRunbotView: View {
             print("🏁 [MainRunbotView] End feedback will auto-terminate after 20s (guardrail)")
             
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                // End-of-run feedback with 20s timeout guardrail
+                // End-of-run RAG-powered analysis with full HealthKit data
                 aiCoach.endOfRunCoaching(
                     for: stats,
                     session: session,
                     with: userPreferences.settings,
-                    voiceManager: voiceManager
+                    voiceManager: voiceManager,
+                    healthManager: healthManager
                 )
             }
             

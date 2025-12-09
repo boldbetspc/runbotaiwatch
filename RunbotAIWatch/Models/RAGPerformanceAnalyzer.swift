@@ -1,0 +1,2244 @@
+import Foundation
+import Combine
+
+/// RAG-Driven Closed-Loop Performance Analysis
+///
+/// This analyzer uses Retrieval-Augmented Generation (RAG) to provide truly intelligent
+/// AI coaching feedback at intervals. It queries past performance data using vector
+/// embeddings (pgvector in Supabase) to find similar running patterns and generate
+/// context-aware, adaptive coaching insights.
+///
+/// **Architecture:**
+/// 1. Current State → Embedding Generation → Vector Search → Similar Runs Retrieval
+/// 2. Similar Runs + Current Metrics → Comprehensive Analysis → LLM Prompt Context
+///
+/// **Analysis Dimensions:**
+/// - Target Awareness: on-track / slightly-behind / way-behind based on pace/distance/time
+/// - Heart Zone Analysis: current zone, zone trends, zone time distribution
+/// - Zone Guidance: adaptive recommendations based on target and current state
+/// - Interval Trends: pace progression, consistency, fatigue detection
+/// - HR Variations: stability, spikes, recovery patterns
+/// - Running Quality: biomechanical efficiency signals
+/// - Injury Detection: unusual patterns that may indicate strain or injury risk
+/// - Historical Context: insights from similar past runs via RAG
+///
+/// **Supabase Schema (Normalized):**
+/// - `run_performance` table stores ONLY: run_id, run_embedding, derived analysis fields
+/// - Actual run data (distance, pace, HR, zones) comes from `run_activities` and `run_hr`
+/// - Vector search RPC `match_run_performance()` joins with `run_activities` to get data
+/// - This avoids data duplication - single source of truth in existing tables
+///
+class RAGPerformanceAnalyzer: ObservableObject {
+    
+    // MARK: - Cached Run Context
+    // Preferences, language, runner name - cached once at run start (never change during run)
+    // Mem0 insights - fetched fresh at each interval (incremental updates during run)
+    private var cachedPreferences: UserPreferences.Settings?
+    private var cachedRunnerName: String?
+    private var cachedUserId: String?
+    private var runStartTime: Date?
+    private var isRunActive: Bool = false
+    
+    /// Call at run start to cache preferences and language (never change during run)
+    /// Mem0 insights are fetched fresh at each interval for incremental updates
+    func initializeForRun(
+        preferences: UserPreferences.Settings,
+        runnerName: String,
+        userId: String
+    ) {
+        print("📦 [RAG] Caching run context - preferences, language, runner name")
+        self.cachedPreferences = preferences
+        self.cachedRunnerName = runnerName
+        self.cachedUserId = userId
+        self.runStartTime = Date()
+        self.isRunActive = true
+        
+        // Note: Mem0 insights are NOT cached - fetched fresh at each interval
+        // because they get incremental updates (coaching feedback stored during run)
+        
+        print("📦 [RAG] Cached (static): Language=\(preferences.language.displayName), Personality=\(preferences.coachPersonality.rawValue), Target=\(preferences.targetDistance.displayName)")
+        print("📦 [RAG] Dynamic (per interval): Mem0 insights, similar runs, HR/pace data")
+    }
+    
+    /// Call at run end to clear cached context
+    func clearRunContext() {
+        print("🧹 [RAG] Clearing cached run context")
+        cachedPreferences = nil
+        cachedRunnerName = nil
+        cachedUserId = nil
+        runStartTime = nil
+        isRunActive = false
+    }
+    
+    // MARK: - Performance Snapshot
+    
+    struct PerformanceSnapshot: Codable {
+        // Current metrics
+        let currentPace: Double // min/km
+        let targetPace: Double // min/km
+        let currentDistance: Double // meters
+        let targetDistance: Double // meters (estimated from target time)
+        let elapsedTime: Double // seconds
+        let targetTime: Double // seconds (estimated)
+        
+        // Heart rate metrics
+        let currentHR: Double?
+        let averageHR: Double?
+        let maxHR: Double?
+        let currentZone: Int?
+        let zonePercentages: [Int: Double]
+        let zoneAveragePace: [Int: Double]
+        
+        // Interval data
+        let completedIntervals: [IntervalSnapshot]
+        let currentIntervalNumber: Int
+        
+        // Derived metrics
+        let paceDeviation: Double // % deviation from target
+        let estimatedFinishTime: Double // seconds
+        let projectedDistance: Double // meters at current pace
+        
+        // Trend indicators
+        let pacetrend: PaceTrend
+        let hrTrend: HRTrend
+        let fatigueLevel: FatigueLevel
+    }
+    
+    struct IntervalSnapshot: Codable {
+        let kilometer: Int
+        let pace: Double // min/km
+        let duration: Double // seconds
+        let avgHR: Double?
+        let zone: Int?
+    }
+    
+    enum PaceTrend: String, Codable {
+        case improving = "improving"      // Getting faster
+        case stable = "stable"            // Consistent
+        case declining = "declining"      // Slowing down
+        case erratic = "erratic"          // Inconsistent
+    }
+    
+    enum HRTrend: String, Codable {
+        case stable = "stable"            // Normal variation
+        case rising = "rising"            // Cardiac drift
+        case spiking = "spiking"          // Unusual spikes
+        case recovering = "recovering"    // Coming down from high
+    }
+    
+    enum FatigueLevel: String, Codable {
+        case fresh = "fresh"              // Early run, no fatigue
+        case moderate = "moderate"        // Normal fatigue
+        case high = "high"                // Significant fatigue
+        case critical = "critical"        // Warning level
+    }
+    
+    // MARK: - RAG Analysis Result
+    
+    struct RAGAnalysisResult {
+        let targetStatus: TargetStatus
+        let performanceAnalysis: String
+        let heartZoneAnalysis: String
+        let intervalTrends: String
+        let hrVariationAnalysis: String
+        let runningQualityAssessment: String
+        let injuryRiskSignals: [String]
+        let adaptiveMicrostrategy: String
+        let similarRunsContext: String
+        let overallRecommendation: String
+        
+        /// Formatted context string for LLM prompt
+        var llmContext: String {
+            return """
+            📊 RAG PERFORMANCE ANALYSIS (Real-time Closed-Loop)
+            
+            🎯 TARGET STATUS: \(targetStatus.description)
+            
+            📈 PERFORMANCE ANALYSIS:
+            \(performanceAnalysis)
+            
+            ❤️ HEART ZONE ANALYSIS:
+            \(heartZoneAnalysis)
+            
+            📉 INTERVAL TRENDS:
+            \(intervalTrends)
+            
+            💓 HR VARIATION ANALYSIS:
+            \(hrVariationAnalysis)
+            
+            🏃 RUNNING QUALITY:
+            \(runningQualityAssessment)
+            
+            ⚠️ INJURY RISK SIGNALS:
+            \(injuryRiskSignals.isEmpty ? "None detected" : injuryRiskSignals.joined(separator: "; "))
+            
+            🧠 ADAPTIVE MICROSTRATEGY:
+            \(adaptiveMicrostrategy)
+            
+            📚 SIMILAR RUNS CONTEXT (RAG):
+            \(similarRunsContext)
+            
+            💡 OVERALL RECOMMENDATION:
+            \(overallRecommendation)
+            """
+        }
+    }
+    
+    enum TargetStatus: CustomStringConvertible {
+        case onTrack(deviation: Double)           // Within 5% of target
+        case slightlyBehind(deviation: Double)    // 5-15% behind
+        case wayBehind(deviation: Double)         // >15% behind
+        case slightlyAhead(deviation: Double)     // 5-15% ahead
+        case wayAhead(deviation: Double)          // >15% ahead
+        
+        var description: String {
+            switch self {
+            case .onTrack(let dev):
+                return "ON TRACK (\(String(format: "%.1f", abs(dev)))% deviation)"
+            case .slightlyBehind(let dev):
+                return "SLIGHTLY BEHIND (-\(String(format: "%.1f", dev))%)"
+            case .wayBehind(let dev):
+                return "WAY BEHIND (-\(String(format: "%.1f", dev))%) ⚠️"
+            case .slightlyAhead(let dev):
+                return "SLIGHTLY AHEAD (+\(String(format: "%.1f", dev))%)"
+            case .wayAhead(let dev):
+                return "WAY AHEAD (+\(String(format: "%.1f", dev))%)"
+            }
+        }
+        
+        var coachingUrgency: String {
+            switch self {
+            case .onTrack:
+                return "Maintain current effort"
+            case .slightlyBehind:
+                return "Minor adjustment needed"
+            case .wayBehind:
+                return "URGENT: Significant adjustment required"
+            case .slightlyAhead:
+                return "Consider banking time or easing slightly"
+            case .wayAhead:
+                return "Consider conserving energy for later"
+            }
+        }
+    }
+    
+    // MARK: - End of Run Analysis Result
+    
+    struct EndOfRunAnalysis {
+        // Target achievement
+        let targetMet: Bool
+        let targetAchievement: String // "Exceeded by 0.5km", "Missed by 2 min", etc.
+        let targetDeviation: String // "12% faster", "8% behind"
+        
+        // Final stats
+        let finalDistance: Double // km
+        let finalDuration: Double // seconds
+        let finalPace: Double // min/km
+        let targetDistance: Double // km
+        let targetPace: Double // min/km
+        
+        // Interval analysis
+        let intervalAnalysis: String
+        let paceVariation: String // "Consistent", "Positive splits", "Negative splits"
+        let bestInterval: String // "Km 3: 5:45"
+        let worstInterval: String // "Km 5: 7:12"
+        
+        // Heart zone analysis
+        let zoneDistribution: String
+        let dominantZone: Int
+        let zoneEfficiency: String // "Excellent", "Good", "Suboptimal"
+        let zonePaceCorrelation: String
+        
+        // Cross-analysis: Zones x Pace x Intervals
+        let performanceInsights: [String]
+        let whatWentWell: [String]
+        let whatNeedsWork: [String]
+        
+        // Overall assessment
+        let overallRating: String // "Excellent", "Good", "Needs work"
+        let overallScore: Int // 0-100
+        
+        // Similar runs comparison
+        let comparedToHistory: String
+        
+        /// LLM context for end-of-run prompt
+        var llmContext: String {
+            return """
+            ============================================================================
+            END-OF-RUN RAG ANALYSIS (Comprehensive)
+            ============================================================================
+            
+            🎯 TARGET ACHIEVEMENT:
+            - Target: \(String(format: "%.1f", targetDistance)) km at \(formatPaceStatic(targetPace)) min/km
+            - Actual: \(String(format: "%.2f", finalDistance)) km at \(formatPaceStatic(finalPace)) min/km
+            - Duration: \(formatDurationStatic(finalDuration))
+            - Result: \(targetAchievement)
+            - Status: \(targetMet ? "✅ TARGET MET" : "❌ TARGET MISSED")
+            - Deviation: \(targetDeviation)
+            
+            📊 INTERVAL ANALYSIS:
+            \(intervalAnalysis)
+            - Pace pattern: \(paceVariation)
+            - Best interval: \(bestInterval)
+            - Worst interval: \(worstInterval)
+            
+            ❤️ HEART ZONE ANALYSIS:
+            \(zoneDistribution)
+            - Dominant zone: Zone \(dominantZone)
+            - Zone efficiency: \(zoneEfficiency)
+            - Zone-pace correlation: \(zonePaceCorrelation)
+            
+            🔬 PERFORMANCE INSIGHTS (Zones × Pace × Intervals):
+            \(performanceInsights.map { "• \($0)" }.joined(separator: "\n"))
+            
+            ✅ WHAT WENT WELL:
+            \(whatWentWell.map { "• \($0)" }.joined(separator: "\n"))
+            
+            ⚠️ WHAT NEEDS WORK:
+            \(whatNeedsWork.map { "• \($0)" }.joined(separator: "\n"))
+            
+            📈 COMPARED TO HISTORY:
+            \(comparedToHistory)
+            
+            🏆 OVERALL ASSESSMENT:
+            - Performance level: \(overallRating)
+            (Note: Do NOT mention scores or ratings in voice output - just give natural coaching feedback)
+            ============================================================================
+            """
+        }
+        
+        private func formatPaceStatic(_ pace: Double) -> String {
+            let minutes = Int(pace)
+            let seconds = Int((pace - Double(minutes)) * 60)
+            return String(format: "%d:%02d", minutes, seconds)
+        }
+        
+        private func formatDurationStatic(_ seconds: Double) -> String {
+            let totalSeconds = Int(seconds)
+            let hours = totalSeconds / 3600
+            let mins = (totalSeconds % 3600) / 60
+            let secs = totalSeconds % 60
+            if hours > 0 {
+                return String(format: "%d:%02d:%02d", hours, mins, secs)
+            }
+            return String(format: "%d:%02d", mins, secs)
+        }
+    }
+    
+    // MARK: - Properties
+    
+    private let openAIKey: String
+    private let supabaseURL: String
+    private let supabaseKey: String
+    private var cachedSimilarRuns: [SimilarRunResult] = []
+    private var lastEmbeddingRefresh: Date?
+    
+    struct SimilarRunResult: Codable {
+        let runId: String
+        let distance: Double
+        let pace: Double
+        let duration: Double
+        let similarity: Double
+        let performanceSummary: String?
+        let keyInsights: String?
+    }
+    
+    init() {
+        if let config = ConfigLoader.loadConfig() {
+            self.openAIKey = (config["OPENAI_API_KEY"] as? String) ?? ""
+            self.supabaseURL = (config["SUPABASE_URL"] as? String) ?? ""
+            self.supabaseKey = (config["SUPABASE_ANON_KEY"] as? String) ?? ""
+        } else {
+            self.openAIKey = ""
+            self.supabaseURL = ""
+            self.supabaseKey = ""
+        }
+    }
+    
+    // MARK: - End of Run Analysis Function
+    
+    /// Comprehensive end-of-run RAG analysis
+    /// Uses HealthKit, Supabase, RAG vectors, Mem0 for final insightful feedback
+    func analyzeEndOfRun(
+        session: RunSession,
+        stats: RunningStatsUpdate,
+        preferences: UserPreferences.Settings,
+        healthManager: HealthManager?,
+        userId: String
+    ) async -> EndOfRunAnalysis {
+        
+        print("🏁 [RAG] Starting end-of-run analysis...")
+        
+        // 1. Calculate target achievement
+        let targetDistanceKm = preferences.targetDistanceKm
+        let actualDistanceKm = stats.distance / 1000.0
+        let targetPace = preferences.targetPaceMinPerKm
+        let actualPace = session.pace
+        
+        // Distance achievement
+        let distanceDeviation = targetDistanceKm > 0 ? ((actualDistanceKm - targetDistanceKm) / targetDistanceKm) * 100 : 0
+        let distanceMet = actualDistanceKm >= targetDistanceKm * 0.95 // Within 5%
+        
+        // Pace achievement
+        let paceDeviation = targetPace > 0 ? ((actualPace - targetPace) / targetPace) * 100 : 0
+        let paceMet = actualPace <= targetPace * 1.05 // Within 5%
+        
+        let targetMet = distanceMet && paceMet
+        
+        let targetAchievement: String
+        let targetDeviationStr: String
+        if targetMet {
+            if actualPace < targetPace {
+                targetAchievement = "Exceeded target! \(String(format: "%.0f", abs(paceDeviation)))% faster"
+                targetDeviationStr = "\(String(format: "%.0f", abs(paceDeviation)))% faster"
+            } else {
+                targetAchievement = "Target achieved!"
+                targetDeviationStr = "On target"
+            }
+        } else if !distanceMet {
+            let shortBy = targetDistanceKm - actualDistanceKm
+            targetAchievement = "Short by \(String(format: "%.1f", shortBy)) km"
+            targetDeviationStr = "\(String(format: "%.1f", shortBy)) km short"
+        } else {
+            targetAchievement = "Pace missed by \(String(format: "%.0f", paceDeviation))%"
+            targetDeviationStr = "\(String(format: "%.0f", paceDeviation))% slower"
+        }
+        
+        // 2. Analyze intervals
+        let intervals = session.intervals
+        let intervalAnalysis = buildIntervalAnalysisForEndOfRun(intervals: intervals)
+        let paceVariation = analyzePaceVariation(intervals: intervals)
+        let (bestInterval, worstInterval) = findBestWorstIntervals(intervals: intervals)
+        
+        // 3. Heart zone analysis from HealthManager
+        let zoneDistribution = buildZoneDistributionString(healthManager: healthManager)
+        let dominantZone = findDominantZone(healthManager: healthManager)
+        let zoneEfficiency = assessZoneEfficiency(healthManager: healthManager, targetPace: targetPace)
+        let zonePaceCorrelation = buildZonePaceCorrelation(healthManager: healthManager)
+        
+        // 4. Cross-analysis: Performance insights
+        let performanceInsights = generatePerformanceInsights(
+            intervals: intervals,
+            healthManager: healthManager,
+            actualPace: actualPace,
+            targetPace: targetPace
+        )
+        
+        // 5. What went well / needs work
+        let whatWentWell = identifyWhatWentWell(
+            targetMet: targetMet,
+            paceDeviation: paceDeviation,
+            intervals: intervals,
+            healthManager: healthManager
+        )
+        
+        let whatNeedsWork = identifyWhatNeedsWork(
+            targetMet: targetMet,
+            paceDeviation: paceDeviation,
+            intervals: intervals,
+            healthManager: healthManager
+        )
+        
+        // 6. Compare to history (Supabase + RAG)
+        let comparedToHistory = await compareToRunHistory(
+            actualPace: actualPace,
+            actualDistance: actualDistanceKm,
+            userId: userId
+        )
+        
+        // 7. Calculate overall score
+        let (overallRating, overallScore) = calculateOverallScore(
+            targetMet: targetMet,
+            paceDeviation: paceDeviation,
+            intervals: intervals,
+            healthManager: healthManager
+        )
+        
+        print("🏁 [RAG] End-of-run analysis complete - Score: \(overallScore)/100")
+        
+        return EndOfRunAnalysis(
+            targetMet: targetMet,
+            targetAchievement: targetAchievement,
+            targetDeviation: targetDeviationStr,
+            finalDistance: actualDistanceKm,
+            finalDuration: session.duration,
+            finalPace: actualPace,
+            targetDistance: targetDistanceKm,
+            targetPace: targetPace,
+            intervalAnalysis: intervalAnalysis,
+            paceVariation: paceVariation,
+            bestInterval: bestInterval,
+            worstInterval: worstInterval,
+            zoneDistribution: zoneDistribution,
+            dominantZone: dominantZone,
+            zoneEfficiency: zoneEfficiency,
+            zonePaceCorrelation: zonePaceCorrelation,
+            performanceInsights: performanceInsights,
+            whatWentWell: whatWentWell,
+            whatNeedsWork: whatNeedsWork,
+            overallRating: overallRating,
+            overallScore: overallScore,
+            comparedToHistory: comparedToHistory
+        )
+    }
+    
+    // MARK: - End of Run Analysis Helpers
+    
+    private func buildIntervalAnalysisForEndOfRun(intervals: [RunInterval]) -> String {
+        guard !intervals.isEmpty else { return "No interval data recorded" }
+        
+        var analysis = "Completed \(intervals.count) km intervals:\n"
+        for interval in intervals {
+            analysis += "  Km \(interval.index): \(formatPace(interval.paceMinPerKm)) min/km (\(Int(interval.durationSeconds))s)\n"
+        }
+        return analysis
+    }
+    
+    private func analyzePaceVariation(intervals: [RunInterval]) -> String {
+        guard intervals.count >= 2 else { return "Insufficient data" }
+        
+        let paces = intervals.map { $0.paceMinPerKm }
+        let firstHalf = Array(paces.prefix(paces.count / 2))
+        let secondHalf = Array(paces.suffix(paces.count - paces.count / 2))
+        
+        let firstHalfAvg = firstHalf.reduce(0, +) / Double(firstHalf.count)
+        let secondHalfAvg = secondHalf.reduce(0, +) / Double(secondHalf.count)
+        
+        let difference = secondHalfAvg - firstHalfAvg
+        
+        if abs(difference) < 0.15 {
+            return "Even splits (consistent pacing)"
+        } else if difference > 0.3 {
+            return "Positive splits (slowed down) - faded in second half"
+        } else if difference > 0 {
+            return "Slight positive splits (minor fade)"
+        } else if difference < -0.3 {
+            return "Strong negative splits (sped up) - excellent finish!"
+        } else {
+            return "Negative splits (strong finish)"
+        }
+    }
+    
+    private func findBestWorstIntervals(intervals: [RunInterval]) -> (String, String) {
+        guard !intervals.isEmpty else { return ("N/A", "N/A") }
+        
+        let sorted = intervals.sorted { $0.paceMinPerKm < $1.paceMinPerKm }
+        let best = sorted.first!
+        let worst = sorted.last!
+        
+        return (
+            "Km \(best.index): \(formatPace(best.paceMinPerKm))",
+            "Km \(worst.index): \(formatPace(worst.paceMinPerKm))"
+        )
+    }
+    
+    private func buildZoneDistributionString(healthManager: HealthManager?) -> String {
+        guard let hm = healthManager else { return "Heart rate data not available" }
+        
+        let zones = hm.zonePercentages
+        var distribution = "Zone time distribution:\n"
+        for zone in 1...5 {
+            let pct = zones[zone] ?? 0
+            if pct > 0 {
+                distribution += "  Zone \(zone): \(String(format: "%.1f", pct))%\n"
+            }
+        }
+        return distribution
+    }
+    
+    private func findDominantZone(healthManager: HealthManager?) -> Int {
+        guard let hm = healthManager else { return 2 }
+        let zones = hm.zonePercentages
+        return zones.max(by: { $0.value < $1.value })?.key ?? 2
+    }
+    
+    private func assessZoneEfficiency(healthManager: HealthManager?, targetPace: Double) -> String {
+        guard let hm = healthManager else { return "N/A" }
+        
+        let zones = hm.zonePercentages
+        let z2z3 = (zones[2] ?? 0) + (zones[3] ?? 0)
+        let z4z5 = (zones[4] ?? 0) + (zones[5] ?? 0)
+        
+        // For most runs, 60%+ in Zone 2-3 is efficient
+        if z2z3 >= 70 {
+            return "Excellent (aerobic dominant)"
+        } else if z2z3 >= 50 {
+            return "Good (balanced effort)"
+        } else if z4z5 > 40 {
+            return "High intensity (possibly overexerted)"
+        } else {
+            return "Suboptimal (consider zone targets)"
+        }
+    }
+    
+    private func buildZonePaceCorrelation(healthManager: HealthManager?) -> String {
+        guard let hm = healthManager else { return "N/A" }
+        
+        let zonePace = hm.zoneAveragePace
+        var correlation = ""
+        for zone in 1...5 {
+            if let pace = zonePace[zone], pace > 0 {
+                correlation += "Z\(zone): \(formatPace(pace)) | "
+            }
+        }
+        return correlation.isEmpty ? "No zone-pace data" : String(correlation.dropLast(3))
+    }
+    
+    private func generatePerformanceInsights(
+        intervals: [RunInterval],
+        healthManager: HealthManager?,
+        actualPace: Double,
+        targetPace: Double
+    ) -> [String] {
+        var insights: [String] = []
+        
+        // Pace consistency insight
+        if intervals.count >= 2 {
+            let paces = intervals.map { $0.paceMinPerKm }
+            let avgPace = paces.reduce(0, +) / Double(paces.count)
+            let variance = paces.map { pow($0 - avgPace, 2) }.reduce(0, +) / Double(paces.count)
+            let stdDev = sqrt(variance)
+            
+            if stdDev < 0.2 {
+                insights.append("Excellent pace consistency (±\(String(format: "%.0f", stdDev * 60)) sec variation)")
+            } else if stdDev > 0.5 {
+                insights.append("High pace variability - work on even pacing")
+            }
+        }
+        
+        // Zone efficiency insight
+        if let hm = healthManager {
+            let z2z3 = (hm.zonePercentages[2] ?? 0) + (hm.zonePercentages[3] ?? 0)
+            if z2z3 > 70 {
+                insights.append("Strong aerobic base - \(String(format: "%.0f", z2z3))% in Zone 2-3")
+            } else if (hm.zonePercentages[5] ?? 0) > 15 {
+                insights.append("Spent \(String(format: "%.0f", hm.zonePercentages[5] ?? 0))% in Zone 5 - high strain")
+            }
+        }
+        
+        // Pace vs target insight
+        let paceDeviation = ((actualPace - targetPace) / targetPace) * 100
+        if abs(paceDeviation) <= 3 {
+            insights.append("Pace execution was spot-on vs target")
+        } else if paceDeviation > 10 {
+            insights.append("Pace \(String(format: "%.0f", paceDeviation))% slower than target - fitness or conditions?")
+        } else if paceDeviation < -10 {
+            insights.append("Pace \(String(format: "%.0f", abs(paceDeviation)))% faster than target - great day!")
+        }
+        
+        return insights
+    }
+    
+    private func identifyWhatWentWell(
+        targetMet: Bool,
+        paceDeviation: Double,
+        intervals: [RunInterval],
+        healthManager: HealthManager?
+    ) -> [String] {
+        var wellDone: [String] = []
+        
+        if targetMet {
+            wellDone.append("Hit your target - goal accomplished!")
+        }
+        
+        if paceDeviation < -5 {
+            wellDone.append("Faster than target pace")
+        }
+        
+        if intervals.count >= 3 {
+            let paces = intervals.map { $0.paceMinPerKm }
+            let lastThird = Array(paces.suffix(intervals.count / 3))
+            let firstTwoThirds = Array(paces.prefix(intervals.count - intervals.count / 3))
+            
+            if let lastAvg = lastThird.isEmpty ? nil : lastThird.reduce(0, +) / Double(lastThird.count),
+               let firstAvg = firstTwoThirds.isEmpty ? nil : firstTwoThirds.reduce(0, +) / Double(firstTwoThirds.count) {
+                if lastAvg < firstAvg - 0.1 {
+                    wellDone.append("Strong finish - negative splits in final third")
+                }
+            }
+        }
+        
+        if let hm = healthManager {
+            let z2z3 = (hm.zonePercentages[2] ?? 0) + (hm.zonePercentages[3] ?? 0)
+            if z2z3 > 60 {
+                wellDone.append("Good zone discipline (\(String(format: "%.0f", z2z3))% in aerobic zones)")
+            }
+        }
+        
+        if wellDone.isEmpty {
+            wellDone.append("You completed the run - that's always a win!")
+        }
+        
+        return wellDone
+    }
+    
+    private func identifyWhatNeedsWork(
+        targetMet: Bool,
+        paceDeviation: Double,
+        intervals: [RunInterval],
+        healthManager: HealthManager?
+    ) -> [String] {
+        var needsWork: [String] = []
+        
+        if !targetMet && paceDeviation > 10 {
+            needsWork.append("Pace was \(String(format: "%.0f", paceDeviation))% off target - review training plan")
+        }
+        
+        if intervals.count >= 3 {
+            let paces = intervals.map { $0.paceMinPerKm }
+            let lastThird = Array(paces.suffix(intervals.count / 3))
+            let firstTwoThirds = Array(paces.prefix(intervals.count - intervals.count / 3))
+            
+            if let lastAvg = lastThird.isEmpty ? nil : lastThird.reduce(0, +) / Double(lastThird.count),
+               let firstAvg = firstTwoThirds.isEmpty ? nil : firstTwoThirds.reduce(0, +) / Double(firstTwoThirds.count) {
+                let fadeSeconds = (lastAvg - firstAvg) * 60
+                if fadeSeconds > 20 {
+                    needsWork.append("Faded \(String(format: "%.0f", fadeSeconds)) sec/km in final third - work on endurance")
+                }
+            }
+        }
+        
+        if let hm = healthManager {
+            if (hm.zonePercentages[5] ?? 0) > 20 {
+                needsWork.append("Too much time in Zone 5 - consider pacing more conservatively")
+            }
+            if (hm.zonePercentages[1] ?? 0) > 30 {
+                needsWork.append("30%+ in Zone 1 - could push harder on easy days")
+            }
+        }
+        
+        // Pace inconsistency
+        if intervals.count >= 2 {
+            let paces = intervals.map { $0.paceMinPerKm }
+            let maxPace = paces.max() ?? 0
+            let minPace = paces.min() ?? 0
+            let spread = (maxPace - minPace) * 60 // in seconds
+            if spread > 60 {
+                needsWork.append("Pace spread was \(Int(spread)) seconds - work on consistency")
+            }
+        }
+        
+        if needsWork.isEmpty {
+            needsWork.append("Solid run! Keep building on this foundation")
+        }
+        
+        return needsWork
+    }
+    
+    private func compareToRunHistory(actualPace: Double, actualDistance: Double, userId: String) async -> String {
+        let aggregates = await SupabaseManager().fetchRunAggregates(userId: userId)
+        
+        guard let agg = aggregates, agg.totalRuns > 1 else {
+            return "Building your run history - more data will enable better comparisons"
+        }
+        
+        let paceVsAvg = actualPace - agg.avgPaceMinPerKm
+        let distVsAvg = actualDistance - agg.avgDistanceKm
+        
+        var comparison = "Compared to your last \(agg.totalRuns) runs:\n"
+        
+        if abs(paceVsAvg) < 0.1 {
+            comparison += "  Pace: Consistent with average (\(formatPace(agg.avgPaceMinPerKm)))\n"
+        } else if paceVsAvg < 0 {
+            comparison += "  Pace: \(String(format: "%.0f", abs(paceVsAvg) * 60)) sec/km FASTER than average\n"
+        } else {
+            comparison += "  Pace: \(String(format: "%.0f", paceVsAvg * 60)) sec/km slower than average\n"
+        }
+        
+        if actualPace < agg.bestPaceMinPerKm {
+            comparison += "  🏆 NEW PERSONAL BEST PACE!\n"
+        }
+        
+        if abs(distVsAvg) < 0.5 {
+            comparison += "  Distance: Typical for you"
+        } else if distVsAvg > 0 {
+            comparison += "  Distance: \(String(format: "%.1f", distVsAvg)) km longer than average"
+        } else {
+            comparison += "  Distance: \(String(format: "%.1f", abs(distVsAvg))) km shorter than average"
+        }
+        
+        return comparison
+    }
+    
+    private func calculateOverallScore(
+        targetMet: Bool,
+        paceDeviation: Double,
+        intervals: [RunInterval],
+        healthManager: HealthManager?
+    ) -> (String, Int) {
+        var score = 70 // Base score
+        
+        // Target achievement (+/- 15)
+        if targetMet {
+            score += 15
+        } else if abs(paceDeviation) < 10 {
+            score += 5
+        } else {
+            score -= 10
+        }
+        
+        // Pace consistency (+/- 10)
+        if intervals.count >= 2 {
+            let paces = intervals.map { $0.paceMinPerKm }
+            let maxPace = paces.max() ?? 0
+            let minPace = paces.min() ?? 0
+            let spread = (maxPace - minPace) * 60
+            if spread < 30 {
+                score += 10
+            } else if spread > 60 {
+                score -= 10
+            }
+        }
+        
+        // Zone efficiency (+/- 10)
+        if let hm = healthManager {
+            let z2z3 = (hm.zonePercentages[2] ?? 0) + (hm.zonePercentages[3] ?? 0)
+            if z2z3 > 60 {
+                score += 10
+            } else if (hm.zonePercentages[5] ?? 0) > 25 {
+                score -= 10
+            }
+        }
+        
+        // Negative splits bonus (+5)
+        if intervals.count >= 3 {
+            let paces = intervals.map { $0.paceMinPerKm }
+            if let last = paces.last, let first = paces.first, last < first - 0.1 {
+                score += 5
+            }
+        }
+        
+        score = max(0, min(100, score))
+        
+        let rating: String
+        if score >= 90 {
+            rating = "Excellent"
+        } else if score >= 75 {
+            rating = "Good"
+        } else if score >= 60 {
+            rating = "Solid"
+        } else {
+            rating = "Needs work"
+        }
+        
+        return (rating, score)
+    }
+    
+    // MARK: - Main Analysis Function (Interval)
+    
+    /// Perform comprehensive RAG-driven performance analysis with AI-powered insights
+    /// This is the main entry point for interval coaching
+    /// Uses cached preferences/language/Mem0 from run start for efficiency
+    func analyzePerformance(
+        stats: RunningStatsUpdate,
+        preferences: UserPreferences.Settings,
+        healthManager: HealthManager?,
+        intervals: [RunInterval],
+        runStartTime: Date,
+        userId: String
+    ) async -> RAGAnalysisResult {
+        
+        // Use cached preferences if available (set at run start), otherwise use passed-in
+        let effectivePreferences = cachedPreferences ?? preferences
+        let effectiveUserId = cachedUserId ?? userId
+        
+        // 1. Build performance snapshot
+        let snapshot = buildPerformanceSnapshot(
+            stats: stats,
+            preferences: effectivePreferences,
+            healthManager: healthManager,
+            intervals: intervals,
+            runStartTime: runStartTime
+        )
+        
+        // 2. Query similar past runs via vector search (RAG) - dynamic per interval
+        let similarRuns = await querySimilarRuns(snapshot: snapshot, userId: effectiveUserId)
+        
+        // 3. Fetch fresh Mem0 insights at each interval (incremental updates during run)
+        // Note: Not cached because coaching feedback is stored to Mem0 after each interval
+        print("🔄 [RAG] Fetching fresh Mem0 insights (may include recent coaching feedback)")
+        let mem0Insights = await fetchMem0Insights(userId: effectiveUserId, snapshot: snapshot)
+        
+        // 4. Generate AI-powered comprehensive analysis
+        let analysis = await generateAIPoweredAnalysis(
+            snapshot: snapshot,
+            similarRuns: similarRuns,
+            mem0Insights: mem0Insights,
+            preferences: effectivePreferences
+        )
+        
+        return analysis
+    }
+    
+    // MARK: - Performance Snapshot Builder
+    
+    private func buildPerformanceSnapshot(
+        stats: RunningStatsUpdate,
+        preferences: UserPreferences.Settings,
+        healthManager: HealthManager?,
+        intervals: [RunInterval],
+        runStartTime: Date
+    ) -> PerformanceSnapshot {
+        
+        let elapsedTime = Date().timeIntervalSince(runStartTime)
+        let currentPace = stats.pace
+        let targetPace = preferences.targetPaceMinPerKm
+        
+        // Calculate pace deviation (positive = slower, negative = faster)
+        let paceDeviation = targetPace > 0 ? ((currentPace - targetPace) / targetPace) * 100 : 0
+        
+        // Estimate target distance based on typical run duration (30 min default)
+        let estimatedRunDuration: Double = 30 * 60 // 30 minutes in seconds
+        let targetDistance = (estimatedRunDuration / 60) / targetPace * 1000 // meters
+        
+        // Project finish time at current pace
+        let estimatedFinishTime = targetDistance > 0 ? (targetDistance / 1000) * currentPace * 60 : 0
+        
+        // Project distance at current pace for remaining estimated time
+        let remainingTime = max(0, estimatedRunDuration - elapsedTime)
+        let projectedAdditionalDistance = remainingTime > 0 && currentPace > 0 ? (remainingTime / 60) / currentPace * 1000 : 0
+        let projectedDistance = stats.distance + projectedAdditionalDistance
+        
+        // Build interval snapshots
+        let intervalSnapshots: [IntervalSnapshot] = intervals.map { interval in
+            IntervalSnapshot(
+                kilometer: interval.index,
+                pace: interval.paceMinPerKm,
+                duration: interval.durationSeconds,
+                avgHR: nil, // Would need HR data per interval
+                zone: nil
+            )
+        }
+        
+        // Calculate pace trend
+        let paceTrend = calculatePaceTrend(intervals: intervals)
+        
+        // Calculate HR trend
+        let hrTrend = calculateHRTrend(healthManager: healthManager)
+        
+        // Calculate fatigue level
+        let fatigueLevel = calculateFatigueLevel(
+            elapsedTime: elapsedTime,
+            paceTrend: paceTrend,
+            hrTrend: hrTrend,
+            healthManager: healthManager
+        )
+        
+        return PerformanceSnapshot(
+            currentPace: currentPace,
+            targetPace: targetPace,
+            currentDistance: stats.distance,
+            targetDistance: targetDistance,
+            elapsedTime: elapsedTime,
+            targetTime: estimatedRunDuration,
+            currentHR: healthManager?.currentHeartRate,
+            averageHR: healthManager?.averageHeartRate,
+            maxHR: healthManager?.maxHeartRate,
+            currentZone: healthManager?.currentZone,
+            zonePercentages: healthManager?.zonePercentages ?? [:],
+            zoneAveragePace: healthManager?.zoneAveragePace ?? [:],
+            completedIntervals: intervalSnapshots,
+            currentIntervalNumber: intervals.count + 1,
+            paceDeviation: paceDeviation,
+            estimatedFinishTime: estimatedFinishTime,
+            projectedDistance: projectedDistance,
+            pacetrend: paceTrend,
+            hrTrend: hrTrend,
+            fatigueLevel: fatigueLevel
+        )
+    }
+    
+    // MARK: - Trend Calculations
+    
+    private func calculatePaceTrend(intervals: [RunInterval]) -> PaceTrend {
+        guard intervals.count >= 2 else { return .stable }
+        
+        let paces = intervals.map { $0.paceMinPerKm }
+        
+        // Calculate pace changes between consecutive intervals
+        var changes: [Double] = []
+        for i in 1..<paces.count {
+            changes.append(paces[i] - paces[i-1])
+        }
+        
+        let avgChange = changes.reduce(0, +) / Double(changes.count)
+        let variance = changes.map { pow($0 - avgChange, 2) }.reduce(0, +) / Double(changes.count)
+        let stdDev = sqrt(variance)
+        
+        // High variance = erratic
+        if stdDev > 0.5 { // More than 30 sec/km variation
+            return .erratic
+        }
+        
+        // Consistent negative change = improving (getting faster)
+        if avgChange < -0.1 {
+            return .improving
+        }
+        
+        // Consistent positive change = declining (getting slower)
+        if avgChange > 0.1 {
+            return .declining
+        }
+        
+        return .stable
+    }
+    
+    private func calculateHRTrend(healthManager: HealthManager?) -> HRTrend {
+        guard let hm = healthManager,
+              let currentHR = hm.currentHeartRate,
+              let avgHR = hm.averageHeartRate else {
+            return .stable
+        }
+        
+        let hrDifference = currentHR - avgHR
+        
+        // Current HR significantly above average = rising (cardiac drift)
+        if hrDifference > 10 {
+            return .rising
+        }
+        
+        // Current HR significantly below average = recovering
+        if hrDifference < -10 {
+            return .recovering
+        }
+        
+        // Check for spikes (current HR > 90% of max)
+        if let maxHR = hm.maxHeartRate, currentHR > maxHR * 0.95 {
+            return .spiking
+        }
+        
+        return .stable
+    }
+    
+    private func calculateFatigueLevel(
+        elapsedTime: Double,
+        paceTrend: PaceTrend,
+        hrTrend: HRTrend,
+        healthManager: HealthManager?
+    ) -> FatigueLevel {
+        
+        var fatigueScore = 0
+        
+        // Time-based fatigue
+        if elapsedTime < 600 { // < 10 min
+            fatigueScore += 0
+        } else if elapsedTime < 1200 { // 10-20 min
+            fatigueScore += 1
+        } else if elapsedTime < 1800 { // 20-30 min
+            fatigueScore += 2
+        } else {
+            fatigueScore += 3
+        }
+        
+        // Pace trend fatigue
+        switch paceTrend {
+        case .improving: fatigueScore -= 1
+        case .stable: fatigueScore += 0
+        case .declining: fatigueScore += 2
+        case .erratic: fatigueScore += 1
+        }
+        
+        // HR trend fatigue
+        switch hrTrend {
+        case .stable: fatigueScore += 0
+        case .rising: fatigueScore += 2
+        case .spiking: fatigueScore += 3
+        case .recovering: fatigueScore -= 1
+        }
+        
+        // Zone-based fatigue
+        if let zone = healthManager?.currentZone {
+            if zone >= 4 {
+                fatigueScore += 2
+            } else if zone == 3 {
+                fatigueScore += 1
+            }
+        }
+        
+        // Map score to fatigue level
+        if fatigueScore <= 1 {
+            return .fresh
+        } else if fatigueScore <= 3 {
+            return .moderate
+        } else if fatigueScore <= 5 {
+            return .high
+        } else {
+            return .critical
+        }
+    }
+    
+    // MARK: - RAG: Vector Search for Similar Runs
+    
+    private func querySimilarRuns(snapshot: PerformanceSnapshot, userId: String) async -> [SimilarRunResult] {
+        // First, generate embedding for current run state
+        guard let embedding = await generateRunEmbedding(snapshot: snapshot) else {
+            print("⚠️ [RAG] Failed to generate embedding, using cached results")
+            return cachedSimilarRuns
+        }
+        
+        // Query Supabase run_performance table using pgvector
+        let similarRuns = await searchSimilarRuns(embedding: embedding, userId: userId)
+        
+        if !similarRuns.isEmpty {
+            cachedSimilarRuns = similarRuns
+            lastEmbeddingRefresh = Date()
+        }
+        
+        return similarRuns
+    }
+    
+    private func generateRunEmbedding(snapshot: PerformanceSnapshot) async -> [Double]? {
+        guard !openAIKey.isEmpty else { return nil }
+        
+        // Build a text description of the current run state for embedding
+        let runDescription = """
+        Running at \(String(format: "%.1f", snapshot.currentPace)) min/km pace, 
+        target \(String(format: "%.1f", snapshot.targetPace)) min/km. 
+        Distance \(String(format: "%.1f", snapshot.currentDistance / 1000)) km, 
+        elapsed \(Int(snapshot.elapsedTime / 60)) minutes. 
+        Heart rate zone \(snapshot.currentZone ?? 0), 
+        pace trend \(snapshot.pacetrend.rawValue), 
+        fatigue level \(snapshot.fatigueLevel.rawValue).
+        Zone distribution: Z1 \(String(format: "%.0f", snapshot.zonePercentages[1] ?? 0))%, 
+        Z2 \(String(format: "%.0f", snapshot.zonePercentages[2] ?? 0))%, 
+        Z3 \(String(format: "%.0f", snapshot.zonePercentages[3] ?? 0))%, 
+        Z4 \(String(format: "%.0f", snapshot.zonePercentages[4] ?? 0))%, 
+        Z5 \(String(format: "%.0f", snapshot.zonePercentages[5] ?? 0))%.
+        """
+        
+        do {
+            let url = URL(string: "https://api.openai.com/v1/embeddings")!
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(openAIKey)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            
+            let body: [String: Any] = [
+                "model": "text-embedding-3-small",
+                "input": runDescription
+            ]
+            
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            
+            let (data, response) = try await URLSession.shared.data(for: request)
+            
+            if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200,
+               let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let dataArray = json["data"] as? [[String: Any]],
+               let first = dataArray.first,
+               let embedding = first["embedding"] as? [Double] {
+                print("✅ [RAG] Generated embedding with \(embedding.count) dimensions")
+                return embedding
+            }
+        } catch {
+            print("❌ [RAG] Embedding generation failed: \(error.localizedDescription)")
+        }
+        
+        return nil
+    }
+    
+    private func searchSimilarRuns(embedding: [Double], userId: String) async -> [SimilarRunResult] {
+        guard !supabaseURL.isEmpty, !supabaseKey.isEmpty else { return [] }
+        
+        // Get auth token
+        let authToken = UserDefaults.standard.string(forKey: "sessionToken") ?? supabaseKey
+        
+        do {
+            // Use Supabase's RPC function for vector similarity search
+            // This assumes you have a function like: match_run_performance(query_embedding, match_threshold, match_count)
+            let url = URL(string: "\(supabaseURL)/rest/v1/rpc/match_run_performance")!
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue(supabaseKey, forHTTPHeaderField: "apikey")
+            request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            
+            let body: [String: Any] = [
+                "query_embedding": embedding,
+                "match_threshold": 0.7,
+                "match_count": 5,
+                "filter_user_id": userId
+            ]
+            
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            
+            let (data, response) = try await URLSession.shared.data(for: request)
+            
+            if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
+                let decoder = JSONDecoder()
+                if let results = try? decoder.decode([SimilarRunResult].self, from: data) {
+                    print("✅ [RAG] Found \(results.count) similar runs")
+                    return results
+                }
+            } else if let httpResponse = response as? HTTPURLResponse {
+                // If RPC doesn't exist, fall back to direct table query
+                print("⚠️ [RAG] RPC not available (status \(httpResponse.statusCode)), falling back to direct query")
+                return await fallbackSimilarRunsQuery(userId: userId)
+            }
+        } catch {
+            print("❌ [RAG] Similar runs search failed: \(error.localizedDescription)")
+        }
+        
+        return await fallbackSimilarRunsQuery(userId: userId)
+    }
+    
+    /// Fallback query when pgvector RPC is not available
+    private func fallbackSimilarRunsQuery(userId: String) async -> [SimilarRunResult] {
+        guard !supabaseURL.isEmpty else { return [] }
+        
+        let authToken = UserDefaults.standard.string(forKey: "sessionToken") ?? supabaseKey
+        
+        do {
+            // Query recent runs from run_activities as fallback
+            let url = URL(string: "\(supabaseURL)/rest/v1/run_activities?user_id=eq.\(userId)&select=id,distance_meters,average_pace_minutes_per_km,duration_s&order=start_time.desc&limit=5")!
+            var request = URLRequest(url: url)
+            request.setValue(supabaseKey, forHTTPHeaderField: "apikey")
+            request.setValue("Bearer \(authToken)", forHTTPHeaderField: "Authorization")
+            
+            let (data, response) = try await URLSession.shared.data(for: request)
+            
+            if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200,
+               let runs = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                return runs.compactMap { run -> SimilarRunResult? in
+                    guard let id = run["id"] as? String,
+                          let distance = run["distance_meters"] as? Double,
+                          let pace = run["average_pace_minutes_per_km"] as? Double,
+                          let duration = run["duration_s"] as? Double else { return nil }
+                    
+                    return SimilarRunResult(
+                        runId: id,
+                        distance: distance,
+                        pace: pace,
+                        duration: duration,
+                        similarity: 0.8, // Estimated similarity
+                        performanceSummary: "Recent run: \(String(format: "%.1f", distance/1000))km at \(formatPace(pace))",
+                        keyInsights: nil
+                    )
+                }
+            }
+        } catch {
+            print("❌ [RAG] Fallback query failed: \(error.localizedDescription)")
+        }
+        
+        return []
+    }
+    
+    // MARK: - Mem0 Insights Integration
+    
+    private func fetchMem0Insights(userId: String, snapshot: PerformanceSnapshot) async -> String {
+        var allInsights: [String] = []
+        
+        // Fetch performance-related insights
+        let perfInsights = await Mem0Manager.shared.search(
+            userId: userId,
+            query: "running performance, pacing patterns, fatigue moments, heart rate zones, interval performance",
+            category: "running_performance",
+            limit: 5
+        )
+        allInsights.append(contentsOf: perfInsights)
+        
+        // Fetch coaching feedback insights
+        let coachingInsights = await Mem0Manager.shared.search(
+            userId: userId,
+            query: "coaching feedback, what works, effective cues, breathing patterns, cadence",
+            category: "ai_coaching_feedback",
+            limit: 3
+        )
+        allInsights.append(contentsOf: coachingInsights)
+        
+        // Fetch injury/health insights
+        let healthInsights = await Mem0Manager.shared.search(
+            userId: userId,
+            query: "injury, pain, discomfort, form issues, biomechanics",
+            category: nil,
+            limit: 2
+        )
+        allInsights.append(contentsOf: healthInsights)
+        
+        // Fetch personal preferences and patterns
+        let personalInsights = await Mem0Manager.shared.search(
+            userId: userId,
+            query: "runner preferences, running style, strengths, weaknesses, goals",
+            category: nil,
+            limit: 3
+        )
+        allInsights.append(contentsOf: personalInsights)
+        
+        // Deduplicate and format
+        let uniqueInsights = Array(Set(allInsights))
+        return uniqueInsights.isEmpty ? "No historical insights available yet." : uniqueInsights.joined(separator: "\n- ")
+    }
+    
+    // MARK: - AI-Powered Comprehensive Analysis Generation
+    
+    private func generateAIPoweredAnalysis(
+        snapshot: PerformanceSnapshot,
+        similarRuns: [SimilarRunResult],
+        mem0Insights: String,
+        preferences: UserPreferences.Settings
+    ) async -> RAGAnalysisResult {
+        
+        // 1. Calculate target status (rule-based, fast)
+        let targetStatus = calculateTargetStatus(snapshot: snapshot)
+        
+        // 2. Build structured data for AI analysis
+        let analysisData = buildAnalysisData(
+            snapshot: snapshot,
+            similarRuns: similarRuns,
+            mem0Insights: mem0Insights,
+            targetStatus: targetStatus,
+            preferences: preferences
+        )
+        
+        // 3. Generate AI-powered insights using GPT-4o-mini
+        let aiAnalysis = await generateAIAnalysis(analysisData: analysisData)
+        
+        // 4. Combine rule-based and AI-generated insights
+        return RAGAnalysisResult(
+            targetStatus: targetStatus,
+            performanceAnalysis: aiAnalysis.performanceAnalysis,
+            heartZoneAnalysis: aiAnalysis.heartZoneAnalysis,
+            intervalTrends: aiAnalysis.intervalTrends,
+            hrVariationAnalysis: aiAnalysis.hrVariationAnalysis,
+            runningQualityAssessment: aiAnalysis.runningQualityAssessment,
+            injuryRiskSignals: aiAnalysis.injuryRiskSignals,
+            adaptiveMicrostrategy: aiAnalysis.adaptiveMicrostrategy,
+            similarRunsContext: aiAnalysis.similarRunsContext,
+            overallRecommendation: aiAnalysis.overallRecommendation
+        )
+    }
+    
+    // MARK: - Analysis Data Builder
+    
+    private struct AnalysisData {
+        let snapshot: PerformanceSnapshot
+        let similarRuns: [SimilarRunResult]
+        let mem0Insights: String
+        let targetStatus: TargetStatus
+        let preferences: UserPreferences.Settings
+    }
+    
+    private func buildAnalysisData(
+        snapshot: PerformanceSnapshot,
+        similarRuns: [SimilarRunResult],
+        mem0Insights: String,
+        targetStatus: TargetStatus,
+        preferences: UserPreferences.Settings
+    ) -> AnalysisData {
+        return AnalysisData(
+            snapshot: snapshot,
+            similarRuns: similarRuns,
+            mem0Insights: mem0Insights,
+            targetStatus: targetStatus,
+            preferences: preferences
+        )
+    }
+    
+    // MARK: - AI Analysis Generation (LLM Prompt)
+    
+    private func generateAIAnalysis(analysisData: AnalysisData) async -> RAGAnalysisResult {
+        guard !openAIKey.isEmpty else {
+            // Fallback to rule-based if no API key
+            return generateComprehensiveAnalysis(
+                snapshot: analysisData.snapshot,
+                similarRuns: analysisData.similarRuns,
+                preferences: analysisData.preferences
+            )
+        }
+        
+        let prompt = buildAIAnalysisPrompt(analysisData: analysisData)
+        
+        do {
+            let url = URL(string: "https://api.openai.com/v1/chat/completions")!
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(openAIKey)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            
+            let body: [String: Any] = [
+                "model": "gpt-4o-mini",
+                "messages": [
+                    [
+                        "role": "system",
+                        "content": """
+                        You are an elite running performance analyst with deep expertise in:
+                        - Biomechanics and running form
+                        - Heart rate zone training and cardiovascular efficiency
+                        - Pacing strategies and fatigue management
+                        - Injury prevention and risk assessment
+                        - Data-driven coaching insights
+                        
+                        Analyze the provided running performance data and generate comprehensive, actionable insights.
+                        Be specific, data-driven, and coach-like in your analysis.
+                        """
+                    ],
+                    [
+                        "role": "user",
+                        "content": prompt
+                    ]
+                ],
+                "temperature": 0.3, // Lower temperature for more consistent, analytical output
+                "max_tokens": 800 // Enough for comprehensive analysis
+            ]
+            
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            let (data, response) = try await URLSession.shared.data(for: request)
+            
+            if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200,
+               let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let choices = json["choices"] as? [[String: Any]],
+               let firstChoice = choices.first,
+               let message = firstChoice["message"] as? [String: Any],
+               let content = message["content"] as? String {
+                
+                return parseAIAnalysisResponse(content: content, analysisData: analysisData)
+            }
+        } catch {
+            print("❌ [RAG] AI analysis generation failed: \(error.localizedDescription)")
+        }
+        
+        // Fallback to rule-based
+        return generateComprehensiveAnalysis(
+            snapshot: analysisData.snapshot,
+            similarRuns: analysisData.similarRuns,
+            preferences: analysisData.preferences
+        )
+    }
+    
+    // MARK: - LLM Prompt Builder (REVIEWABLE)
+    
+    private func buildAIAnalysisPrompt(analysisData: AnalysisData) -> String {
+        let snapshot = analysisData.snapshot
+        let similarRuns = analysisData.similarRuns
+        let mem0Insights = analysisData.mem0Insights
+        let targetStatus = analysisData.targetStatus
+        let preferences = analysisData.preferences
+        
+        // Format workout HR and zone data comprehensively
+        let hrDataSection: String
+        if let currentHR = snapshot.currentHR,
+           let avgHR = snapshot.averageHR,
+           let maxHR = snapshot.maxHR,
+           let currentZone = snapshot.currentZone {
+            hrDataSection = """
+            HEART RATE & ZONE DATA (from Apple Workout):
+            - Current HR: \(Int(currentHR)) BPM (Zone \(currentZone))
+            - Average HR: \(Int(avgHR)) BPM
+            - Max HR: \(Int(maxHR)) BPM
+            - Current at \(String(format: "%.0f", (currentHR / maxHR) * 100))% of max HR
+            
+            ZONE DISTRIBUTION (time spent in each zone):
+            - Zone 1: \(String(format: "%.1f", snapshot.zonePercentages[1] ?? 0))%
+            - Zone 2: \(String(format: "%.1f", snapshot.zonePercentages[2] ?? 0))%
+            - Zone 3: \(String(format: "%.1f", snapshot.zonePercentages[3] ?? 0))%
+            - Zone 4: \(String(format: "%.1f", snapshot.zonePercentages[4] ?? 0))%
+            - Zone 5: \(String(format: "%.1f", snapshot.zonePercentages[5] ?? 0))%
+            
+            ZONE-PACE CORRELATION (average pace in each zone):
+            \(buildZonePaceCorrelation(snapshot: snapshot))
+            
+            HR TREND: \(snapshot.hrTrend.rawValue.uppercased())
+            """
+        } else {
+            hrDataSection = "Heart rate data not available from workout."
+        }
+        
+        // Format interval data
+        let intervalDataSection: String
+        if !snapshot.completedIntervals.isEmpty {
+            intervalDataSection = """
+            INTERVAL DATA:
+            \(snapshot.completedIntervals.map { interval in
+                "Km \(interval.kilometer): \(formatPace(interval.pace)) min/km, \(Int(interval.duration))s"
+            }.joined(separator: "\n"))
+            
+            PACE TREND: \(snapshot.pacetrend.rawValue.uppercased())
+            """
+        } else {
+            intervalDataSection = "No completed intervals yet."
+        }
+        
+        // Format similar runs
+        let similarRunsSection: String
+        if !similarRuns.isEmpty {
+            similarRunsSection = """
+            SIMILAR PAST RUNS (from vector search):
+            \(similarRuns.enumerated().map { index, run in
+                "\(index + 1). \(String(format: "%.1f", run.distance / 1000))km at \(formatPace(run.pace)) min/km (similarity: \(String(format: "%.0f", run.similarity * 100))%)"
+            }.joined(separator: "\n"))
+            """
+        } else {
+            similarRunsSection = "No similar past runs found."
+        }
+        
+        // Calculate race progress
+        let targetDistanceKm = preferences.targetDistanceKm
+        let currentDistanceKm = snapshot.currentDistance / 1000
+        let progressPercent = targetDistanceKm > 0 ? (currentDistanceKm / targetDistanceKm) * 100 : 0
+        let remainingKm = max(0, targetDistanceKm - currentDistanceKm)
+        
+        // Estimate finish time at current pace
+        let estimatedFinishTimeSeconds = remainingKm * snapshot.currentPace * 60
+        let estimatedFinishTimeFormatted = formatDuration(estimatedFinishTimeSeconds)
+        
+        // Build user preferences section
+        let userPreferencesSection = """
+        USER PREFERENCES & COACHING STYLE:
+        - Language: \(preferences.language.displayName) (\(preferences.language.localeCode))
+        - Voice AI Model: \(preferences.voiceAIModel.displayName)
+        - Coach Personality: \(preferences.coachPersonality.rawValue.uppercased())
+        - Coach Energy Level: \(preferences.coachEnergy.rawValue.uppercased())
+        - Target Pace: \(formatPace(preferences.targetPaceMinPerKm)) min/km
+        - Feedback Frequency: Every \(preferences.feedbackFrequency) km
+        
+        RACE/TARGET DISTANCE:
+        - Race Type: \(preferences.targetDistance.displayName)
+        - Target Distance: \(String(format: "%.1f", targetDistanceKm)) km
+        - Current Progress: \(String(format: "%.1f", currentDistanceKm)) km (\(String(format: "%.0f", progressPercent))% complete)
+        - Remaining: \(String(format: "%.1f", remainingKm)) km
+        - Est. Time to Finish: \(estimatedFinishTimeFormatted) (at current pace)
+        
+        RACE-SPECIFIC PACING STRATEGY:
+        \(preferences.targetDistance.pacingStrategy)
+        """
+        
+        // Personality-specific coaching instructions
+        let personalityInstructions: String
+        switch preferences.coachPersonality {
+        case .strategist:
+            personalityInstructions = """
+            COACHING STYLE (STRATEGIST):
+            - Focus on race strategy and energy management
+            - Give tactical advice: "conserve now, push later"
+            - Segment planning: "next 500m steady, then assess"
+            - Data-driven pacing decisions
+            """
+        case .pacer:
+            personalityInstructions = """
+            COACHING STYLE (PACER):
+            - Focus on form and biomechanics
+            - Breathing patterns, cadence cues (180 steps/min)
+            - Stride efficiency, posture checks
+            - Technical coaching over motivation
+            """
+        case .finisher:
+            personalityInstructions = """
+            COACHING STYLE (FINISHER):
+            - Focus on mental strength and motivation
+            - "Dig deep", "You've got this!" energy
+            - Celebrate milestones and progress
+            - Push through fatigue with encouragement
+            """
+        }
+        
+        // Energy level instructions
+        let energyInstructions: String
+        switch preferences.coachEnergy {
+        case .low:
+            energyInstructions = "ENERGY: Calm, meditative, minimal words. Supportive but quiet."
+        case .medium:
+            energyInstructions = "ENERGY: Balanced, positive, professional coach vibe."
+        case .high:
+            energyInstructions = "ENERGY: HIGH! Punchy, motivating, short bursts of power!"
+        }
+        
+        // Language instructions
+        let languageInstructions: String
+        if preferences.language != .english {
+            languageInstructions = """
+            
+            ⚠️ CRITICAL LANGUAGE REQUIREMENT:
+            Generate ALL coaching output in \(preferences.language.displayName).
+            The runner prefers \(preferences.language.displayName) language.
+            Adapt coaching cues and terminology to be natural in \(preferences.language.displayName).
+            """
+        } else {
+            languageInstructions = ""
+        }
+        
+        return """
+        ============================================================================
+        RUNNING PERFORMANCE ANALYSIS REQUEST
+        ============================================================================
+        
+        \(userPreferencesSection)
+        
+        \(personalityInstructions)
+        
+        \(energyInstructions)
+        \(languageInstructions)
+        
+        ============================================================================
+        
+        CURRENT RUN STATE:
+        - Distance: \(String(format: "%.2f", snapshot.currentDistance / 1000)) km
+        - Elapsed time: \(Int(snapshot.elapsedTime / 60)) minutes
+        - Current pace: \(formatPace(snapshot.currentPace)) min/km
+        - Target pace: \(formatPace(snapshot.targetPace)) min/km
+        - Pace deviation: \(String(format: "%.1f", snapshot.paceDeviation))% (\(snapshot.paceDeviation > 0 ? "slower" : "faster") than target)
+        - Target status: \(targetStatus.description)
+        
+        \(hrDataSection)
+        
+        \(intervalDataSection)
+        
+        FATIGUE LEVEL: \(snapshot.fatigueLevel.rawValue.uppercased())
+        
+        \(similarRunsSection)
+        
+        MEM0 PERSONALIZED INSIGHTS:
+        \(mem0Insights)
+        
+        ============================================================================
+        ANALYSIS TASKS
+        ============================================================================
+        
+        Generate a comprehensive performance analysis with the following sections:
+        
+        1. PERFORMANCE ANALYSIS:
+           - Assess current pace vs target with specific numbers
+           - Analyze pace trend (improving/stable/declining/erratic)
+           - Calculate if runner is on track, behind, or ahead
+           - Reference interval data to show progression
+        
+        2. HEART ZONE ANALYSIS:
+           - Analyze zone distribution - is it optimal for the target pace?
+           - Assess zone-pace correlation - are they running efficiently?
+           - Evaluate HR trend (stable/rising/spiking/recovering)
+           - Identify if runner has HR headroom or is maxed out
+           - Provide zone-specific guidance based on current state
+        
+        3. INTERVAL TRENDS:
+           - Analyze pace progression across completed intervals
+           - Identify consistency or variability
+           - Detect patterns (negative splits, positive splits, erratic)
+           - Compare to similar past runs if available
+        
+        4. HR VARIATION ANALYSIS:
+           - Assess HR stability vs cardiac drift
+           - Analyze relationship between HR and pace
+           - Identify if HR is appropriate for current effort
+           - Detect any concerning HR patterns
+        
+        5. RUNNING QUALITY ASSESSMENT:
+           - Rate overall running quality (0-100 score)
+           - Assess biomechanical efficiency signals
+           - Evaluate form indicators (pace consistency, HR efficiency)
+           - Consider zone distribution and pacing strategy
+        
+        6. INJURY RISK SIGNALS:
+           - Detect unusual patterns that may indicate strain
+           - Look for signs of overexertion (pace declining + HR rising)
+           - Identify form breakdown indicators
+           - Flag prolonged high-intensity zones
+           - Reference Mem0 insights about past injuries if relevant
+        
+        7. ADAPTIVE MICROSTRATEGY:
+           - Generate specific tactical plan for next 500m-1km
+           - Be specific: exact pace adjustments, zone targets, form cues
+           - Consider target status (on-track/behind/ahead)
+           - Incorporate Mem0 insights about what works for this runner
+           - Provide actionable, immediate coaching cues
+        
+        8. SIMILAR RUNS CONTEXT:
+           - Compare current performance to similar past runs
+           - Identify if runner is performing better/worse than typical
+           - Extract insights from past successful runs
+           - Note patterns from historical data
+        
+        9. OVERALL RECOMMENDATION:
+           - Prioritize safety first (injury risks)
+           - Then address target achievement
+           - Provide clear, actionable next steps
+           - Be coach-like: specific, encouraging, data-driven
+        
+        ============================================================================
+        OUTPUT FORMAT
+        ============================================================================
+        
+        Return your analysis as a JSON object with these exact keys:
+        {
+            "performanceAnalysis": "...",
+            "heartZoneAnalysis": "...",
+            "intervalTrends": "...",
+            "hrVariationAnalysis": "...",
+            "runningQualityAssessment": "...",
+            "injuryRiskSignals": ["...", "..."],
+            "adaptiveMicrostrategy": "...",
+            "similarRunsContext": "...",
+            "overallRecommendation": "..."
+        }
+        
+        Be specific, use actual numbers, reference the data provided.
+        Write like an elite coach analyzing their athlete's performance.
+        """
+    }
+    
+    private func buildZonePaceCorrelation(snapshot: PerformanceSnapshot) -> String {
+        var correlations: [String] = []
+        for zone in 1...5 {
+            if let pace = snapshot.zoneAveragePace[zone], pace > 0 {
+                correlations.append("  - Zone \(zone): \(formatPace(pace)) min/km")
+            }
+        }
+        return correlations.isEmpty ? "  No zone-pace data yet" : correlations.joined(separator: "\n")
+    }
+    
+    // MARK: - AI Response Parser
+    
+    private func parseAIAnalysisResponse(content: String, analysisData: AnalysisData) -> RAGAnalysisResult {
+        // Try to parse JSON response
+        if let jsonData = content.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+            
+            let performanceAnalysis = json["performanceAnalysis"] as? String ?? "Analysis unavailable"
+            let heartZoneAnalysis = json["heartZoneAnalysis"] as? String ?? "Analysis unavailable"
+            let intervalTrends = json["intervalTrends"] as? String ?? "Analysis unavailable"
+            let hrVariationAnalysis = json["hrVariationAnalysis"] as? String ?? "Analysis unavailable"
+            let runningQualityAssessment = json["runningQualityAssessment"] as? String ?? "Analysis unavailable"
+            let injuryRiskSignals = json["injuryRiskSignals"] as? [String] ?? []
+            let adaptiveMicrostrategy = json["adaptiveMicrostrategy"] as? String ?? "Strategy unavailable"
+            let similarRunsContext = json["similarRunsContext"] as? String ?? "Context unavailable"
+            let overallRecommendation = json["overallRecommendation"] as? String ?? "Recommendation unavailable"
+            
+            return RAGAnalysisResult(
+                targetStatus: analysisData.targetStatus,
+                performanceAnalysis: performanceAnalysis,
+                heartZoneAnalysis: heartZoneAnalysis,
+                intervalTrends: intervalTrends,
+                hrVariationAnalysis: hrVariationAnalysis,
+                runningQualityAssessment: runningQualityAssessment,
+                injuryRiskSignals: injuryRiskSignals,
+                adaptiveMicrostrategy: adaptiveMicrostrategy,
+                similarRunsContext: similarRunsContext,
+                overallRecommendation: overallRecommendation
+            )
+        }
+        
+        // Fallback: try to extract sections from plain text
+        return parsePlainTextAnalysis(content: content, analysisData: analysisData)
+    }
+    
+    private func parsePlainTextAnalysis(content: String, analysisData: AnalysisData) -> RAGAnalysisResult {
+        // Simple fallback parser for non-JSON responses
+        let lines = content.components(separatedBy: .newlines)
+        var sections: [String: String] = [:]
+        var currentSection: String?
+        var currentContent: [String] = []
+        
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+            
+            // Check if this is a section header
+            if trimmed.uppercased().contains("PERFORMANCE ANALYSIS") {
+                if let section = currentSection {
+                    sections[section] = currentContent.joined(separator: "\n")
+                }
+                currentSection = "performanceAnalysis"
+                currentContent = []
+            } else if trimmed.uppercased().contains("HEART ZONE") {
+                if let section = currentSection {
+                    sections[section] = currentContent.joined(separator: "\n")
+                }
+                currentSection = "heartZoneAnalysis"
+                currentContent = []
+            } else if trimmed.uppercased().contains("INTERVAL") {
+                if let section = currentSection {
+                    sections[section] = currentContent.joined(separator: "\n")
+                }
+                currentSection = "intervalTrends"
+                currentContent = []
+            } else if trimmed.uppercased().contains("HR VARIATION") || trimmed.uppercased().contains("HEART RATE") {
+                if let section = currentSection {
+                    sections[section] = currentContent.joined(separator: "\n")
+                }
+                currentSection = "hrVariationAnalysis"
+                currentContent = []
+            } else if trimmed.uppercased().contains("QUALITY") {
+                if let section = currentSection {
+                    sections[section] = currentContent.joined(separator: "\n")
+                }
+                currentSection = "runningQualityAssessment"
+                currentContent = []
+            } else if trimmed.uppercased().contains("INJURY") {
+                if let section = currentSection {
+                    sections[section] = currentContent.joined(separator: "\n")
+                }
+                currentSection = "injuryRiskSignals"
+                currentContent = []
+            } else if trimmed.uppercased().contains("MICROSTRATEGY") || trimmed.uppercased().contains("STRATEGY") {
+                if let section = currentSection {
+                    sections[section] = currentContent.joined(separator: "\n")
+                }
+                currentSection = "adaptiveMicrostrategy"
+                currentContent = []
+            } else if trimmed.uppercased().contains("SIMILAR RUNS") {
+                if let section = currentSection {
+                    sections[section] = currentContent.joined(separator: "\n")
+                }
+                currentSection = "similarRunsContext"
+                currentContent = []
+            } else if trimmed.uppercased().contains("RECOMMENDATION") || trimmed.uppercased().contains("OVERALL") {
+                if let section = currentSection {
+                    sections[section] = currentContent.joined(separator: "\n")
+                }
+                currentSection = "overallRecommendation"
+                currentContent = []
+            } else if let section = currentSection {
+                currentContent.append(trimmed)
+            }
+        }
+        
+        // Save last section
+        if let section = currentSection {
+            sections[section] = currentContent.joined(separator: "\n")
+        }
+        
+        // Extract injury signals
+        let injurySignals = sections["injuryRiskSignals"]?.components(separatedBy: ";") ?? []
+        
+        return RAGAnalysisResult(
+            targetStatus: analysisData.targetStatus,
+            performanceAnalysis: sections["performanceAnalysis"] ?? "Analysis unavailable",
+            heartZoneAnalysis: sections["heartZoneAnalysis"] ?? "Analysis unavailable",
+            intervalTrends: sections["intervalTrends"] ?? "Analysis unavailable",
+            hrVariationAnalysis: sections["hrVariationAnalysis"] ?? "Analysis unavailable",
+            runningQualityAssessment: sections["runningQualityAssessment"] ?? "Analysis unavailable",
+            injuryRiskSignals: injurySignals.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty },
+            adaptiveMicrostrategy: sections["adaptiveMicrostrategy"] ?? "Strategy unavailable",
+            similarRunsContext: sections["similarRunsContext"] ?? "Context unavailable",
+            overallRecommendation: sections["overallRecommendation"] ?? "Recommendation unavailable"
+        )
+    }
+    
+    // MARK: - Comprehensive Analysis Generation (Fallback)
+    
+    private func generateComprehensiveAnalysis(
+        snapshot: PerformanceSnapshot,
+        similarRuns: [SimilarRunResult],
+        preferences: UserPreferences.Settings
+    ) -> RAGAnalysisResult {
+        
+        // 1. Target Status
+        let targetStatus = calculateTargetStatus(snapshot: snapshot)
+        
+        // 2. Performance Analysis
+        let performanceAnalysis = buildPerformanceAnalysis(snapshot: snapshot)
+        
+        // 3. Heart Zone Analysis
+        let heartZoneAnalysis = buildHeartZoneAnalysis(snapshot: snapshot)
+        
+        // 4. Interval Trends
+        let intervalTrends = buildIntervalTrendsAnalysis(snapshot: snapshot)
+        
+        // 5. HR Variation Analysis
+        let hrVariationAnalysis = buildHRVariationAnalysis(snapshot: snapshot)
+        
+        // 6. Running Quality Assessment
+        let runningQualityAssessment = buildRunningQualityAssessment(snapshot: snapshot)
+        
+        // 7. Injury Risk Signals
+        let injuryRiskSignals = detectInjuryRiskSignals(snapshot: snapshot)
+        
+        // 8. Adaptive Microstrategy
+        let adaptiveMicrostrategy = generateAdaptiveMicrostrategy(
+            snapshot: snapshot,
+            targetStatus: targetStatus
+        )
+        
+        // 9. Similar Runs Context (RAG)
+        let similarRunsContext = buildSimilarRunsContext(similarRuns: similarRuns, snapshot: snapshot)
+        
+        // 10. Overall Recommendation
+        let overallRecommendation = generateOverallRecommendation(
+            snapshot: snapshot,
+            targetStatus: targetStatus,
+            injuryRiskSignals: injuryRiskSignals
+        )
+        
+        return RAGAnalysisResult(
+            targetStatus: targetStatus,
+            performanceAnalysis: performanceAnalysis,
+            heartZoneAnalysis: heartZoneAnalysis,
+            intervalTrends: intervalTrends,
+            hrVariationAnalysis: hrVariationAnalysis,
+            runningQualityAssessment: runningQualityAssessment,
+            injuryRiskSignals: injuryRiskSignals,
+            adaptiveMicrostrategy: adaptiveMicrostrategy,
+            similarRunsContext: similarRunsContext,
+            overallRecommendation: overallRecommendation
+        )
+    }
+    
+    // MARK: - Analysis Components
+    
+    private func calculateTargetStatus(snapshot: PerformanceSnapshot) -> TargetStatus {
+        let deviation = snapshot.paceDeviation
+        
+        if abs(deviation) <= 5 {
+            return .onTrack(deviation: deviation)
+        } else if deviation > 15 {
+            return .wayBehind(deviation: deviation)
+        } else if deviation > 5 {
+            return .slightlyBehind(deviation: deviation)
+        } else if deviation < -15 {
+            return .wayAhead(deviation: abs(deviation))
+        } else {
+            return .slightlyAhead(deviation: abs(deviation))
+        }
+    }
+    
+    private func buildPerformanceAnalysis(snapshot: PerformanceSnapshot) -> String {
+        let currentPaceStr = formatPace(snapshot.currentPace)
+        let targetPaceStr = formatPace(snapshot.targetPace)
+        let distanceKm = snapshot.currentDistance / 1000
+        let elapsedMin = Int(snapshot.elapsedTime / 60)
+        
+        var analysis = "Current: \(currentPaceStr) min/km | Target: \(targetPaceStr) min/km\n"
+        analysis += "Distance: \(String(format: "%.2f", distanceKm)) km | Time: \(elapsedMin) min\n"
+        analysis += "Pace deviation: \(String(format: "%.1f", snapshot.paceDeviation))%\n"
+        analysis += "Pace trend: \(snapshot.pacetrend.rawValue.uppercased())"
+        
+        return analysis
+    }
+    
+    private func buildHeartZoneAnalysis(snapshot: PerformanceSnapshot) -> String {
+        guard let currentZone = snapshot.currentZone else {
+            return "Heart rate data not available"
+        }
+        
+        var analysis = "Current zone: Z\(currentZone)"
+        
+        if let currentHR = snapshot.currentHR {
+            analysis += " (\(Int(currentHR)) BPM)"
+        }
+        
+        analysis += "\nZone distribution: "
+        let zoneStrs = (1...5).compactMap { zone -> String? in
+            guard let pct = snapshot.zonePercentages[zone], pct > 0 else { return nil }
+            return "Z\(zone): \(String(format: "%.0f", pct))%"
+        }
+        analysis += zoneStrs.joined(separator: ", ")
+        
+        // Zone-pace correlation
+        let zonePaceStrs = (1...5).compactMap { zone -> String? in
+            guard let pace = snapshot.zoneAveragePace[zone], pace > 0 else { return nil }
+            return "Z\(zone): \(formatPace(pace))"
+        }
+        if !zonePaceStrs.isEmpty {
+            analysis += "\nZone-pace: " + zonePaceStrs.joined(separator: ", ")
+        }
+        
+        return analysis
+    }
+    
+    private func buildIntervalTrendsAnalysis(snapshot: PerformanceSnapshot) -> String {
+        guard !snapshot.completedIntervals.isEmpty else {
+            return "No completed intervals yet"
+        }
+        
+        var analysis = "Intervals completed: \(snapshot.completedIntervals.count)\n"
+        
+        // Show last 3 intervals
+        let recentIntervals = snapshot.completedIntervals.suffix(3)
+        let intervalStrs = recentIntervals.map { interval in
+            "Km \(interval.kilometer): \(formatPace(interval.pace))"
+        }
+        analysis += "Recent: " + intervalStrs.joined(separator: " → ")
+        
+        // Trend analysis
+        analysis += "\nTrend: \(snapshot.pacetrend.rawValue.uppercased())"
+        
+        // Calculate consistency
+        if snapshot.completedIntervals.count >= 2 {
+            let paces = snapshot.completedIntervals.map { $0.pace }
+            let avgPace = paces.reduce(0, +) / Double(paces.count)
+            let variance = paces.map { pow($0 - avgPace, 2) }.reduce(0, +) / Double(paces.count)
+            let stdDev = sqrt(variance)
+            
+            if stdDev < 0.2 {
+                analysis += " (VERY CONSISTENT)"
+            } else if stdDev < 0.4 {
+                analysis += " (CONSISTENT)"
+            } else {
+                analysis += " (VARIABLE)"
+            }
+        }
+        
+        return analysis
+    }
+    
+    private func buildHRVariationAnalysis(snapshot: PerformanceSnapshot) -> String {
+        guard let currentHR = snapshot.currentHR else {
+            return "HR data not available"
+        }
+        
+        var analysis = "Current HR: \(Int(currentHR)) BPM"
+        
+        if let avgHR = snapshot.averageHR {
+            let diff = currentHR - avgHR
+            analysis += " | Avg: \(Int(avgHR)) BPM"
+            analysis += " | Diff: \(diff > 0 ? "+" : "")\(Int(diff))"
+        }
+        
+        if let maxHR = snapshot.maxHR {
+            analysis += "\nMax HR: \(Int(maxHR)) BPM"
+            let pctOfMax = (currentHR / maxHR) * 100
+            analysis += " | Current at \(String(format: "%.0f", pctOfMax))% of max"
+        }
+        
+        analysis += "\nHR trend: \(snapshot.hrTrend.rawValue.uppercased())"
+        
+        return analysis
+    }
+    
+    private func buildRunningQualityAssessment(snapshot: PerformanceSnapshot) -> String {
+        var qualityScore = 100
+        var assessments: [String] = []
+        
+        // Pace consistency
+        switch snapshot.pacetrend {
+        case .stable:
+            assessments.append("✓ Pace consistency: EXCELLENT")
+        case .improving:
+            assessments.append("✓ Pace consistency: GOOD (negative splits)")
+            qualityScore += 5
+        case .declining:
+            assessments.append("⚠ Pace consistency: DECLINING")
+            qualityScore -= 15
+        case .erratic:
+            assessments.append("⚠ Pace consistency: ERRATIC")
+            qualityScore -= 20
+        }
+        
+        // HR efficiency
+        switch snapshot.hrTrend {
+        case .stable:
+            assessments.append("✓ HR efficiency: STABLE")
+        case .rising:
+            assessments.append("⚠ HR efficiency: CARDIAC DRIFT detected")
+            qualityScore -= 10
+        case .spiking:
+            assessments.append("⚠ HR efficiency: SPIKES detected")
+            qualityScore -= 15
+        case .recovering:
+            assessments.append("✓ HR efficiency: RECOVERING well")
+            qualityScore += 5
+        }
+        
+        // Fatigue
+        switch snapshot.fatigueLevel {
+        case .fresh:
+            assessments.append("✓ Fatigue: LOW")
+        case .moderate:
+            assessments.append("• Fatigue: MODERATE")
+        case .high:
+            assessments.append("⚠ Fatigue: HIGH")
+            qualityScore -= 10
+        case .critical:
+            assessments.append("⚠ Fatigue: CRITICAL")
+            qualityScore -= 20
+        }
+        
+        // Zone efficiency (% in target zone 2-3 for endurance)
+        let z2z3Pct = (snapshot.zonePercentages[2] ?? 0) + (snapshot.zonePercentages[3] ?? 0)
+        if z2z3Pct > 60 {
+            assessments.append("✓ Zone efficiency: OPTIMAL (\(String(format: "%.0f", z2z3Pct))% in Z2-Z3)")
+        } else if z2z3Pct > 40 {
+            assessments.append("• Zone efficiency: ACCEPTABLE")
+        } else {
+            assessments.append("⚠ Zone efficiency: SUBOPTIMAL (too much Z4-Z5)")
+            qualityScore -= 10
+        }
+        
+        qualityScore = max(0, min(100, qualityScore))
+        
+        return "Quality Score: \(qualityScore)/100\n" + assessments.joined(separator: "\n")
+    }
+    
+    private func detectInjuryRiskSignals(snapshot: PerformanceSnapshot) -> [String] {
+        var signals: [String] = []
+        
+        // 1. Sudden pace degradation with high HR
+        if snapshot.pacetrend == .declining && snapshot.hrTrend == .rising {
+            signals.append("Pace declining while HR rising - possible overexertion or strain")
+        }
+        
+        // 2. Erratic pace with high fatigue
+        if snapshot.pacetrend == .erratic && snapshot.fatigueLevel == .high {
+            signals.append("Erratic pace with high fatigue - form may be breaking down")
+        }
+        
+        // 3. Prolonged time in Zone 5
+        if let z5Pct = snapshot.zonePercentages[5], z5Pct > 20 {
+            signals.append("Extended time in Zone 5 (\(String(format: "%.0f", z5Pct))%) - high strain")
+        }
+        
+        // 4. HR spiking
+        if snapshot.hrTrend == .spiking {
+            signals.append("HR spiking - may indicate dehydration or overheating")
+        }
+        
+        // 5. Critical fatigue
+        if snapshot.fatigueLevel == .critical {
+            signals.append("Critical fatigue level - consider reducing intensity")
+        }
+        
+        // 6. Way behind target with high effort
+        if case .wayBehind = calculateTargetStatus(snapshot: snapshot) {
+            if let zone = snapshot.currentZone, zone >= 4 {
+                signals.append("Pace behind target despite high effort - possible biomechanical issue")
+            }
+        }
+        
+        return signals
+    }
+    
+    private func generateAdaptiveMicrostrategy(
+        snapshot: PerformanceSnapshot,
+        targetStatus: TargetStatus
+    ) -> String {
+        
+        // Generate next 500m-1km tactical plan
+        var strategy: String
+        
+        switch targetStatus {
+        case .onTrack:
+            strategy = "MAINTAIN: Hold current effort. Focus on breathing rhythm and form."
+            if snapshot.fatigueLevel == .moderate || snapshot.fatigueLevel == .high {
+                strategy += " Consider a slight ease in the next 500m to bank energy."
+            }
+            
+        case .slightlyBehind(let deviation):
+            let secondsToMakeUp = (deviation / 100) * snapshot.targetPace * 60
+            strategy = "ADJUST: Increase pace by \(String(format: "%.0f", secondsToMakeUp)) sec/km. "
+            if snapshot.currentZone ?? 0 <= 3 {
+                strategy += "You have HR headroom - push to Zone 3-4 for next km."
+            } else {
+                strategy += "HR already elevated - focus on form efficiency instead of raw speed."
+            }
+            
+        case .wayBehind(let deviation):
+            strategy = "URGENT RECOVERY: You're \(String(format: "%.0f", deviation))% off target. "
+            if snapshot.fatigueLevel == .high || snapshot.fatigueLevel == .critical {
+                strategy += "Accept current pace, focus on completion. Recalibrate target for next run."
+            } else {
+                strategy += "Run-walk strategy: 2 min hard, 30 sec easy for next km to recover pace."
+            }
+            
+        case .slightlyAhead(let deviation):
+            strategy = "BANK TIME: You're \(String(format: "%.0f", deviation))% ahead. "
+            if snapshot.currentZone ?? 0 >= 4 {
+                strategy += "Ease to Zone 3 to conserve energy for final push."
+            } else {
+                strategy += "Maintain - you're running efficiently. Save energy for strong finish."
+            }
+            
+        case .wayAhead(let deviation):
+            strategy = "CONSERVE: You're \(String(format: "%.0f", deviation))% ahead - excellent! "
+            strategy += "Ease to Zone 2-3 and focus on enjoying the run. You've already exceeded target."
+        }
+        
+        // Add interval-specific advice
+        if snapshot.currentIntervalNumber > 1 {
+            strategy += "\n[Km \(snapshot.currentIntervalNumber) focus: "
+            switch snapshot.pacetrend {
+            case .improving:
+                strategy += "Maintain negative split momentum]"
+            case .stable:
+                strategy += "Keep this consistency]"
+            case .declining:
+                strategy += "Arrest the slowdown - quick cadence check]"
+            case .erratic:
+                strategy += "Find your rhythm - steady breathing]"
+            }
+        }
+        
+        return strategy
+    }
+    
+    private func buildSimilarRunsContext(similarRuns: [SimilarRunResult], snapshot: PerformanceSnapshot) -> String {
+        guard !similarRuns.isEmpty else {
+            return "No similar past runs found in history. Building baseline data."
+        }
+        
+        var context = "Found \(similarRuns.count) similar runs:\n"
+        
+        for (index, run) in similarRuns.prefix(3).enumerated() {
+            let distKm = run.distance / 1000
+            let paceStr = formatPace(run.pace)
+            context += "\(index + 1). \(String(format: "%.1f", distKm))km at \(paceStr)"
+            if let similarity = Optional(run.similarity), similarity > 0 {
+                context += " (match: \(String(format: "%.0f", similarity * 100))%)"
+            }
+            context += "\n"
+        }
+        
+        // Compare current run to similar runs
+        let avgSimilarPace = similarRuns.map { $0.pace }.reduce(0, +) / Double(similarRuns.count)
+        let paceVsSimilar = snapshot.currentPace - avgSimilarPace
+        
+        if abs(paceVsSimilar) < 0.2 {
+            context += "→ Current pace matches your typical performance"
+        } else if paceVsSimilar > 0 {
+            context += "→ Running slower than similar past runs by \(formatPace(paceVsSimilar))"
+        } else {
+            context += "→ Running faster than similar past runs by \(formatPace(abs(paceVsSimilar)))"
+        }
+        
+        return context
+    }
+    
+    private func generateOverallRecommendation(
+        snapshot: PerformanceSnapshot,
+        targetStatus: TargetStatus,
+        injuryRiskSignals: [String]
+    ) -> String {
+        
+        // Priority 1: Safety
+        if !injuryRiskSignals.isEmpty {
+            return "⚠️ SAFETY FIRST: \(injuryRiskSignals.first!) - Consider easing intensity."
+        }
+        
+        // Priority 2: Critical fatigue
+        if snapshot.fatigueLevel == .critical {
+            return "🛑 HIGH FATIGUE: Reduce intensity or consider stopping. Recovery is important."
+        }
+        
+        // Priority 3: Target-based recommendation
+        switch targetStatus {
+        case .onTrack:
+            return "✅ ON TRACK: Keep this up! You're running well. " + targetStatus.coachingUrgency
+        case .slightlyBehind:
+            return "📈 PUSH SLIGHTLY: " + targetStatus.coachingUrgency
+        case .wayBehind:
+            return "🔄 RECALIBRATE: " + targetStatus.coachingUrgency
+        case .slightlyAhead:
+            return "💪 STRONG RUN: " + targetStatus.coachingUrgency
+        case .wayAhead:
+            return "🌟 EXCELLENT: " + targetStatus.coachingUrgency
+        }
+    }
+    
+    // MARK: - Helpers
+    
+    private func formatPace(_ paceMinutesPerKm: Double) -> String {
+        let minutes = Int(paceMinutesPerKm)
+        let seconds = Int((paceMinutesPerKm - Double(minutes)) * 60)
+        return String(format: "%d:%02d", minutes, seconds)
+    }
+    
+    private func formatDuration(_ seconds: Double) -> String {
+        let totalSeconds = Int(seconds)
+        let hours = totalSeconds / 3600
+        let mins = (totalSeconds % 3600) / 60
+        let secs = totalSeconds % 60
+        
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, mins, secs)
+        }
+        return String(format: "%d:%02d", mins, secs)
+    }
+}
+

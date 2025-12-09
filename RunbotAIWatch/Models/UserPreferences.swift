@@ -19,6 +19,21 @@ final class UserPreferences: ObservableObject {
         var targetPaceMinPerKm: Double = 7.0 // Default: 7:00 min/km
         var voiceAIModel: VoiceAIModel = .apple // Apple Samantha vs OpenAI GPT-4
         var language: SupportedLanguage = .english
+        var targetDistance: TargetDistance = .fiveK // Default: 5K race
+        var customDistanceKm: Double = 5.0 // For custom distance
+        
+        /// Get actual target distance in meters
+        var targetDistanceMeters: Double {
+            if targetDistance == .custom {
+                return customDistanceKm * 1000
+            }
+            return targetDistance.distanceMeters
+        }
+        
+        /// Get actual target distance in km
+        var targetDistanceKm: Double {
+            return targetDistanceMeters / 1000
+        }
         
         enum CodingKeys: String, CodingKey {
             case coachPersonality = "coach_personality"
@@ -28,6 +43,8 @@ final class UserPreferences: ObservableObject {
             case targetPaceMinPerKm = "target_pace_min_per_km"
             case voiceAIModel = "voice_ai_model"
             case language
+            case targetDistance = "target_distance"
+            case customDistanceKm = "custom_distance_km"
         }
     }
     
@@ -74,6 +91,16 @@ final class UserPreferences: ObservableObject {
         saveToStorage()
     }
     
+    func updateTargetDistance(_ distance: TargetDistance) {
+        settings.targetDistance = distance
+        saveToStorage()
+    }
+    
+    func updateCustomDistance(_ distanceKm: Double) {
+        settings.customDistanceKm = distanceKm
+        saveToStorage()
+    }
+    
     func updateRunnerName(_ name: String) {
         runnerName = name
         UserDefaults.standard.set(name, forKey: "runnerName")
@@ -117,6 +144,15 @@ final class UserPreferences: ObservableObject {
             settings.voiceAIModel = v
         }
         
+        if let targetDist = data["targetDistance"] as? String,
+           let t = TargetDistance(rawValue: targetDist) {
+            settings.targetDistance = t
+        }
+        
+        if let customDist = data["customDistanceKm"] as? Double {
+            settings.customDistanceKm = customDist
+        }
+        
         saveToStorage()
         print("📲 [Preferences] Applied settings from iOS")
     }
@@ -130,7 +166,9 @@ final class UserPreferences: ObservableObject {
             "targetPace": settings.targetPaceMinPerKm,
             "runnerName": runnerName,
             "language": settings.language.rawValue,
-            "voiceAIModel": settings.voiceAIModel.rawValue
+            "voiceAIModel": settings.voiceAIModel.rawValue,
+            "targetDistance": settings.targetDistance.rawValue,
+            "customDistanceKm": settings.customDistanceKm
         ]
     }
     

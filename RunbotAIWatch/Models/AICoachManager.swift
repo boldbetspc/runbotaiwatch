@@ -18,10 +18,13 @@ class AICoachManager: NSObject, ObservableObject {
     private let openAIKey: String
     private let mem0APIKey: String
     private let mem0BaseURL: String
-    private let maxCoachingDuration: TimeInterval = 30.0 // 30 seconds auto-terminate
+    private let maxCoachingDuration: TimeInterval = 60.0 // 60 seconds auto-terminate for voice TTS
     private var runnerName: String = "Runner"
     private var currentTrigger: CoachingTrigger = .interval
     private var lastDeliveredFeedback: String?
+    
+    // RAG Performance Analyzer for enhanced interval coaching
+    private let ragAnalyzer = RAGPerformanceAnalyzer()
     
     override init() {
         if let config = ConfigLoader.loadConfig() {
@@ -41,11 +44,13 @@ class AICoachManager: NSObject, ObservableObject {
     // MARK: - Coaching Control
     
     /// Start-of-run coaching with personalization (uses cache)
+    /// Also initializes RAG analyzer cache for preferences, language, Mem0 insights
     func startOfRunCoaching(
         for stats: RunningStatsUpdate,
         with preferences: UserPreferences.Settings,
         voiceManager: VoiceManager,
-        runSessionId: String?
+        runSessionId: String?,
+        runnerName: String = "Runner"
     ) {
         guard !isCoaching else { return }
         currentTrigger = .runStart
@@ -55,6 +60,15 @@ class AICoachManager: NSObject, ObservableObject {
             let userId = currentUserIdFromDefaults() ?? "watch_user"
             let (insights, name) = await fetchMem0InsightsWithName(for: userId)
             self.runnerName = name
+            
+            // Initialize RAG analyzer cache with preferences, language, Mem0 (never change during run)
+            ragAnalyzer.initializeForRun(
+                preferences: preferences,
+                runnerName: name,
+                userId: userId
+            )
+            print("📦 [AICoach] RAG cache initialized - Language: \(preferences.language.displayName), Target: \(preferences.targetDistance.displayName)")
+            
             let aggregates = await SupabaseManager().fetchRunAggregates(userId: userId)
             
             let feedback = await generateCoachingFeedback(
@@ -77,24 +91,43 @@ class AICoachManager: NSObject, ObservableObject {
         startCoachingTimer()
     }
     
-    /// Interval coaching (every N km/minutes) - uses cache + incremental update
+    /// Interval coaching (every N km/minutes) - uses RAG-driven closed-loop performance analysis
     func startScheduledCoaching(
         for stats: RunningStatsUpdate,
         with preferences: UserPreferences.Settings,
         voiceManager: VoiceManager,
         runSessionId: String?,
         isTrainMode: Bool = false,
-        shadowData: ShadowRunData? = nil
+        shadowData: ShadowRunData? = nil,
+        healthManager: HealthManager? = nil,
+        intervals: [RunInterval] = [],
+        runStartTime: Date? = nil
     ) {
         guard !isCoaching else { return }
         currentTrigger = .interval
-        print("🎯 [AICoach] Interval coaching triggered - Train Mode: \(isTrainMode)")
+        print("🎯 [AICoach] Interval coaching triggered - Train Mode: \(isTrainMode), RAG Analysis: ENABLED")
         
         Task {
             let userId = currentUserIdFromDefaults() ?? "watch_user"
             let (insights, name) = await fetchMem0InsightsWithName(for: userId)
             self.runnerName = name
             let aggregates = await SupabaseManager().fetchRunAggregates(userId: userId)
+            
+            // RAG-DRIVEN PERFORMANCE ANALYSIS
+            var ragContext: String? = nil
+            if let startTime = runStartTime {
+                print("📊 [AICoach] Running RAG performance analysis...")
+                let ragAnalysis = await ragAnalyzer.analyzePerformance(
+                    stats: stats,
+                    preferences: preferences,
+                    healthManager: healthManager,
+                    intervals: intervals,
+                    runStartTime: startTime,
+                    userId: userId
+                )
+                ragContext = ragAnalysis.llmContext
+                print("📊 [AICoach] RAG analysis complete - Target Status: \(ragAnalysis.targetStatus)")
+            }
             
             let feedback = await generateCoachingFeedback(
                 stats: stats,
@@ -104,7 +137,8 @@ class AICoachManager: NSObject, ObservableObject {
                 trigger: .interval,
                 runnerName: name,
                 isTrainMode: isTrainMode,
-                shadowData: shadowData
+                shadowData: shadowData,
+                ragAnalysisContext: ragContext
             )
             
             await deliverFeedback(feedback, voiceManager: voiceManager, preferences: preferences)
@@ -114,41 +148,138 @@ class AICoachManager: NSObject, ObservableObject {
         startCoachingTimer()
     }
     
-    /// End-of-run summary coaching
+    /// End-of-run summary coaching - RAG-powered comprehensive analysis
+    /// Uses full AI analysis: HealthKit, Supabase, RAG vectors, Mem0 insights
+    /// Clears RAG analyzer cache after analysis
     func endOfRunCoaching(
         for stats: RunningStatsUpdate,
         session: RunSession,
         with preferences: UserPreferences.Settings,
-        voiceManager: VoiceManager
+        voiceManager: VoiceManager,
+        healthManager: HealthManager? = nil
     ) {
         guard !isCoaching else { return }
         currentTrigger = .runEnd
-        print("🏁 [AICoach] End-of-run summary triggered")
+        print("🏁 [AICoach] End-of-run RAG analysis triggered")
         
         Task {
             let userId = currentUserIdFromDefaults() ?? "watch_user"
             let (insights, name) = await fetchMem0InsightsWithName(for: userId)
             self.runnerName = name
-            let aggregates = await SupabaseManager().fetchRunAggregates(userId: userId)
             
-            let feedback = await generateRunSummary(
+            // Generate RAG-powered end-of-run analysis
+            let ragEndOfRunAnalysis = await ragAnalyzer.analyzeEndOfRun(
+                session: session,
+                stats: stats,
+                preferences: preferences,
+                healthManager: healthManager,
+                userId: userId
+            )
+            
+            // Generate final AI coaching feedback using RAG analysis
+            let feedback = await generateEndOfRunFeedback(
                 session: session,
                 stats: stats,
                 preferences: preferences,
                 mem0Insights: insights,
-                aggregates: aggregates,
+                ragAnalysis: ragEndOfRunAnalysis,
                 runnerName: name
             )
             
             await deliverFeedback(feedback, voiceManager: voiceManager, preferences: preferences)
             await persistFeedback(userId: userId, runSessionId: session.id, feedback: feedback, stats: stats, preferences: preferences)
             
-            // Write comprehensive run summary to Mem0 with categories
-            let summaryText = "Run: \(String(format: "%.2f", stats.distance / 1000.0))km, pace \(formatPace(session.pace)), \(formatDuration(session.duration)). \(feedback.prefix(40))"
-            saveMem0Memory(userId: userId, text: summaryText, category: "running_performance", metadata: ["type": "end_of_run", "distance_km": String(format: "%.2f", stats.distance / 1000.0)])
+            // Store comprehensive end-of-run feedback to Mem0 for future runs
+            let detailedSummary = """
+            Run completed: \(String(format: "%.2f", stats.distance / 1000.0))km in \(formatDuration(session.duration)), pace \(formatPace(session.pace)).
+            Target: \(preferences.targetDistance.displayName) at \(formatPace(preferences.targetPaceMinPerKm)).
+            Result: \(ragEndOfRunAnalysis.targetAchievement).
+            Feedback: \(feedback)
+            """
+            saveMem0Memory(userId: userId, text: detailedSummary, category: "running_performance", metadata: [
+                "type": "end_of_run_analysis",
+                "distance_km": String(format: "%.2f", stats.distance / 1000.0),
+                "pace": formatPace(session.pace),
+                "target_met": ragEndOfRunAnalysis.targetMet ? "yes" : "no"
+            ])
+            
+            // Clear RAG analyzer cache (run is complete)
+            ragAnalyzer.clearRunContext()
+            print("🧹 [AICoach] RAG cache cleared after end-of-run analysis")
         }
         
         startCoachingTimer()
+    }
+    
+    /// Generate end-of-run feedback using RAG analysis
+    private func generateEndOfRunFeedback(
+        session: RunSession,
+        stats: RunningStatsUpdate,
+        preferences: UserPreferences.Settings,
+        mem0Insights: String,
+        ragAnalysis: RAGPerformanceAnalyzer.EndOfRunAnalysis,
+        runnerName: String
+    ) async -> String {
+        let prompt = buildEndOfRunPrompt(
+            session: session,
+            stats: stats,
+            preferences: preferences,
+            mem0Insights: mem0Insights,
+            ragAnalysis: ragAnalysis,
+            runnerName: runnerName
+        )
+        return await requestAICoachingFeedback(prompt, energy: preferences.coachEnergy)
+    }
+    
+    /// Build comprehensive end-of-run LLM prompt with RAG analysis
+    private func buildEndOfRunPrompt(
+        session: RunSession,
+        stats: RunningStatsUpdate,
+        preferences: UserPreferences.Settings,
+        mem0Insights: String,
+        ragAnalysis: RAGPerformanceAnalyzer.EndOfRunAnalysis,
+        runnerName: String
+    ) -> String {
+        return """
+        You are an ELITE RUNNING COACH giving \(runnerName) their END-OF-RUN ANALYSIS.
+        
+        ============================================================================
+        USER PREFERENCES:
+        - Language: \(preferences.language.displayName)
+        - Coach Personality: \(preferences.coachPersonality.rawValue.uppercased())
+        - Coach Energy: \(preferences.coachEnergy.rawValue.uppercased())
+        ============================================================================
+        
+        \(ragAnalysis.llmContext)
+        
+        MEM0 PERSONALIZED INSIGHTS:
+        \(mem0Insights.isEmpty ? "First tracked run!" : mem0Insights)
+        
+        ============================================================================
+        COACHING TASK
+        ============================================================================
+        
+        Generate a CRITICAL, PERSONAL end-of-run analysis (max 60 words):
+        
+        1. TARGET ASSESSMENT: Did they hit \(preferences.targetDistance.displayName) target? Be specific.
+        2. WHAT WENT WELL: One specific thing with data (e.g., "Zone 2 efficiency at 65% was excellent")
+        3. WHAT NEEDS WORK: One critical improvement area with facts (e.g., "Pace dropped 45s in final km")
+        4. PERSONAL TOUCH: Reference their history from Mem0 if available
+        
+        RULES:
+        - Be CRITICAL but constructive - real coaches don't sugarcoat
+        - Use SPECIFIC NUMBERS from the analysis (pace, zones, intervals)
+        - Match personality: \(preferences.coachPersonality.rawValue)
+        - Match energy: \(preferences.coachEnergy.rawValue)
+        \(preferences.language != .english ? "- Generate in \(preferences.language.displayName) language" : "")
+        - Maximum 60 words
+        - DO NOT mention any scores or ratings (no "Score: 75" or "Rating: Good")
+        
+        EXAMPLE (good):
+        "\(runnerName), \(preferences.targetDistance.displayName) done in \(formatDuration(session.duration)) - \(ragAnalysis.targetMet ? "target hit" : "missed by " + ragAnalysis.targetDeviation)! Your Zone 3 efficiency was solid at 48%. But those final 2km? Pace dropped 35 seconds - that's where you lost time. Next run: focus on even splits. Strong effort overall."
+        
+        NOW GENERATE THE END-OF-RUN FEEDBACK:
+        """
     }
     
     // MARK: - Periodic Scheduling (time-based intervals)
@@ -228,7 +359,8 @@ class AICoachManager: NSObject, ObservableObject {
         trigger: CoachingTrigger,
         runnerName: String,
         isTrainMode: Bool = false,
-        shadowData: ShadowRunData? = nil
+        shadowData: ShadowRunData? = nil,
+        ragAnalysisContext: String? = nil
     ) async -> String {
         let prompt = buildCoachingPrompt(
             stats: stats,
@@ -240,7 +372,8 @@ class AICoachManager: NSObject, ObservableObject {
             runnerName: runnerName,
             targetPace: preferences.targetPaceMinPerKm,
             isTrainMode: isTrainMode,
-            shadowData: shadowData
+            shadowData: shadowData,
+            ragAnalysisContext: ragAnalysisContext
         )
         return await requestAICoachingFeedback(prompt, energy: preferences.coachEnergy)
     }
@@ -276,7 +409,8 @@ class AICoachManager: NSObject, ObservableObject {
         runnerName: String,
         targetPace: Double,
         isTrainMode: Bool = false,
-        shadowData: ShadowRunData? = nil
+        shadowData: ShadowRunData? = nil,
+        ragAnalysisContext: String? = nil
     ) -> String {
         let distanceKm = stats.distance / 1000.0
         let currentPaceStr = formatPace(stats.pace)
@@ -403,12 +537,28 @@ class AICoachManager: NSObject, ObservableObject {
                 Example: "Hey \(runnerName)! Your last run was solid at \(formatPace(aggregates?.avgPaceMinPerKm ?? targetPace)) pace. Today, target \(targetPaceStr). Start in Zone 2, build to Zone 3 by km 2. First km easy, then lock in. You've got this!"
                 """
             case .interval:
-                triggerContext = """
-                THIS IS MID-RUN COACHING. Runner is at \(String(format: "%.2f", distanceKm)) km.
-                Check their pace vs target. Current: \(currentPaceStr), Target: \(targetPaceStr).
-                Pace deviation: \(String(format: "%.1f", paceDeviation))% (\(paceDeviation > 0 ? "slower" : "faster")).
-                Give actionable advice NOW to adjust or maintain.
-                """
+                // Enhanced interval coaching with RAG analysis if available
+                if let ragContext = ragAnalysisContext {
+                    triggerContext = """
+                    THIS IS MID-RUN COACHING with RAG-DRIVEN PERFORMANCE ANALYSIS.
+                    
+                    \(ragContext)
+                    
+                    COACHING PRIORITY:
+                    1. Use the RAG analysis above to understand the runner's EXACT situation
+                    2. Reference specific data points (zones, trends, target status)
+                    3. Give coaching based on the ADAPTIVE MICROSTRATEGY recommendation
+                    4. If injury risk signals exist, prioritize safety
+                    5. Be specific about pace adjustments needed (e.g., "drop 10 sec/km")
+                    """
+                } else {
+                    triggerContext = """
+                    THIS IS MID-RUN COACHING. Runner is at \(String(format: "%.2f", distanceKm)) km.
+                    Check their pace vs target. Current: \(currentPaceStr), Target: \(targetPaceStr).
+                    Pace deviation: \(String(format: "%.1f", paceDeviation))% (\(paceDeviation > 0 ? "slower" : "faster")).
+                    Give actionable advice NOW to adjust or maintain.
+                    """
+                }
             case .runEnd:
                 triggerContext = "THIS IS END-OF-RUN (handled separately, should not reach here)"
             }
@@ -446,21 +596,22 @@ class AICoachManager: NSObject, ObservableObject {
         - Calories: \(String(format: "%.0f", stats.calories))
         
         CRITICAL RULES:
-        1. ONE coaching instruction ONLY. Maximum 25 words.
-        2. Be SPECIFIC and ACTIONABLE. No fluff like "keep it up" or "you're doing great" without a concrete action.
+        1. Maximum 60 words - be concise but insightful.
+        2. Be SPECIFIC and ACTIONABLE. Reference actual data from analysis.
         3. Use runner's name "\(runnerName)" if it feels natural.
         4. Match the personality mode precisely.
         5. NO preamble. Just the coaching message.
+        6. If RAG analysis is provided, use its insights (target status, zone guidance, injury risks).
         
-        GOOD EXAMPLES:
-        - "Sarah, drop your pace 15 seconds. Inhale 2, exhale 2. You're burning too hot."
-        - "Next km, run-walk: 2 min run, 30 sec walk. Conserve for the final push."
-        - "Quick light steps, 180 cadence. Land under your hips. You've got this!"
+        GOOD EXAMPLES (RAG-enhanced):
+        - "\(runnerName), you're 8% behind target but HR is stable in Zone 3. Pick up cadence to 180 - you have headroom. Next km: push to Zone 4 briefly."
+        - "Your interval trend shows declining pace. Zone 2 efficiency is dropping. Quick form check: shoulders down, arms 90°. Shorter, quicker steps."
+        - "Zone 5 for 15% of run - that's high strain. Ease to Zone 3 for next 500m. You're building fatigue - smart recovery now means strong finish."
         
         BAD EXAMPLES (avoid these):
-        - "Great job, keep going!" (no action)
+        - "Great job, keep going!" (no action, ignores data)
         - "You're almost there!" (not actionable)
-        - "Stay strong and push through." (vague)
+        - "Stay strong and push through." (vague, no specific guidance)
         
         NOW GENERATE THE COACHING MESSAGE:
         """

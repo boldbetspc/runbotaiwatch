@@ -77,6 +77,7 @@
 				Models/HeartZoneCalculator.swift,
 				Models/KeychainManager.swift,
 				Models/Mem0Manager.swift,
+				Models/RAGPerformanceAnalyzer.swift,
 				Models/RunDataModels.swift,
 				Models/RunTracker.swift,
 				Models/SessionCleanupManager.swift,

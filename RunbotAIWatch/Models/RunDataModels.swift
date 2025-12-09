@@ -259,6 +259,60 @@ enum RunMode: String, Codable {
     case train = "train"
 }
 
+// MARK: - Target Distance (Race Type)
+enum TargetDistance: String, Codable, CaseIterable {
+    case casual = "casual"       // 3km - Easy/recovery run
+    case fiveK = "5k"            // 5km
+    case tenK = "10k"            // 10km
+    case halfMarathon = "half"   // 21.1km
+    case marathon = "marathon"   // 42.2km
+    case custom = "custom"       // Custom distance
+    
+    var displayName: String {
+        switch self {
+        case .casual: return "Casual (3K)"
+        case .fiveK: return "5K"
+        case .tenK: return "10K"
+        case .halfMarathon: return "Half Marathon"
+        case .marathon: return "Marathon"
+        case .custom: return "Custom"
+        }
+    }
+    
+    var distanceMeters: Double {
+        switch self {
+        case .casual: return 3000
+        case .fiveK: return 5000
+        case .tenK: return 10000
+        case .halfMarathon: return 21097.5
+        case .marathon: return 42195
+        case .custom: return 0 // Will use custom value
+        }
+    }
+    
+    var distanceKm: Double {
+        return distanceMeters / 1000
+    }
+    
+    /// Pacing strategy guidance based on race type
+    var pacingStrategy: String {
+        switch self {
+        case .casual:
+            return "Easy effort, recovery pace. Focus on enjoyment, not speed."
+        case .fiveK:
+            return "Fast race. Start controlled, build through middle, strong finish. Zone 4-5 acceptable."
+        case .tenK:
+            return "Sustained effort. Even pacing critical. Zone 3-4 target. Don't go out too fast."
+        case .halfMarathon:
+            return "Endurance race. Conservative start, Zone 2-3 for first half. Negative splits ideal."
+        case .marathon:
+            return "Ultra-conservative start. Zone 2-3 only for first 30km. Save energy for final 10km."
+        case .custom:
+            return "Pace according to your custom distance goal."
+        }
+    }
+}
+
 // MARK: - PR Model (Shadow Run)
 struct PRModel: Identifiable, Codable {
     let id: String
