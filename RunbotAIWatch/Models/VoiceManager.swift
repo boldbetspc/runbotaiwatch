@@ -66,8 +66,10 @@ final class VoiceManager: NSObject, ObservableObject {
         case .samantha:
             speakWithAppleTTS(text, rate: rate)
         case .gpt4:
-            // Only use OpenAI TTS on WiFi for battery
-            if isOnWiFi() {
+            // Use OpenAI TTS - works on watch cellular or iPhone connection
+            // Priority: 1) Watch Cellular, 2) iPhone Connection via Bluetooth
+            // watchOS automatically uses best available connection
+            if true { // Always allow - system handles connection priority
                 speakWithOpenAITTS(text)
             } else {
                 print("⚠️ [Voice] Not on WiFi, falling back to Apple TTS")
@@ -123,7 +125,7 @@ final class VoiceManager: NSObject, ObservableObject {
         synthesizer.speak(utterance)
     }
     
-    // MARK: - OpenAI TTS (Premium, WiFi only)
+    // MARK: - OpenAI TTS (Works on Watch Cellular or iPhone Connection)
     
     private func speakWithOpenAITTS(_ text: String) {
         Task {
@@ -140,6 +142,9 @@ final class VoiceManager: NSObject, ObservableObject {
         }
     }
     
+    /// Request OpenAI TTS
+    /// URLSession automatically uses best connection: watch cellular → iPhone connection
+    /// Optimized for outdoor running - no connection checking overhead
     private func requestOpenAITTS(_ text: String) async throws -> Data {
         // Use Supabase proxy if available, otherwise direct OpenAI
         let url: URL
@@ -167,7 +172,8 @@ final class VoiceManager: NSObject, ObservableObject {
         for (key, value) in headers {
             request.setValue(value, forHTTPHeaderField: key)
         }
-        request.timeoutInterval = 15
+        // Optimized timeout for outdoor running (cellular may be slower)
+        request.timeoutInterval = 20
         
         let body: [String: Any] = [
             "model": "tts-1", // Standard model for faster response
@@ -202,12 +208,8 @@ final class VoiceManager: NSObject, ObservableObject {
     }
     
     // MARK: - Helpers
-    
-    private func isOnWiFi() -> Bool {
-        // Simple check - in production, use NWPathMonitor
-        // For watch, we default to false to prefer Apple TTS for battery
-        return false
-    }
+    // Note: Watch app uses iPhone's cellular/Bluetooth connection automatically
+    // No WiFi check needed - watch connects via Bluetooth to iPhone for network access
     
     private func getAuthToken() -> String {
         if let token = UserDefaults.standard.string(forKey: "sessionToken") {

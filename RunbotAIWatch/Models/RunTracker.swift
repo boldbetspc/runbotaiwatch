@@ -32,9 +32,13 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
     
     private func setupLocationManager() {
         locationManager.delegate = self
+        // Best accuracy for outdoor running - uses GPS, cellular, and Bluetooth beacons
         locationManager.desiredAccuracy = kCLLocationAccuracyBest
-        locationManager.distanceFilter = 5 // tighter updates to improve first-fix accuracy
+        // Small distance filter for real-time updates during running
+        locationManager.distanceFilter = 3 // 3 meters for very accurate tracking
         locationManager.activityType = .fitness
+        // Allow deferred updates for better battery efficiency while maintaining accuracy
+        locationManager.allowsBackgroundLocationUpdates = false // Not needed for watchOS
         
         // Request location permission
         if locationManager.authorizationStatus == .notDetermined {
@@ -86,6 +90,9 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         if let sessionId = currentSession?.id {
             WatchConnectivityManager.shared.sendWorkoutStarted(runId: sessionId)
         }
+        
+        // Log run start for debugging
+        print("🏃 [RunTracker] Run cache refresh will happen in AICoachManager")
         
         print("🏃 [RunTracker] Run started with ID: \(newSession.id)")
         startStatsUpdateTimer()
@@ -220,14 +227,21 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         guard isRunning, var session = currentSession else { return }
         
         for newLocation in locations {
-            // Ensure location accuracy is good
-            guard newLocation.horizontalAccuracy < 50 else { continue }
+            // Ensure location accuracy is good for outdoor running
+            // Accept locations with accuracy better than 50m (GPS typically 5-10m, cellular 50-100m)
+            guard newLocation.horizontalAccuracy > 0 && newLocation.horizontalAccuracy < 50 else {
+                print("⚠️ [RunTracker] Location accuracy too low: \(newLocation.horizontalAccuracy)m")
+                continue
+            }
+            
+            // Add location to workout route (for HealthKit workout) - this uses GPS from watch/iPhone
+            healthManager?.addLocationToWorkout(newLocation)
             
             // Store location
             let locationPoint = LocationPoint(location: newLocation)
             session.locations.append(locationPoint)
             
-            // Calculate distance from previous location
+            // Calculate distance from previous location (fallback if workout distance not available)
             if let lastLocation = previousLocations.last {
                 let distance = haversineDistance(from: lastLocation.coordinate, to: newLocation.coordinate)
                 totalDistance += distance
@@ -280,8 +294,20 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
     private func updateStats() {
         guard var session = currentSession, isRunning else { return }
         
+        // PRIORITY: Use workout distance from HealthKit (most accurate - uses GPS from watch/iPhone)
+        // FALLBACK: Use CoreLocation distance if HealthKit not available
+        let distanceMeters: Double
+        if let workoutDistance = healthManager?.workoutDistance, workoutDistance > 0 {
+            // HealthKit workout distance is most accurate - uses GPS from watch or iPhone
+            distanceMeters = workoutDistance
+            totalDistance = workoutDistance // Sync for consistency
+        } else {
+            // Fallback to CoreLocation distance calculation
+            distanceMeters = totalDistance
+        }
+        
         // Calculate distance in km
-        let distanceKm = totalDistance / 1000.0
+        let distanceKm = distanceMeters / 1000.0
         
         // Calculate elapsed time
         let elapsedSeconds = Date().timeIntervalSince(session.startTime)
@@ -344,13 +370,18 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         // Estimate calories burned
         caloriesEstimate = distanceKm * caloriesBurnedPerKm
         
-        // Update HealthManager with current pace for zone-pace correlation
+        // Update HealthManager with current pace for zone-pace correlation and adaptive guidance
         if currentPace > 0 {
             healthManager?.updateZoneWithPace(currentPace: currentPace)
+            healthManager?.updateAdaptiveGuidance(currentPace: currentPace)
         }
         
-        // Update session
-        session.distance = totalDistance
+        // Update session - use workout distance if available (more accurate), otherwise use CoreLocation
+        if let workoutDistance = healthManager?.workoutDistance, workoutDistance > 0 {
+            session.distance = workoutDistance
+        } else {
+            session.distance = totalDistance
+        }
         session.pace = pace
         session.avgSpeed = avgSpeed
         session.calories = caloriesEstimate

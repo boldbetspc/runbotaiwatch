@@ -782,122 +782,86 @@ struct MainRunbotView: View {
         let isSlower = paceDiff > 0.1
         
         VStack(spacing: 4) {
-            // Dual Pace Visualization - Next-Gen Dynamic (Smaller, Closer)
-            HStack(spacing: 4) {
-                // Current Pace - Left (Smaller, Closer)
+            // Elegant Dual Pace Visualization - Optimized for Small Watches
+            HStack(spacing: 6) {
+                // Current Pace - Left (Elegant & Readable)
                 ZStack {
-                    // Pulsing outer glow
-                                Circle()
+                    // Subtle background glow
+                    Circle()
                         .fill(
                             RadialGradient(
                                 colors: [
-                                    currentPaceClr.opacity(0.4),
-                                    currentPaceClr.opacity(0.2),
+                                    currentPaceClr.opacity(0.25),
+                                    currentPaceClr.opacity(0.1),
                                     Color.clear
                                 ],
                                 center: .center,
-                                startRadius: 20,
-                                endRadius: 40
+                                startRadius: 25,
+                                endRadius: 45
                             )
                         )
-                        .frame(width: 75, height: 75)
-                        .scaleEffect(1.0 + sin(wavePhase * 0.15) * 0.1)
-                        .opacity(0.6 + sin(wavePhase * 0.12) * 0.3)
+                        .frame(width: 85, height: 85)
                     
-                    // Animated ring
+                    // Clean ring border
                     Circle()
-                        .trim(from: 0, to: 0.85)
-                        .stroke(
-                            AngularGradient(
-                                colors: [currentPaceClr, currentPaceClr.opacity(0.3), currentPaceClr],
-                                center: .center,
-                                angle: .degrees(Double(wavePhase * 5))
-                            ),
-                            style: StrokeStyle(lineWidth: 3, lineCap: .round)
-                        )
-                        .frame(width: 65, height: 65)
-                        .rotationEffect(.degrees(Double(wavePhase * 5)))
+                        .stroke(currentPaceClr.opacity(0.5), lineWidth: 2.5)
+                        .frame(width: 80, height: 80)
                     
-                    // Inner glow
-                    Circle()
-                        .fill(
-                            RadialGradient(
-                                colors: [currentPaceClr.opacity(0.3), Color.clear],
-                                center: .center,
-                                startRadius: 12,
-                                endRadius: 32
-                            )
-                        )
-                        .frame(width: 60, height: 60)
-                    
-                    VStack(spacing: 1) {
+                    VStack(spacing: 2) {
                         Text(formatPace(currentPace))
-                            .font(.system(size: 24, weight: .black, design: .rounded))
-                            .foregroundColor(currentPaceClr)
-                            .shadow(color: currentPaceClr.opacity(0.5), radius: 6)
-                            .scaleEffect(1.0 + (isFaster ? 0.05 : (isSlower ? -0.03 : 0)))
+                            .font(.system(size: 32, weight: .black, design: .rounded))
+                            .foregroundColor(.white)
+                            .shadow(color: .black.opacity(0.5), radius: 2, x: 1, y: 1)
+                            .shadow(color: currentPaceClr.opacity(0.4), radius: 4)
                         
-                        Text("CURRENT")
-                            .font(.system(size: 6, weight: .bold, design: .rounded))
-                            .foregroundColor(.white.opacity(0.6))
+                        Text("PACE RT")
+                            .font(.system(size: 17, weight: .bold, design: .rounded))
+                            .foregroundColor(.white.opacity(0.85))
                             .tracking(0.5)
                     }
                 }
-                .frame(width: 75, height: 75)
+                .frame(width: 85, height: 85)
                 
-                // Average Pace - Right (Smaller, Closer)
+                // Average Pace - Right (Elegant & Readable)
                 ZStack {
-                    // Pulsing outer glow
+                    // Subtle background glow
                     Circle()
                         .fill(
                             RadialGradient(
                                 colors: [
-                                    avgPaceClr.opacity(0.3),
-                                    avgPaceClr.opacity(0.15),
+                                    avgPaceClr.opacity(0.25),
+                                    avgPaceClr.opacity(0.1),
                                     Color.clear
                                 ],
                                 center: .center,
-                                startRadius: 20,
-                                endRadius: 40
+                                startRadius: 25,
+                                endRadius: 45
                             )
                         )
-                        .frame(width: 75, height: 75)
-                        .scaleEffect(1.0 + sin(wavePhase * 0.12) * 0.08)
-                        .opacity(0.5 + sin(wavePhase * 0.1) * 0.25)
+                        .frame(width: 85, height: 85)
                     
-                    // Static ring (less animated than current)
+                    // Clean ring border
                     Circle()
-                        .stroke(avgPaceClr.opacity(0.4), lineWidth: 3)
-                        .frame(width: 65, height: 65)
+                        .stroke(avgPaceClr.opacity(0.5), lineWidth: 2.5)
+                        .frame(width: 80, height: 80)
                     
-                    // Inner glow
-                    Circle()
-                        .fill(
-                            RadialGradient(
-                                colors: [avgPaceClr.opacity(0.25), Color.clear],
-                                center: .center,
-                                startRadius: 12,
-                                endRadius: 32
-                            )
-                        )
-                        .frame(width: 60, height: 60)
-                    
-                    VStack(spacing: 1) {
+                    VStack(spacing: 2) {
                         Text(formatPace(avgPace))
-                            .font(.system(size: 24, weight: .black, design: .rounded))
-                            .foregroundColor(avgPaceClr)
-                            .shadow(color: avgPaceClr.opacity(0.5), radius: 6)
+                            .font(.system(size: 32, weight: .black, design: .rounded))
+                            .foregroundColor(.white)
+                            .shadow(color: .black.opacity(0.5), radius: 2, x: 1, y: 1)
+                            .shadow(color: avgPaceClr.opacity(0.4), radius: 4)
                         
-                        Text("AVERAGE")
-                            .font(.system(size: 6, weight: .bold, design: .rounded))
-                            .foregroundColor(.white.opacity(0.6))
+                        Text("PACE AV")
+                            .font(.system(size: 17, weight: .bold, design: .rounded))
+                            .foregroundColor(.white.opacity(0.85))
                             .tracking(0.5)
                     }
                 }
-                .frame(width: 75, height: 75)
+                .frame(width: 85, height: 85)
             }
-            .padding(.top, 6)
-            .padding(.horizontal, 4)
+            .padding(.top, 8)
+            .padding(.horizontal, 6)
             
             // Pace Comparison Indicator
             if currentPace > 0 && avgPace > 0 {
@@ -932,10 +896,10 @@ struct MainRunbotView: View {
             HStack(spacing: 0) {
                 VStack(spacing: 1) {
                     Text(formatDistanceKm(distance))
-                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                        .font(.system(size: 26, weight: .bold, design: .rounded))
                         .foregroundColor(.white)
                     Text("KM")
-                        .font(.system(size: 7, weight: .bold))
+                        .font(.system(size: 18, weight: .bold))
                         .foregroundColor(.rbAccent)
                 }
                 .frame(maxWidth: .infinity)
@@ -946,10 +910,10 @@ struct MainRunbotView: View {
                 
                 VStack(spacing: 1) {
                     Text(formatElapsed(duration))
-                        .font(.system(size: 18, weight: .bold, design: .rounded))
+                        .font(.system(size: 26, weight: .bold, design: .rounded))
                         .foregroundColor(.white)
                     Text("TIME")
-                        .font(.system(size: 7, weight: .bold))
+                        .font(.system(size: 18, weight: .bold))
                         .foregroundColor(.rbSecondary)
                 }
                 .frame(maxWidth: .infinity)
@@ -959,13 +923,13 @@ struct MainRunbotView: View {
             // Target Pace (compact at bottom)
             HStack(spacing: 4) {
                 Image(systemName: "target")
-                    .font(.system(size: 9))
+                    .font(.system(size: 12))
                     .foregroundColor(.rbWarning.opacity(0.7))
                 Text("Target:")
-                    .font(.system(size: 8, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.5))
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.6))
                 Text(formatPace(targetPace))
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .font(.system(size: 18, weight: .bold, design: .monospaced))
                     .foregroundColor(.rbWarning)
             }
             .padding(.top, 2)
@@ -988,7 +952,7 @@ struct MainRunbotView: View {
     private func heartZonePage() -> some View {
         VStack(spacing: 6) {
             Text("Heart Zones")
-                .font(.system(size: 12, weight: .bold))
+                .font(.system(size: 14, weight: .bold))
                 .foregroundColor(.rbAccent)
                 .padding(.top, 8)
             
@@ -998,56 +962,85 @@ struct MainRunbotView: View {
                 let _ = healthManager.zonePercentages
                 let adaptiveGuidance = healthManager.adaptiveGuidance
                 
-                // Heart rate display with real data
-                ZStack {
-                    // Pulsing glow based on zone
-                    if let zone = currentZone {
-                        Circle()
-                            .fill(HeartZoneCalculator.zoneColor(for: zone).opacity(0.2))
-                            .frame(width: 90, height: 90)
-                            .scaleEffect(1.0 + sin(wavePhase * 0.3) * 0.15)
-                    }
+                // Beautiful Heart Rate Display (No Circle)
+                VStack(spacing: 8) {
+                    // Heart icon with pulsing animation
+                    Image(systemName: "heart.fill")
+                        .font(.system(size: 24))
+                        .foregroundColor(currentZone != nil ? HeartZoneCalculator.zoneColor(for: currentZone!) : .rbError)
+                        .scaleEffect(1.0 + sin(wavePhase * 0.2) * 0.15)
+                        .shadow(color: (currentZone != nil ? HeartZoneCalculator.zoneColor(for: currentZone!) : .rbError).opacity(0.6), radius: 8)
                     
-                    Circle()
-                        .stroke(
-                            currentZone != nil ? HeartZoneCalculator.zoneColor(for: currentZone!) : Color.rbError.opacity(0.3),
-                            lineWidth: 3
-                        )
-                        .frame(width: 70, height: 70)
-                    
-                    VStack(spacing: 0) {
-                        Image(systemName: "heart.fill")
-                            .font(.system(size: 16))
-                            .foregroundColor(currentZone != nil ? HeartZoneCalculator.zoneColor(for: currentZone!) : .rbError)
-                            .scaleEffect(1.0 + sin(wavePhase * 0.2) * 0.1)
-                        
-                        if let hr = currentHR {
-                            Text("\(Int(hr))")
-                                .font(.system(size: 22, weight: .heavy))
+                    // Large HR value
+                    if let hr = currentHR {
+                        Text("\(Int(hr))")
+                            .font(.system(size: 56, weight: .black, design: .rounded))
                             .foregroundColor(.white)
+                            .shadow(color: .white.opacity(0.3), radius: 4)
                     } else {
                         Text("--")
-                                .font(.system(size: 22, weight: .heavy))
-                                .foregroundColor(.white.opacity(0.5))
-                        }
-                        
-                        Text("BPM")
-                            .font(.system(size: 8))
-                            .foregroundColor(.gray)
-                    }
+                            .font(.system(size: 56, weight: .black, design: .rounded))
+                            .foregroundColor(.white.opacity(0.5))
                     }
                     
-                // Current Zone Badge
+                    // BPM label
+                    Text("BPM")
+                        .font(.system(size: 20, weight: .bold, design: .rounded))
+                        .foregroundColor(.white.opacity(0.6))
+                }
+                .padding(.vertical, 12)
+                
+                // Beautiful Color-Coded Zone Badge
                 if let zone = currentZone {
-                        HStack(spacing: 4) {
-                            Circle()
-                                .fill(HeartZoneCalculator.zoneColor(for: zone))
-                            .frame(width: 6, height: 6)
-                        Text("Z\(zone) • \(HeartZoneCalculator.zoneName(for: zone))")
-                            .font(.system(size: 10, weight: .bold))
+                    HStack(spacing: 8) {
+                        // Zone color indicator
+                        RoundedRectangle(cornerRadius: 4)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        HeartZoneCalculator.zoneColor(for: zone),
+                                        HeartZoneCalculator.zoneColor(for: zone).opacity(0.7)
+                                    ],
+                                    startPoint: .leading,
+                                    endPoint: .trailing
+                                )
+                            )
+                            .frame(width: 6, height: 32)
+                            .shadow(color: HeartZoneCalculator.zoneColor(for: zone).opacity(0.5), radius: 4)
+                        
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("ZONE \(zone)")
+                                .font(.system(size: 14, weight: .black, design: .rounded))
                                 .foregroundColor(HeartZoneCalculator.zoneColor(for: zone))
+                            
+                            Text(HeartZoneCalculator.zoneName(for: zone))
+                                .font(.system(size: 18, weight: .bold, design: .rounded))
+                                .foregroundColor(.white)
+                        }
+                        
+                        Spacer()
                     }
-                    .padding(.horizontal, 10)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.white.opacity(0.08))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(
+                                        LinearGradient(
+                                            colors: [
+                                                HeartZoneCalculator.zoneColor(for: zone).opacity(0.4),
+                                                HeartZoneCalculator.zoneColor(for: zone).opacity(0.1)
+                                            ],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        ),
+                                        lineWidth: 1.5
+                                    )
+                            )
+                    )
+                    .padding(.horizontal, 8)
                     .padding(.vertical, 3)
                     .background(
                         Capsule()
@@ -1059,7 +1052,7 @@ struct MainRunbotView: View {
                 // Adaptive Guidance (KEY FEATURE!)
                 if !adaptiveGuidance.isEmpty {
                     Text(adaptiveGuidance)
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(.rbAccent)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 12)
@@ -1115,98 +1108,118 @@ struct MainRunbotView: View {
             }
         }
         
-        return VStack(spacing: 8) {
-            Text("Zone Distribution")
-                .font(.system(size: 12, weight: .bold))
-                .foregroundColor(.rbAccent)
-                .padding(.top, 8)
+        return VStack(spacing: 6) {
+            // Elegant header with gradient
+            Text("ZONE TIME")
+                .font(.system(size: 16, weight: .black, design: .rounded))
+                .tracking(1.5)
+                .foregroundStyle(LinearGradient(colors: [.rbAccent, .rbSecondary], startPoint: .leading, endPoint: .trailing))
+                .padding(.top, 6)
             
             if isRunning && !zonePercentages.isEmpty && !angles.isEmpty {
-                // Pie Chart
+                // Beautiful Donut Chart with % on Segments
                 ZStack {
-                    ForEach(angles, id: \.zone) { angleData in
-                        Path { path in
-                            path.move(to: CGPoint(x: 70, y: 70))
-                            path.addArc(
-                                center: CGPoint(x: 70, y: 70),
-                                radius: 60,
-                                startAngle: Angle(degrees: angleData.start),
-                                endAngle: Angle(degrees: angleData.end),
-                                clockwise: false
-                            )
-                            path.closeSubpath()
-                        }
-                        .fill(HeartZoneCalculator.zoneColor(for: angleData.zone))
-                        
-                        // Zone label
-                        let labelAngle = angleData.start + (angleData.end - angleData.start) / 2.0
-                        let labelRadius: CGFloat = 45
-                        let labelX = 70 + CGFloat(cos(labelAngle * .pi / 180.0)) * labelRadius
-                        let labelY = 70 + CGFloat(sin(labelAngle * .pi / 180.0)) * labelRadius
-                        
-                        Text("Z\(angleData.zone)")
-                            .font(.system(size: 8, weight: .bold))
-                            .foregroundColor(.white)
-                            .position(x: labelX, y: labelY)
-                    }
-                    
-                    // Center circle
+                    // Outer glow ring
                     Circle()
-                        .fill(Color.black)
-                        .frame(width: 50, height: 50)
+                        .stroke(
+                            LinearGradient(
+                                colors: [.rbAccent.opacity(0.3), .rbSecondary.opacity(0.2)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 2
+                        )
+                        .frame(width: 150, height: 150)
+                        .blur(radius: 2)
                     
-                    VStack(spacing: 0) {
-                        Text("Total")
-                            .font(.system(size: 7))
-                            .foregroundColor(.white.opacity(0.6))
-                        Text(String(format: "%.0f%%", total))
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(.white)
-                    }
-                }
-                .frame(width: 140, height: 140)
-                .padding(.vertical, 8)
-                
-                // Legend
-                VStack(spacing: 4) {
-                    ForEach(Array([1, 2, 3, 4, 5]), id: \.self) { zone in
-                        let percentage = zonePercentages[zone] ?? 0.0
-                        if percentage > 0 {
-                            HStack(spacing: 6) {
-                                Circle()
-                                    .fill(HeartZoneCalculator.zoneColor(for: zone))
-                                    .frame(width: 8, height: 8)
-                                
-                                Text("Z\(zone): \(HeartZoneCalculator.zoneName(for: zone))")
-                                    .font(.system(size: 9))
-                                    .foregroundColor(.white.opacity(0.8))
-                                
-                                Spacer()
-                                
-                                Text(String(format: "%.1f%%", percentage))
-                                    .font(.system(size: 9, weight: .semibold))
-                                    .foregroundColor(HeartZoneCalculator.zoneColor(for: zone))
+                    // Pie segments with gradient fills and percentage labels
+                    ForEach(angles, id: \.zone) { angleData in
+                        let percentage = zonePercentages[angleData.zone] ?? 0.0
+                        let midAngle = angleData.start + (angleData.end - angleData.start) / 2.0
+                        let labelRadius: CGFloat = 40 // Position label on segment
+                        let labelX = 75 + CGFloat(cos(midAngle * .pi / 180.0)) * labelRadius
+                        let labelY = 75 + CGFloat(sin(midAngle * .pi / 180.0)) * labelRadius
+                        
+                        ZStack {
+                            // Segment path
+                            Path { path in
+                                path.move(to: CGPoint(x: 75, y: 75))
+                                path.addArc(
+                                    center: CGPoint(x: 75, y: 75),
+                                    radius: 65,
+                                    startAngle: Angle(degrees: angleData.start),
+                                    endAngle: Angle(degrees: angleData.end),
+                                    clockwise: false
+                                )
+                                path.closeSubpath()
                             }
-                            .padding(.horizontal, 12)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        HeartZoneCalculator.zoneColor(for: angleData.zone),
+                                        HeartZoneCalculator.zoneColor(for: angleData.zone).opacity(0.7)
+                                    ],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                            .shadow(color: HeartZoneCalculator.zoneColor(for: angleData.zone).opacity(0.5), radius: 4, x: 0, y: 2)
+                            
+                            // Large percentage label on segment
+                            if percentage >= 5.0 { // Only show if segment is large enough
+                                Text(String(format: "%.0f%%", percentage))
+                                    .font(.system(size: 22, weight: .black, design: .rounded))
+                                    .foregroundColor(.white)
+                                    .shadow(color: .black.opacity(0.8), radius: 3, x: 1, y: 1)
+                                    .shadow(color: HeartZoneCalculator.zoneColor(for: angleData.zone).opacity(0.5), radius: 2)
+                                    .position(x: labelX, y: labelY)
+                            }
+                        }
+                    }
+                    
+                    // Center donut hole with gradient
+                    Circle()
+                        .fill(
+                            RadialGradient(
+                                colors: [Color.black.opacity(0.95), Color.black],
+                                center: .center,
+                                startRadius: 5,
+                                endRadius: 35
+                            )
+                        )
+                        .frame(width: 70, height: 70)
+                    
+                    // Center current zone indicator
+                    VStack(spacing: 2) {
+                        if let currentZone = healthManager.currentZone {
+                            Text("Z\(currentZone)")
+                                .font(.system(size: 24, weight: .black, design: .rounded))
+                                .foregroundColor(HeartZoneCalculator.zoneColor(for: currentZone))
+                                .shadow(color: HeartZoneCalculator.zoneColor(for: currentZone).opacity(0.5), radius: 4)
+                        } else {
+                            Text("—")
+                                .font(.system(size: 20, weight: .bold))
+                                .foregroundColor(.white.opacity(0.5))
                         }
                     }
                 }
-                .padding(.top, 4)
+                .frame(width: 150, height: 150)
+                .padding(.vertical, 8)
             } else {
                     Spacer()
                 Image(systemName: "chart.pie.fill")
                         .font(.system(size: 32))
                     .foregroundColor(.rbSecondary.opacity(0.4))
-                Text("Start running to see zone distribution")
-                    .font(.system(size: 10))
+                Text("Start running to see zones")
+                    .font(.system(size: 11))
                     .foregroundColor(.white.opacity(0.3))
                     Spacer()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
-            // Refresh every 30 seconds
-            Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { _ in
+            // Real-time refresh every 5 seconds
+            Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
                 // Force refresh by accessing zonePercentages
                 let _ = healthManager.zonePercentages
             }
@@ -1255,7 +1268,7 @@ struct MainRunbotView: View {
             VStack(spacing: 4) {
                 // Header - compact
                 Text("ENERGY")
-                    .font(.system(size: 9, weight: .black, design: .rounded))
+                    .font(.system(size: 17, weight: .black, design: .rounded))
                     .tracking(2)
                     .foregroundStyle(LinearGradient(colors: [.rbAccent, .rbSecondary], startPoint: .leading, endPoint: .trailing))
                     .padding(.top, 4)
@@ -1265,36 +1278,36 @@ struct MainRunbotView: View {
                         pace: runTracker.statsUpdate?.pace ?? 0,
                     phase: wavePhase
                 )
-                .frame(height: 120)
+                .frame(height: 110)
                 .padding(.horizontal, 4)
-                .padding(.vertical, 8)
+                .padding(.vertical, 6)
                 
                 // Compact stats row - minimal space
                 HStack(spacing: 8) {
                     VStack(spacing: 0) {
                                 Text("PACE")
-                            .font(.system(size: 6, weight: .bold))
-                            .foregroundColor(.white.opacity(0.3))
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundColor(.white.opacity(0.5))
                                 Text(formatPace(runTracker.statsUpdate?.pace ?? 0))
-                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                            .font(.system(size: 18, weight: .bold, design: .monospaced))
                             .foregroundColor(.rbAccent)
                     }
                     
                     VStack(spacing: 0) {
                         Text("DIST")
-                            .font(.system(size: 6, weight: .bold))
-                            .foregroundColor(.white.opacity(0.3))
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundColor(.white.opacity(0.5))
                         Text(String(format: "%.2f", (runTracker.statsUpdate?.distance ?? 0) / 1000.0))
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .font(.system(size: 16, weight: .bold, design: .monospaced))
                             .foregroundColor(.rbSecondary)
                     }
                     
                     VStack(spacing: 0) {
                                 Text("TIME")
-                            .font(.system(size: 6, weight: .bold))
-                            .foregroundColor(.white.opacity(0.3))
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundColor(.white.opacity(0.5))
                                 Text(formatElapsed(runTracker.currentSession?.duration ?? 0))
-                            .font(.system(size: 10, weight: .bold, design: .monospaced))
+                            .font(.system(size: 16, weight: .bold, design: .monospaced))
                             .foregroundColor(.white.opacity(0.7))
                     }
                 }
@@ -1347,7 +1360,7 @@ struct MainRunbotView: View {
     private func statsPage(statType: StatType) -> some View {
         VStack(spacing: 6) {
             Text("Running Stats")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: 15, weight: .semibold))
                 .foregroundColor(.cyan)
                 .padding(.top, 8)
             

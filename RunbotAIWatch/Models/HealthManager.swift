@@ -2,6 +2,7 @@ import Foundation
 import HealthKit
 import Combine
 import SwiftUI
+import CoreLocation
 
 /// HealthManager: Manages HealthKit integration for real-time heart rate monitoring
 /// 
@@ -44,10 +45,14 @@ class HealthManager: NSObject, ObservableObject {
     // CRITICAL: HKWorkoutSession for real-time HR on watchOS
     private var workoutSession: HKWorkoutSession?
     private var workoutBuilder: HKWorkoutBuilder?
+    private var workoutRouteBuilder: HKWorkoutRouteBuilder?
     private var workoutConfiguration: HKWorkoutConfiguration?
     
     private var heartRateQuery: HKQuery?
     private var heartRateSamples: [HKQuantitySample] = []
+    
+    // Workout distance tracking
+    @Published var workoutDistance: Double = 0.0 // meters from workout
     
     // Zone tracking
     private var zoneStartTime: Date?
@@ -159,6 +164,9 @@ class HealthManager: NSObject, ObservableObject {
         // Start periodic HR data saves to Supabase (every 30 seconds)
         startHRSaveTimer()
         
+        // Start periodic distance updates from workout (every 5 seconds)
+        startDistanceUpdateTimer()
+        
         // CRITICAL: Start HKWorkoutSession for real-time HR on watchOS
         startWorkoutSession()
         
@@ -179,10 +187,11 @@ class HealthManager: NSObject, ObservableObject {
             return
         }
         
-        // Create workout configuration
+        // Create workout configuration for outdoor running
+        // This enables GPS tracking via watch/iPhone and accurate distance measurement
         let configuration = HKWorkoutConfiguration()
         configuration.activityType = .running
-        configuration.locationType = .outdoor
+        configuration.locationType = .outdoor // Critical: Enables GPS tracking for accurate distance
         
         workoutConfiguration = configuration
         
@@ -197,6 +206,9 @@ class HealthManager: NSObject, ObservableObject {
             let dataSource = HKLiveWorkoutDataSource(healthStore: healthStore, workoutConfiguration: configuration)
             builder.dataSource = dataSource
             workoutBuilder = builder
+            
+            // Create workout route builder for GPS tracking
+            workoutRouteBuilder = HKWorkoutRouteBuilder(healthStore: healthStore, device: nil)
             
             // Set session delegate
             session.delegate = self
@@ -350,6 +362,9 @@ class HealthManager: NSObject, ObservableObject {
         // Stop HR save timer
         stopHRSaveTimer()
         
+        // Stop distance update timer
+        stopDistanceUpdateTimer()
+        
         // Finalize zone tracking and save final data
         finalizeZoneTracking()
         
@@ -378,7 +393,7 @@ class HealthManager: NSObject, ObservableObject {
     }
     
     private func endWorkoutSession() {
-        guard let session = workoutSession else {
+        guard let session = workoutSession, let builder = workoutBuilder else {
             return
         }
         
@@ -387,19 +402,82 @@ class HealthManager: NSObject, ObservableObject {
         // End the workout session
         session.end()
         
-        // End collection
-        let builder = session.associatedWorkoutBuilder()
-        builder.endCollection(withEnd: endDate) { success, error in
+        // End collection and save workout
+        builder.endCollection(withEnd: endDate) { [weak self] success, error in
+            guard let self = self else { return }
+            
             if let error = error {
                 print("❌ [HealthManager] Failed to end workout collection: \(error.localizedDescription)")
             } else {
                 print("✅ [HealthManager] Workout collection ended")
+                
+                // Get final distance from workout statistics before finishing
+                self.getWorkoutDistance(from: builder) { distance in
+                    if let distance = distance {
+                        DispatchQueue.main.async {
+                            self.workoutDistance = distance
+                            print("📏 [HealthManager] Workout distance: \(String(format: "%.2f", distance / 1000.0)) km")
+                        }
+                    }
+                }
+                
+                // Save workout to HealthKit first, then finish route
+                builder.finishWorkout { [weak self] workout, error in
+                    guard let self = self else { return }
+                    
+                    if let error = error {
+                        print("❌ [HealthManager] Failed to save workout: \(error.localizedDescription)")
+                    } else if let workout = workout {
+                        print("✅ [HealthManager] Workout saved to HealthKit: \(workout.uuid)")
+                        
+                        // Finish route builder with the finished workout
+                        if let routeBuilder = self.workoutRouteBuilder {
+                            routeBuilder.finishRoute(with: workout, metadata: nil) { route, error in
+                                if let error = error {
+                                    print("❌ [HealthManager] Failed to finish route: \(error.localizedDescription)")
+                                } else {
+                                    print("✅ [HealthManager] Workout route finished")
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
         
         workoutSession = nil
         workoutBuilder = nil
+        workoutRouteBuilder = nil
         workoutConfiguration = nil
+    }
+    
+    // Get distance from workout statistics (synchronous API)
+    private func getWorkoutDistance(from builder: HKWorkoutBuilder, completion: @escaping (Double?) -> Void) {
+        let distanceType = HKQuantityType.quantityType(forIdentifier: .distanceWalkingRunning)!
+        
+        // statistics(for:) is synchronous, returns optional
+        if let statistics = builder.statistics(for: distanceType),
+           let sum = statistics.sumQuantity() {
+            let distance = sum.doubleValue(for: HKUnit.meter())
+            completion(distance)
+        } else {
+            completion(nil)
+        }
+    }
+    
+    // Add location to workout route (GPS data from watch or iPhone via Bluetooth)
+    func addLocationToWorkout(_ location: CLLocation) {
+        guard let routeBuilder = workoutRouteBuilder else { return }
+        // Use insertRouteData with array of locations
+        // This GPS data comes from watch's built-in GPS or iPhone's GPS via Bluetooth
+        routeBuilder.insertRouteData([location]) { success, error in
+            if let error = error {
+                print("⚠️ [HealthManager] Failed to insert route data: \(error.localizedDescription)")
+            } else if success {
+                // Location successfully added to workout route
+                print("📍 [HealthManager] Location added to workout route: \(location.coordinate.latitude), \(location.coordinate.longitude), accuracy: \(location.horizontalAccuracy)m")
+            }
+        }
     }
     
     // MARK: - Zone Tracking
@@ -435,6 +513,39 @@ class HealthManager: NSObject, ObservableObject {
     private func stopZoneUpdateTimer() {
         zoneUpdateTimer?.invalidate()
         zoneUpdateTimer = nil
+    }
+    
+    // MARK: - Periodic Distance Updates from Workout
+    
+    private var distanceUpdateTimer: Timer?
+    
+    private func startDistanceUpdateTimer() {
+        stopDistanceUpdateTimer()
+        
+        // Update distance from workout statistics every 1 second for real-time accuracy
+        // HealthKit workout statistics are updated continuously during active workout
+        // Apple Watch GPS (Series 2+) provides real-time GPS data, so we can poll frequently
+        distanceUpdateTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            guard let self = self, let builder = self.workoutBuilder else { return }
+            
+            self.getWorkoutDistance(from: builder) { distance in
+                if let distance = distance {
+                    DispatchQueue.main.async {
+                        self.workoutDistance = distance
+                        print("📏 [HealthManager] Workout distance updated: \(String(format: "%.2f", distance))m")
+                    }
+                }
+            }
+        }
+        
+        if let timer = distanceUpdateTimer {
+            RunLoop.current.add(timer, forMode: .common)
+        }
+    }
+    
+    private func stopDistanceUpdateTimer() {
+        distanceUpdateTimer?.invalidate()
+        distanceUpdateTimer = nil
     }
     
     // MARK: - Periodic HR Data Save
@@ -615,21 +726,60 @@ class HealthManager: NSObject, ObservableObject {
         }
     }
     
-    /// Update adaptive guidance based on current zone and pace
+    /// Update adaptive guidance based on current zone and pace (enhanced analysis)
     func updateAdaptiveGuidance(currentPace: Double) {
         guard let currentZone = currentZone, currentPace > 0 else {
             adaptiveGuidance = ""
             return
         }
         
-        // Simple guidance rules
-        if (currentZone == 4 || currentZone == 5) && currentPace > 7.0 {
-            adaptiveGuidance = "High effort for low pace — ease up"
-        } else if (currentZone == 1 || currentZone == 2) && currentPace < 6.0 {
-            adaptiveGuidance = "Great efficiency — strong pace"
-        } else {
-            adaptiveGuidance = "Pace and effort are balanced"
+        // Enhanced guidance with zone-specific advice
+        let guidance: String
+        switch currentZone {
+        case 1:
+            // Recovery zone - very easy effort
+            if currentPace < 6.0 {
+                guidance = "Excellent efficiency! Zone 1 with fast pace — you're strong"
+            } else {
+                guidance = "Recovery zone — perfect for warm-up or cooldown"
+            }
+        case 2:
+            // Aerobic base - comfortable effort
+            if currentPace < 6.5 {
+                guidance = "Strong aerobic base — great sustainable pace"
+            } else if currentPace > 8.0 {
+                guidance = "Zone 2 but pace is slow — consider increasing effort slightly"
+            } else {
+                guidance = "Perfect aerobic zone — maintain this effort"
+            }
+        case 3:
+            // Tempo zone - comfortably hard
+            if currentPace < 6.5 {
+                guidance = "Excellent tempo pace — strong performance"
+            } else if currentPace > 7.5 {
+                guidance = "Zone 3 effort but pace could improve — focus on form"
+            } else {
+                guidance = "Good tempo effort — sustainable for longer runs"
+            }
+        case 4:
+            // Threshold zone - hard effort
+            if currentPace > 7.0 {
+                guidance = "High effort (Z4) but pace is slow — ease up or focus on form"
+            } else {
+                guidance = "Threshold zone — strong effort, maintain if feeling good"
+            }
+        case 5:
+            // VO2max zone - maximum effort
+            if currentPace > 7.0 {
+                guidance = "Maximum effort (Z5) — pace suggests fatigue, consider recovery"
+            } else {
+                guidance = "VO2max zone — maximum effort, use sparingly"
+            }
+        default:
+            guidance = "Pace and effort are balanced"
         }
+        
+        adaptiveGuidance = guidance
     }
 }
 

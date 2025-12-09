@@ -4,6 +4,12 @@ import Combine
 
 // MARK: - WatchOS Mem0 Manager
 /// Optimized Mem0 integration for watchOS with caching, batching, and offline support
+/// 
+/// **Network Connectivity Priority:**
+/// 1. Apple Watch Cellular (if available)
+/// 2. iPhone Connection via Bluetooth (automatic fallback)
+/// 
+/// watchOS automatically handles connection priority - no WiFi required.
 final class Mem0Manager: ObservableObject {
     static let shared = Mem0Manager()
     
@@ -140,19 +146,30 @@ final class Mem0Manager: ObservableObject {
     // MARK: - Network Monitoring
     
     private func setupNetworkMonitoring() {
+        // Efficient: Only check online/offline status, not connection type
+        // URLSession automatically prioritizes watch cellular, then iPhone connection
+        // No need to check on each call - system handles it optimally
         networkMonitor.pathUpdateHandler = { [weak self] path in
             DispatchQueue.main.async {
                 let wasOffline = !(self?.isOnline ?? true)
-                self?.isOnline = (path.status == .satisfied)
+                let isConnected = path.status == .satisfied
+                self?.isOnline = isConnected
                 
-                // Flush queue when coming back online
-                if wasOffline && self?.isOnline == true {
+                // Only log on state change to avoid spam
+                if wasOffline && isConnected {
                     print("🌐 [Mem0] Network restored - flushing offline queue")
                     Task { await self?.flushWriteQueue() }
+                } else if !wasOffline && !isConnected {
+                    print("📴 [Mem0] Network lost - writes will queue")
                 }
             }
         }
         networkMonitor.start(queue: monitorQueue)
+        
+        // URLSession automatically uses best available connection:
+        // 1. Watch Cellular (if available)
+        // 2. iPhone Connection via Bluetooth (automatic fallback)
+        // No per-call checking needed - system handles efficiently
     }
     
     // MARK: - Caching
@@ -242,6 +259,9 @@ final class Mem0Manager: ObservableObject {
     
     // MARK: - API Calls
     
+    /// Fetch from Mem0 API
+    /// URLSession automatically uses best connection: watch cellular → iPhone connection
+    /// No per-call checking needed - system handles efficiently
     private func fetchFromAPI(
         userId: String,
         query: String,
@@ -272,12 +292,9 @@ final class Mem0Manager: ObservableObject {
             }
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             
-            let config = URLSessionConfiguration.default
-            config.waitsForConnectivity = true
-            config.allowsCellularAccess = true
-            let session = URLSession(configuration: config)
-            
-            let (data, response) = try await session.data(for: request)
+            // Use URLSession.shared - automatically uses best connection (watch cellular → iPhone)
+            // No custom configuration needed - system handles connection priority efficiently
+            let (data, response) = try await URLSession.shared.data(for: request)
             
             if let http = response as? HTTPURLResponse, http.statusCode == 200,
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -291,6 +308,9 @@ final class Mem0Manager: ObservableObject {
         return []
     }
     
+    /// Write to Mem0 API
+    /// URLSession automatically uses best connection: watch cellular → iPhone connection
+    /// Optimized for outdoor running - no connection type checking overhead
     private func writeToAPI(
         userId: String,
         text: String,

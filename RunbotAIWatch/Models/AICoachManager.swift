@@ -18,7 +18,7 @@ class AICoachManager: NSObject, ObservableObject {
     private let openAIKey: String
     private let mem0APIKey: String
     private let mem0BaseURL: String
-    private let maxCoachingDuration: TimeInterval = 20.0 // 20 seconds auto-terminate
+    private let maxCoachingDuration: TimeInterval = 30.0 // 30 seconds auto-terminate
     private var runnerName: String = "Runner"
     private var currentTrigger: CoachingTrigger = .interval
     private var lastDeliveredFeedback: String?
@@ -40,7 +40,7 @@ class AICoachManager: NSObject, ObservableObject {
     
     // MARK: - Coaching Control
     
-    /// Start-of-run coaching with personalization
+    /// Start-of-run coaching with personalization (uses cache)
     func startOfRunCoaching(
         for stats: RunningStatsUpdate,
         with preferences: UserPreferences.Settings,
@@ -68,12 +68,16 @@ class AICoachManager: NSObject, ObservableObject {
             
             await deliverFeedback(feedback, voiceManager: voiceManager, preferences: preferences)
             await persistFeedback(userId: userId, runSessionId: runSessionId, feedback: feedback, stats: stats, preferences: preferences)
+            
+            // Start-of-run: Save initial strategy to Mem0
+            let strategyLog = "Start strategy: \(feedback.prefix(50)). Target \(formatPace(preferences.targetPaceMinPerKm))."
+            Mem0Manager.shared.add(userId: userId, text: strategyLog, category: "ai_coaching_feedback", metadata: ["type": "start_strategy"])
         }
         
         startCoachingTimer()
     }
     
-    /// Interval coaching (every N km/minutes)
+    /// Interval coaching (every N km/minutes) - uses cache + incremental update
     func startScheduledCoaching(
         for stats: RunningStatsUpdate,
         with preferences: UserPreferences.Settings,
@@ -139,13 +143,9 @@ class AICoachManager: NSObject, ObservableObject {
             await deliverFeedback(feedback, voiceManager: voiceManager, preferences: preferences)
             await persistFeedback(userId: userId, runSessionId: session.id, feedback: feedback, stats: stats, preferences: preferences)
             
-            // Write comprehensive run summary to Mem0
-            let summaryText = """
-            Run completed: \(String(format: "%.2f", stats.distance / 1000.0)) km in \(formatDuration(session.duration)).
-            Average pace: \(formatPace(session.pace)) min/km.
-            Performance: \(feedback)
-            """
-            await saveMem0Memory(userId: userId, text: summaryText, tags: ["run_summary", "performance"])
+            // Write comprehensive run summary to Mem0 with categories
+            let summaryText = "Run: \(String(format: "%.2f", stats.distance / 1000.0))km, pace \(formatPace(session.pace)), \(formatDuration(session.duration)). \(feedback.prefix(40))"
+            saveMem0Memory(userId: userId, text: summaryText, category: "running_performance", metadata: ["type": "end_of_run", "distance_km": String(format: "%.2f", stats.distance / 1000.0)])
         }
         
         startCoachingTimer()
@@ -368,11 +368,39 @@ class AICoachManager: NSObject, ObservableObject {
         } else {
             switch trigger {
             case .runStart:
+                // Enhanced start-of-run: Personalized with name, last run stats, target awareness, heart zone advice, detailed strategy
+                let lastRunInfo: String
+                if let agg = aggregates, agg.totalRuns > 0 {
+                    lastRunInfo = """
+                    Last run stats:
+                    - Distance: \(String(format: "%.2f", agg.avgDistanceKm)) km (avg)
+                    - Pace: \(formatPace(agg.avgPaceMinPerKm)) (avg), Best: \(formatPace(agg.bestPaceMinPerKm))
+                    """
+                } else {
+                    lastRunInfo = "This is your first tracked run - let's set a great baseline!"
+                }
+                
                 triggerContext = """
-                THIS IS THE START OF THE RUN. Set the tone, welcome them, remind them of their goal or recent performance.
-                Example patterns:
-                - "Hey \(runnerName), let's crush this! Remember your \(targetPaceStr) pace target. Start controlled."
-                - "\(runnerName), you've got this. Ease into your rhythm, cadence up, shoulders relaxed."
+                THIS IS THE START OF THE RUN. Give personalized, motivating, strategic feedback.
+                
+                PERSONALIZATION REQUIREMENTS:
+                1. Use runner's name "\(runnerName)" naturally
+                2. Reference last run performance: \(lastRunInfo)
+                3. Acknowledge what they did well in previous runs (from Mem0 insights)
+                4. Be target-aware: Target pace is \(targetPaceStr) min/km
+                5. Give heart zone advice: "Start in Zone 2-3, build gradually"
+                6. Provide detailed race strategy: "First km easy, then settle into target pace"
+                7. Motivate: "You've been improving, let's build on that momentum!"
+                
+                STRUCTURE (max 60 words):
+                - Greeting with name
+                - Brief reference to last run/what they did well
+                - Target pace reminder
+                - Heart zone guidance
+                - Race strategy (pacing plan)
+                - Motivation to finish strong
+                
+                Example: "Hey \(runnerName)! Your last run was solid at \(formatPace(aggregates?.avgPaceMinPerKm ?? targetPace)) pace. Today, target \(targetPaceStr). Start in Zone 2, build to Zone 3 by km 2. First km easy, then lock in. You've got this!"
                 """
             case .interval:
                 triggerContext = """
@@ -564,25 +592,11 @@ class AICoachManager: NSObject, ObservableObject {
         return nil
     }
     
-    private func saveMem0Memory(userId: String, text: String, tags: [String] = ["coaching"]) async {
-        guard !mem0APIKey.isEmpty else { return }
-        do {
-            let url = URL(string: "\(mem0BaseURL)/memories")!
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("Bearer \(mem0APIKey)", forHTTPHeaderField: "Authorization")
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            let body: [String: Any] = [
-                "user_id": userId,
-                "messages": [["role": "user", "content": text]],
-                "metadata": ["tags": tags]
-            ]
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
-            _ = try await URLSession.shared.data(for: request)
-            print("✅ [AICoach] Saved to Mem0: \(tags.joined(separator: ", "))")
-        } catch {
-            print("❌ [AICoach] Mem0 save failed: \(error)")
-        }
+    private func saveMem0Memory(userId: String, text: String, category: String = "ai_coaching_feedback", metadata: [String: String] = [:]) {
+        // Use Mem0Manager for efficient batching and caching
+        var enrichedMetadata = metadata
+        enrichedMetadata["category"] = category
+        Mem0Manager.shared.add(userId: userId, text: text, category: category, metadata: enrichedMetadata)
     }
     
     // MARK: - OpenAI API
@@ -604,7 +618,7 @@ class AICoachManager: NSObject, ObservableObject {
                 "messages": [
                     [
                         "role": "system",
-                        "content": "You are an elite running coach. Give SHORT, actionable coaching. NO fluff. Under 25 words."
+                        "content": "You are an elite running coach. Give SHORT, actionable coaching. NO fluff. Maximum 60 words."
                     ],
                     [
                         "role": "user",
@@ -612,7 +626,7 @@ class AICoachManager: NSObject, ObservableObject {
                     ]
                 ],
                 "temperature": temperature,
-                "max_tokens": 60
+                "max_tokens": 120 // ~60 words
             ]
             
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
@@ -664,8 +678,8 @@ class AICoachManager: NSObject, ObservableObject {
             stats: stats,
             durationSeconds: maxCoachingDuration
         )
-        async let saveMem: Void = saveMem0Memory(userId: userId, text: feedback, tags: ["coaching", "watch"])
-        _ = await (saveSupabase, saveMem)
+        saveMem0Memory(userId: userId, text: feedback, category: "ai_coaching_feedback", metadata: ["source": "watch"])
+        _ = await saveSupabase
     }
     
     private func currentUserIdFromDefaults() -> String? {
