@@ -17,7 +17,8 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
     private var minSpeed: Double = Double.infinity
     private var updateTimer: Timer?
     private var intervalBuffer: [CLLocation] = []
-    private let intervalDistanceMeters: Double = 10.0 // create interval every ~10m for current pace
+    private let intervalDistanceMeters: Double = 1000.0 // create interval every 1km
+    private var lastIntervalEndDistance: Double = 0.0 // Track cumulative distance for 1km intervals
     var supabaseManager: SupabaseManager?
     var healthManager: HealthManager?
     
@@ -93,6 +94,7 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         minSpeed = Double.infinity
         previousLocations = []
         intervalBuffer = []
+        lastIntervalEndDistance = 0.0 // Reset interval tracking
         paceHistory = [] // Reset pace history for new run
         
         print("🏃 [RunTracker] Starting location manager...")
@@ -311,11 +313,18 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
                 if elevationChange > 0 {
                     totalElevation += elevationChange
                 }
-                // Build 10m interval buffer and emit intervals
+                // Build 1km interval buffer - only create interval when 1km is complete
                 intervalBuffer.append(newLocation)
                 trimIntervalBufferIfNeeded()
-                if computeBufferedDistance() >= intervalDistanceMeters {
+                
+                // Calculate cumulative distance from last interval end
+                let currentTotalDistance = totalDistance
+                let distanceSinceLastInterval = currentTotalDistance - lastIntervalEndDistance
+                
+                // Only create interval when we've completed 1km (1000m)
+                if distanceSinceLastInterval >= intervalDistanceMeters {
                     createIntervalIfPossible(in: &session)
+                    lastIntervalEndDistance = currentTotalDistance // Update last interval end
                     intervalBuffer.removeAll(keepingCapacity: true)
                 }
             }
@@ -584,13 +593,22 @@ extension RunTracker {
         guard intervalBuffer.count >= 2 else { return }
         let start = intervalBuffer.first!
         let end = intervalBuffer.last!
-        let d = computeBufferedDistance()
+        
+        // Use actual 1km distance (1000m) for the interval, not buffered distance
+        // This ensures each interval represents exactly 1km
+        let d = 1000.0 // Fixed 1km interval distance
         let dt = max(end.timestamp.timeIntervalSince(start.timestamp), 0.001)
         let paceMinPerKm: Double = {
             let mps = d / dt
             let kmPerMin = (mps * 3.6) / 60.0
             return kmPerMin > 0 ? 1.0 / kmPerMin : 0.0
         }()
+        
+        print("📊 [RunTracker] Creating 1km interval #\(session.intervals.count + 1):")
+        print("   - Distance: \(String(format: "%.2f", d))m")
+        print("   - Duration: \(String(format: "%.1f", dt))s")
+        print("   - Pace: \(String(format: "%.2f", paceMinPerKm)) min/km")
+        
         var intervals = session.intervals
         let idx = intervals.count
         let interval = RunInterval(

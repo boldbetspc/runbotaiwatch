@@ -126,9 +126,13 @@ struct ContentViewWrapper: View {
         runTracker.supabaseManager = supabaseManager
         
         // Request HealthKit authorization ON WATCH
-        print("🚀 [App] Requesting HealthKit authorization on watch...")
-        healthManager.requestHealthDataAccess()
-        print("✅ [App] HealthKit authorization request submitted")
+        // Add a small delay to ensure the app is fully initialized
+        print("🚀 [App] Scheduling HealthKit authorization request on watch...")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            print("🚀 [App] Requesting HealthKit authorization on watch...")
+            self.healthManager.requestHealthDataAccess()
+            print("✅ [App] HealthKit authorization request submitted")
+        }
         
         print("✅ [App] Setup complete - User ID available: \(authManager.currentUser?.id ?? "none")")
     }

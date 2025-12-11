@@ -406,8 +406,8 @@ struct MainRunbotView: View {
                         // Start run - all functionality consolidated here
                         print("🟢🟢🟢 [MainRunbotView] ========== START RUN TAPPED ==========")
                         print("🟢 [MainRunbotView] Thread: \(Thread.isMainThread ? "Main" : "Background")")
-                        print("🟢 [MainRunbotView] HealthManager: \(healthManager != nil ? "available" : "nil")")
-                        print("🟢 [MainRunbotView] RunTracker: \(runTracker != nil ? "available" : "nil")")
+                        print("🟢 [MainRunbotView] HealthManager: available")
+                        print("🟢 [MainRunbotView] RunTracker: available")
                         
                         // Start run tracker (creates session, starts location, starts HR monitoring)
                         runTracker.startRun(mode: .run, shadowData: nil)
@@ -870,7 +870,7 @@ struct MainRunbotView: View {
             if isRunning {
                 let currentHR = healthManager.currentHeartRate
                 let currentZone = healthManager.currentZone
-                let zonePercentages = healthManager.zonePercentages
+                let _ = healthManager.zonePercentages
                 let adaptiveGuidance = healthManager.adaptiveGuidance
                 
                 // Beautiful Heart Rate Display (No Circle)
@@ -1150,7 +1150,7 @@ struct MainRunbotView: View {
                 .padding(.vertical, 8)
                 } else {
                     // Data is being collected - show loading state
-                    Spacer()
+                Spacer()
                     VStack(spacing: 8) {
                         ProgressView()
                             .progressViewStyle(CircularProgressViewStyle(tint: .rbAccent))
@@ -1171,12 +1171,12 @@ struct MainRunbotView: View {
             } else {
                 Spacer()
                 Image(systemName: "chart.pie.fill")
-                        .font(.system(size: 32))
+                    .font(.system(size: 32))
                     .foregroundColor(.rbSecondary.opacity(0.4))
                 Text("Start running to see zones")
                     .font(.system(size: 11))
                     .foregroundColor(.white.opacity(0.3))
-                    Spacer()
+                Spacer()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1289,7 +1289,9 @@ struct MainRunbotView: View {
     // MARK: - Split Intervals Page
     @ViewBuilder
     private func splitIntervalsPage() -> some View {
-        let intervals = runTracker.currentSession?.intervals ?? []
+        // Only show complete 1km intervals
+        let allIntervals = runTracker.currentSession?.intervals ?? []
+        let completeIntervals = allIntervals.filter { $0.distanceMeters >= 950.0 } // Allow 50m tolerance
         let targetPace = userPreferences.settings.targetPaceMinPerKm
         
         VStack(spacing: 6) {
@@ -1310,11 +1312,11 @@ struct MainRunbotView: View {
             }
             .padding(.top, 2)
             
-            if isRunning && !intervals.isEmpty {
+            if isRunning && !completeIntervals.isEmpty {
                 ScrollView {
                     VStack(spacing: 8) {
-                        // Show last 3 km intervals
-                        let last3Intervals = Array(intervals.suffix(3))
+                        // Show last 3 complete km intervals
+                        let last3Intervals = Array(completeIntervals.suffix(3))
                         let reversedIntervals = Array(last3Intervals.reversed())
                         
                         ForEach(reversedIntervals, id: \.id) { interval in
@@ -1325,9 +1327,9 @@ struct MainRunbotView: View {
                             )
                         }
                         
-                        // Average of all intervals
-                        if intervals.count > 0 {
-                            let avgPace = intervals.map { $0.paceMinPerKm }.reduce(0, +) / Double(intervals.count)
+                        // Average of all complete intervals
+                        if completeIntervals.count > 0 {
+                            let avgPace = completeIntervals.map { $0.paceMinPerKm }.reduce(0, +) / Double(completeIntervals.count)
                             SplitIntervalBar(
                                 interval: RunInterval(
                                     id: "average",
@@ -1335,8 +1337,8 @@ struct MainRunbotView: View {
                                     index: -1,
                                     startTime: Date(),
                                     endTime: Date(),
-                                    distanceMeters: Double(intervals.count) * 1000.0,
-                                    durationSeconds: intervals.map { $0.durationSeconds }.reduce(0, +),
+                                    distanceMeters: Double(completeIntervals.count) * 1000.0,
+                                    durationSeconds: completeIntervals.map { $0.durationSeconds }.reduce(0, +),
                                     paceMinPerKm: avgPace
                                 ),
                                 targetPace: targetPace,
@@ -1356,7 +1358,7 @@ struct MainRunbotView: View {
                     Text("Split Intervals")
                         .font(.system(size: 12, weight: .bold))
                         .foregroundColor(.white.opacity(0.5))
-                    Text(isRunning ? "Complete 1km to see splits" : "Start running to see splits")
+                    Text(isRunning ? (completeIntervals.isEmpty ? "Complete 1km to see splits" : "\(completeIntervals.count) km completed") : "Start running to see splits")
                         .font(.system(size: 9))
                         .foregroundColor(.white.opacity(0.3))
                         .multilineTextAlignment(.center)
@@ -2216,7 +2218,7 @@ struct BeamingPulse: View {
         .onAppear {
             if isActive { animate = true }
         }
-        .onChange(of: isActive) { newValue in
+        .onChange(of: isActive) { oldValue, newValue in
             animate = newValue
         }
     }
@@ -2383,7 +2385,7 @@ struct EnhancedEnergyWaveform: View {
             ]
             
             // Draw grid lines and labels
-            for (index, labelPace) in axisLabels.enumerated() {
+            for (_, labelPace) in axisLabels.enumerated() {
                 let y = paceToY(labelPace)
                 let gridPath = Path { path in
                     path.move(to: CGPoint(x: 0, y: y))
@@ -2391,10 +2393,10 @@ struct EnhancedEnergyWaveform: View {
                 }
                 context.stroke(gridPath, with: .color(Color.white.opacity(0.1)), lineWidth: 0.5)
                 
-                // Draw label
+                // Draw label with larger font for readability
                 let labelText = String(format: "%.1f", labelPace)
-                let text = Text(labelText).font(.system(size: 8)).foregroundColor(.white.opacity(0.4))
-                context.draw(text, at: CGPoint(x: width - 25, y: y))
+                let text = Text(labelText).font(.system(size: 12, weight: .semibold, design: .monospaced)).foregroundColor(.white.opacity(0.6))
+                context.draw(text, at: CGPoint(x: width - 30, y: y))
             }
             
             // Draw target pace line
@@ -3434,9 +3436,12 @@ class NetworkMonitor: ObservableObject {
     private let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "NetworkMonitor")
     private let watchConnectivity = WatchConnectivityManager.shared
+    private var retryTimer: Timer?
+    private let retryInterval: TimeInterval = 2.0 // Retry every 2 seconds if disconnected
     
     init() {
         startMonitoring()
+        startRetryTimer()
     }
     
     private func startMonitoring() {
@@ -3445,6 +3450,7 @@ class NetworkMonitor: ObservableObject {
                 guard let self = self else { return }
                 
                 let isConnected = path.status == .satisfied
+                let wasConnected = self.isConnected
                 self.isConnected = isConnected
                 
                 if isConnected {
@@ -3452,18 +3458,32 @@ class NetworkMonitor: ObservableObject {
                     if path.usesInterfaceType(.cellular) {
                         // Watch has its own cellular connection (priority)
                         self.connectionType = .watchCellular
+                        print("🌐 [NetworkMonitor] Connected via Watch Cellular")
                     } else if self.watchConnectivity.isReachable {
                         // iPhone is paired and reachable
                         self.connectionType = .iphonePaired
+                        print("🌐 [NetworkMonitor] Connected via iPhone Paired")
                     } else if path.usesInterfaceType(.wifi) {
                         // Watch connected via WiFi (if available)
                         self.connectionType = .watchCellular // Treat WiFi as watch's own connection
+                        print("🌐 [NetworkMonitor] Connected via WiFi")
                     } else {
                         // Connected but unknown type
                         self.connectionType = .iphonePaired // Default to iPhone assumption
+                        print("🌐 [NetworkMonitor] Connected (unknown type, defaulting to iPhone)")
+                    }
+                    
+                    // Stop retry timer if we just connected
+                    if !wasConnected {
+                        print("✅ [NetworkMonitor] Connection restored - stopping retry timer")
+                        self.stopRetryTimer()
                     }
                 } else {
                     self.connectionType = .none
+                    if wasConnected {
+                        print("❌ [NetworkMonitor] Connection lost - starting retry timer")
+                        self.startRetryTimer()
+                    }
                 }
             }
         }
@@ -3471,7 +3491,36 @@ class NetworkMonitor: ObservableObject {
         monitor.start(queue: queue)
     }
     
+    private func startRetryTimer() {
+        // Stop existing timer if any
+        stopRetryTimer()
+        
+        print("🔄 [NetworkMonitor] Starting connection retry timer (every \(retryInterval)s)")
+        retryTimer = Timer.scheduledTimer(withTimeInterval: retryInterval, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            
+            // Force a path check by accessing current path
+            let currentPath = self.monitor.currentPath
+            DispatchQueue.main.async {
+                let isConnected = currentPath.status == .satisfied
+                if isConnected != self.isConnected {
+                    print("🔄 [NetworkMonitor] Retry check: Connection status changed")
+                    // Trigger path update handler
+                    self.monitor.pathUpdateHandler?(currentPath)
+                } else if !isConnected {
+                    print("🔄 [NetworkMonitor] Retry check: Still disconnected, will retry in \(self.retryInterval)s")
+                }
+            }
+        }
+    }
+    
+    private func stopRetryTimer() {
+        retryTimer?.invalidate()
+        retryTimer = nil
+    }
+    
     deinit {
+        stopRetryTimer()
         monitor.cancel()
     }
 }

@@ -208,7 +208,15 @@ class HealthManager: NSObject, ObservableObject {
             return
         }
         
-        // If already requested authorization AND still not determined, request again
+        // If already denied, don't request again
+        if workoutAuthStatus == .sharingDenied || hrAuthStatus == .sharingDenied {
+            print("❌ [HealthManager] Authorization was DENIED - cannot request again")
+            print("   User must enable in Settings > Privacy & Security > Health")
+            isAuthorized = false
+            return
+        }
+        
+        // If already requested and status is still notDetermined, request again
         // (User might have dismissed the dialog, or it's still pending)
         if hasRequestedAuthorization {
             if workoutAuthStatus == .notDetermined || hrAuthStatus == .notDetermined {
@@ -216,7 +224,7 @@ class HealthManager: NSObject, ObservableObject {
                 print("   Requesting again - user may have dismissed previous dialog")
                 // Continue to request again below
             } else {
-                print("⚠️ [HealthManager] Authorization already requested - checking current status")
+                print("✅ [HealthManager] Authorization already requested - checking current status")
                 print("   Current status - Workout: \(workoutAuthStatus.rawValue), HR: \(hrAuthStatus.rawValue)")
                 // Update isAuthorized based on current status
                 isAuthorized = (workoutAuthStatus == .sharingAuthorized && hrAuthStatus == .sharingAuthorized)
@@ -244,34 +252,56 @@ class HealthManager: NSObject, ObservableObject {
         // Mark that we've requested authorization
         hasRequestedAuthorization = true
         
-        healthStore.requestAuthorization(toShare: typesToWrite, read: typesToRead) { [weak self] success, error in
-            DispatchQueue.main.async {
-                guard let self = self else {
-                    print("⚠️ [HealthManager] Self deallocated during authorization")
-                    return
+        print("💓 [HealthManager] ========== CALLING requestAuthorization ==========")
+        print("💓 [HealthManager] This should show the HealthKit authorization dialog on watchOS")
+        print("💓 [HealthManager] Thread: \(Thread.isMainThread ? "Main ✅" : "Background ❌")")
+        
+        // CRITICAL: Ensure we're on main thread for authorization request
+        if !Thread.isMainThread {
+            print("⚠️ [HealthManager] Not on main thread - dispatching to main...")
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+                self.healthStore.requestAuthorization(toShare: typesToWrite, read: typesToRead) { [weak self] success, error in
+                    self?.handleAuthorizationResponse(success: success, error: error, workoutType: workoutType, heartRateType: heartRateType)
                 }
-                self.isAuthorized = success
-                if let error = error {
-                    let errorMsg = error.localizedDescription
-                    print("❌ [HealthManager] Health data authorization ERROR: \(errorMsg)")
-                    print("   Error domain: \((error as NSError).domain)")
-                    print("   Error code: \((error as NSError).code)")
-                    // Don't crash - just mark as not authorized
-                    if errorMsg.contains("entitlement") {
-                        print("⚠️ [HealthManager] HealthKit entitlement missing - app will continue without heart rate data")
-                    }
-                } else {
-                    print("✅ [HealthManager] Health data authorization SUCCESS: \(success)")
-                    // Re-check status after authorization
-                    let newWorkoutStatus = self.healthStore.authorizationStatus(for: workoutType)
-                    let newHRStatus = self.healthStore.authorizationStatus(for: heartRateType)
-                    print("💓 [HealthManager] After authorization:")
-                    print("   - Workout: \(newWorkoutStatus.rawValue) (\(self.authStatusString(newWorkoutStatus)))")
-                    print("   - HR: \(newHRStatus.rawValue) (\(self.authStatusString(newHRStatus)))")
+            }
+        } else {
+            healthStore.requestAuthorization(toShare: typesToWrite, read: typesToRead) { [weak self] success, error in
+                self?.handleAuthorizationResponse(success: success, error: error, workoutType: workoutType, heartRateType: heartRateType)
+            }
+        }
+        
+        print("💓 [HealthManager] Authorization request submitted, waiting for callback...")
+    }
+    
+    private func handleAuthorizationResponse(success: Bool, error: Error?, workoutType: HKObjectType, heartRateType: HKQuantityType) {
+        DispatchQueue.main.async {
+            self.isAuthorized = success
+            if let error = error {
+                let errorMsg = error.localizedDescription
+                print("❌ [HealthManager] Health data authorization ERROR: \(errorMsg)")
+                print("   Error domain: \((error as NSError).domain)")
+                print("   Error code: \((error as NSError).code)")
+                // Don't crash - just mark as not authorized
+                if errorMsg.contains("entitlement") {
+                    print("⚠️ [HealthManager] HealthKit entitlement missing - app will continue without heart rate data")
+                }
+            } else {
+                print("✅ [HealthManager] Health data authorization SUCCESS: \(success)")
+                // Re-check status after authorization
+                let newWorkoutStatus = self.healthStore.authorizationStatus(for: workoutType)
+                let newHRStatus = self.healthStore.authorizationStatus(for: heartRateType)
+                print("💓 [HealthManager] After authorization:")
+                print("   - Workout: \(newWorkoutStatus.rawValue) (\(self.authStatusString(newWorkoutStatus)))")
+                print("   - HR: \(newHRStatus.rawValue) (\(self.authStatusString(newHRStatus)))")
+                
+                // If authorized, the app should now appear in Health > Watch > Apps
+                if success && newWorkoutStatus == .sharingAuthorized && newHRStatus == .sharingAuthorized {
+                    print("✅✅✅ [HealthManager] Authorization GRANTED - App should appear in Health > Watch > Apps after first workout save ✅✅✅")
+                print("💡 [HealthManager] Note: App appears in Health > Watch > Apps only after successfully saving a workout to HealthKit")
                 }
             }
         }
-        print("💓 [HealthManager] Authorization request submitted, waiting for callback...")
     }
     
     // MARK: - CRITICAL: HKWorkoutSession for watchOS Real-Time HR
@@ -480,9 +510,15 @@ class HealthManager: NSObject, ObservableObject {
             print("🏃 [HealthManager] Creating live workout data source...")
             let dataSource = HKLiveWorkoutDataSource(healthStore: healthStore, workoutConfiguration: configuration)
             print("✅ [HealthManager] Data source created: \(dataSource)")
+            print("💡 [HealthManager] HKLiveWorkoutDataSource automatically collects:")
+            print("   - Heart Rate (enables green sensor light)")
+            print("   - Distance (GPS)")
+            print("   - Active Energy")
+            print("   - Other workout metrics")
             
             builder.dataSource = dataSource
             print("✅ [HealthManager] Data source assigned to builder")
+            print("💡 [HealthManager] Green HR sensor light will activate when session reaches .running state")
             
             // CRITICAL: Retain builder immediately to prevent deallocation
             self.workoutBuilder = builder
@@ -531,11 +567,16 @@ class HealthManager: NSObject, ObservableObject {
             
             // Start activity FIRST (enables HR sensor immediately)
             // This MUST be called on main thread
+            // CRITICAL: startActivity() triggers the workout session to transition to .running state
+            // When .running state is reached, HKLiveWorkoutDataSource automatically starts collecting HR
+            // This activates the green HR sensor light under the watch
             session.startActivity(with: startDate)
             print("✅✅✅ [HealthManager] session.startActivity() CALLED ✅✅✅")
-            print("✅ [HealthManager] Workout activity STARTED - HR sensor should be active now")
+            print("✅ [HealthManager] Workout activity STARTED")
+            print("💡 [HealthManager] Session will transition to .running state (delegate callback will confirm)")
+            print("💡 [HealthManager] Green HR sensor light activates when session reaches .running state")
             print("   Session state after startActivity: \(session.state.rawValue) (\(workoutStateString(session.state)))")
-            print("🏃 [HealthManager] Waiting for delegate callback to confirm state transition...")
+            print("🏃 [HealthManager] Waiting for delegate callback to confirm state transition to .running...")
             
             // Update workout status
             DispatchQueue.main.async { [weak self] in
@@ -991,9 +1032,10 @@ class HealthManager: NSObject, ObservableObject {
             if let error = error {
                 print("❌ [HealthManager] Failed to save workout: \(error.localizedDescription)")
             } else if let workout = workout {
-                print("✅ [HealthManager] Workout saved to HealthKit: \(workout.uuid)")
+                print("✅✅✅ [HealthManager] Workout saved to HealthKit: \(workout.uuid) ✅✅✅")
                 print("   Duration: \(workout.duration) seconds")
                 print("   Distance: \(workout.totalDistance?.doubleValue(for: .meter()) ?? 0) meters")
+                print("💡 [HealthManager] Workout saved - App should now appear in Health > Watch > Apps")
                 
                 // Finish route builder with the finished workout
                 if let routeBuilder = self.workoutRouteBuilder {
@@ -1382,14 +1424,27 @@ extension HealthManager: HKWorkoutSessionDelegate {
         // Log important state transitions
         if toState == .running {
             print("✅✅✅ [HealthManager] Workout session is now RUNNING - HR should be active ✅✅✅")
+            print("💡 [HealthManager] Green HR sensor light should now be visible under the watch")
+            print("💡 [HealthManager] HKLiveWorkoutDataSource is now actively collecting heart rate")
+            
             // Update workout status
             DispatchQueue.main.async { [weak self] in
                 self?.workoutStatus = .running
             }
+            
             // When session reaches running state, ensure HR query is active
             if self.heartRateQuery == nil {
                 print("⚠️ [HealthManager] HR query not started yet - starting now...")
                 self.startHeartRateQuery()
+            } else {
+                print("✅ [HealthManager] HR query already active")
+            }
+            
+            // Verify builder is retained (dataSource is set earlier in startWorkoutSession)
+            if self.workoutBuilder != nil {
+                print("✅ [HealthManager] Workout builder is retained - HR collection should be working")
+            } else {
+                print("❌ [HealthManager] WARNING: Workout builder is nil - HR may not be collected!")
             }
         } else if toState == .prepared {
             print("✅ [HealthManager] Workout session PREPARED - ready to start")

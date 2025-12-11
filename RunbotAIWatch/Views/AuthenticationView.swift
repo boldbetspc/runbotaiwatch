@@ -1,4 +1,5 @@
 import SwiftUI
+import HealthKit
 
 struct AuthenticationView: View {
     @EnvironmentObject var authManager: AuthenticationManager
@@ -99,10 +100,28 @@ struct AuthenticationView: View {
                 }
                 
                 // Request HealthKit authorization ON WATCH if not already authorized
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-                    print("💓 [AuthView] Requesting HealthKit authorization on watch after login...")
-                    healthManager.requestHealthDataAccess()
-                    print("✅ [AuthView] HealthKit authorization request submitted")
+                // Check current status first
+                let workoutType = HKObjectType.workoutType()
+                let heartRateType = HKQuantityType.quantityType(forIdentifier: .heartRate)!
+                let healthStore = HKHealthStore()
+                let workoutStatus = healthStore.authorizationStatus(for: workoutType)
+                let hrStatus = healthStore.authorizationStatus(for: heartRateType)
+                
+                print("💓 [AuthView] Current HealthKit authorization status:")
+                print("   - Workout: \(workoutStatus.rawValue)")
+                print("   - HR: \(hrStatus.rawValue)")
+                
+                // Only request if not already authorized or denied
+                if workoutStatus == .notDetermined || hrStatus == .notDetermined {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                        print("💓 [AuthView] Requesting HealthKit authorization on watch after login...")
+                        healthManager.requestHealthDataAccess()
+                        print("✅ [AuthView] HealthKit authorization request submitted")
+                    }
+                } else if workoutStatus == .sharingAuthorized && hrStatus == .sharingAuthorized {
+                    print("✅ [AuthView] HealthKit already authorized - no need to request")
+                } else {
+                    print("⚠️ [AuthView] HealthKit authorization denied - user must enable in Settings")
                 }
                 
                 // Request location permission
