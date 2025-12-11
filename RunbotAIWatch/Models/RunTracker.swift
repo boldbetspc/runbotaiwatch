@@ -21,6 +21,10 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
     var supabaseManager: SupabaseManager?
     var healthManager: HealthManager?
     
+    // Pace history for energy signature graph (stores last 60 data points, ~1 per second)
+    @Published var paceHistory: [Double] = []
+    private let maxPaceHistorySize = 60 // Store last 60 seconds of pace data
+    
     // Configuration
     let runnerWeight: Double = 70.0 // kg, typical runner weight
     let caloriesBurnedPerKm: Double = 65.0 // kcal per km
@@ -56,7 +60,15 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
     // MARK: - Run Control
     
     func startRun(mode: RunMode = .run, shadowData: ShadowRunData? = nil) {
-        guard !isRunning else { return }
+        print("🏃 [RunTracker] ========== STARTING RUN ==========")
+        print("🏃 [RunTracker] Thread: \(Thread.isMainThread ? "Main" : "Background")")
+        print("🏃 [RunTracker] Mode: \(mode)")
+        print("🏃 [RunTracker] Already running: \(isRunning)")
+        
+        guard !isRunning else {
+            print("⚠️ [RunTracker] Already running - ignoring start request")
+            return
+        }
         
         var newSession = RunSession(
             id: UUID().uuidString,
@@ -67,6 +79,11 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         newSession.shadowRunData = shadowData
         newSession.shadowReferenceRunId = shadowData?.prModel.runId
         
+        print("🏃 [RunTracker] Created new session:")
+        print("   - ID: \(newSession.id)")
+        print("   - Start time: \(newSession.startTime)")
+        print("   - Mode: \(mode)")
+        
         currentSession = newSession
         isRunning = true
         totalDistance = 0.0
@@ -76,27 +93,39 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         minSpeed = Double.infinity
         previousLocations = []
         intervalBuffer = []
+        paceHistory = [] // Reset pace history for new run
         
+        print("🏃 [RunTracker] Starting location manager...")
         locationManager.startUpdatingLocation()
+        print("✅ [RunTracker] Location manager started")
         
         // CRITICAL: Start HealthManager for real-time HR via HKWorkoutSession
         // Pass run ID and SupabaseManager for periodic HR saves
+        print("🏃 [RunTracker] Starting HealthManager HR monitoring...")
+        print("   - HealthManager: \(healthManager != nil ? "available" : "nil")")
+        print("   - SupabaseManager: \(supabaseManager != nil ? "available" : "nil")")
+        
         healthManager?.startHeartRateMonitoring(
             runId: newSession.id,
             supabaseManager: supabaseManager
         )
+        print("✅ [RunTracker] HealthManager startHeartRateMonitoring called")
         
         // Notify iOS that workout started
         if let sessionId = currentSession?.id {
+            print("🏃 [RunTracker] Notifying iOS of workout start...")
             WatchConnectivityManager.shared.sendWorkoutStarted(runId: sessionId)
         }
         
         // Log run start for debugging
         print("🏃 [RunTracker] Run cache refresh will happen in AICoachManager")
         
-        print("🏃 [RunTracker] Run started with ID: \(newSession.id)")
+        print("✅ [RunTracker] Run started with ID: \(newSession.id)")
+        print("🏃 [RunTracker] Starting stats update timer...")
         startStatsUpdateTimer()
+        print("🏃 [RunTracker] Performing initial stats update...")
         updateStats()
+        print("✅ [RunTracker] ========== RUN START COMPLETE ==========")
     }
     
     /// Force final stats update before stopping (bypasses isRunning check)
@@ -156,7 +185,8 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         session.endTime = Date()  // Set end time now
         session.isCompleted = true
         
-        // Update shadow comparison if in train mode
+        // Shadow comparison removed (train mode removed)
+        // Keeping this check for backward compatibility with existing data
         if session.shadowRunData != nil {
             updateShadowComparison(
                 for: &session,
@@ -168,10 +198,20 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         
         currentSession = session
         
+        // Update pace history for energy signature graph
+        let finalPace = currentPace > 0 ? currentPace : pace
+        if finalPace > 0 {
+            paceHistory.append(finalPace)
+            // Keep only last maxPaceHistorySize entries
+            if paceHistory.count > maxPaceHistorySize {
+                paceHistory.removeFirst()
+            }
+        }
+        
         // Create final stats update
         statsUpdate = RunningStatsUpdate(
             distance: totalDistance,
-            pace: currentPace > 0 ? currentPace : pace,
+            pace: finalPace,
             avgSpeed: avgSpeed,
             calories: caloriesEstimate,
             elevation: totalElevation,
@@ -224,22 +264,35 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
     // MARK: - Location Delegate
     
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
-        guard isRunning, var session = currentSession else { return }
+        guard isRunning, var session = currentSession else {
+            print("⚠️ [RunTracker] Location update ignored - not running or no session")
+            return
+        }
         
-        for newLocation in locations {
+        print("📍 [RunTracker] Received \(locations.count) location update(s)")
+        
+        for (index, newLocation) in locations.enumerated() {
             // Ensure location accuracy is good for outdoor running
             // Accept locations with accuracy better than 50m (GPS typically 5-10m, cellular 50-100m)
             guard newLocation.horizontalAccuracy > 0 && newLocation.horizontalAccuracy < 50 else {
-                print("⚠️ [RunTracker] Location accuracy too low: \(newLocation.horizontalAccuracy)m")
+                print("⚠️ [RunTracker] Location \(index) accuracy too low: \(newLocation.horizontalAccuracy)m - skipping")
                 continue
             }
             
-            // Add location to workout route (for HealthKit workout) - this uses GPS from watch/iPhone
+            print("📍 [RunTracker] Processing location \(index):")
+            print("   - Lat: \(newLocation.coordinate.latitude)")
+            print("   - Lon: \(newLocation.coordinate.longitude)")
+            print("   - Accuracy: \(newLocation.horizontalAccuracy)m")
+            print("   - Speed: \(newLocation.speed * 3.6) km/h")
+            
+            // CRITICAL: Add location to workout route (for GPS tracking in HealthKit)
+            print("📍 [RunTracker] Adding location to workout route...")
             healthManager?.addLocationToWorkout(newLocation)
             
             // Store location
             let locationPoint = LocationPoint(location: newLocation)
             session.locations.append(locationPoint)
+            print("✅ [RunTracker] Location \(index) processed and stored")
             
             // Calculate distance from previous location (fallback if workout distance not available)
             if let lastLocation = previousLocations.last {
@@ -398,10 +451,20 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         
         currentSession = session
         
+        // Update pace history for energy signature graph
+        let finalPace = currentPace > 0 ? currentPace : pace
+        if finalPace > 0 {
+            paceHistory.append(finalPace)
+            // Keep only last maxPaceHistorySize entries
+            if paceHistory.count > maxPaceHistorySize {
+                paceHistory.removeFirst()
+            }
+        }
+        
         // Create stats update for UI
         statsUpdate = RunningStatsUpdate(
             distance: totalDistance,
-            pace: currentPace > 0 ? currentPace : pace,
+            pace: finalPace,
             avgSpeed: avgSpeed,
             calories: caloriesEstimate,
             elevation: totalElevation,

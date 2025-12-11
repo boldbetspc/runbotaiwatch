@@ -98,3 +98,6 @@ Config.plist
 # Documentation files (keep only essential ones)
 *.md
 !README.md
+.env
+__pycache__/
+*.pyc

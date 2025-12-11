@@ -139,8 +139,8 @@ class SupabaseManager: ObservableObject {
             let avgHR = healthManager?.averageHeartRate.map { Int($0) }
             let maxHR = healthManager?.maxHeartRate.map { Int($0) }
             
-            // Generate run name
-            let runName = runData.mode == .train ? "Train Mode Run" : "Run"
+            // Generate run name (train mode removed - always "Run")
+            let runName = "Run"
             
             // NOTE: average_pace_minutes_per_km is a GENERATED COLUMN - don't send it
             var runPayload: [String: Any] = [
@@ -155,7 +155,7 @@ class SupabaseManager: ObservableObject {
                 "mode": runData.mode.rawValue,
                 "activity_date": formatter.string(from: runData.startTime),
                 "device_connected": "Apple Watch",
-                "is_pr_shadow": runData.mode == .train,
+                "is_pr_shadow": false, // Train mode removed
                 "created_at": formatter.string(from: runData.startTime),
                 "updated_at": formatter.string(from: Date())
             ]

@@ -19,7 +19,11 @@ struct RunbotAIWatchApp: App {
     @Environment(\.scenePhase) private var scenePhase
     
     init() {
-        print("🚀 [App] RunbotAIWatchApp initializing...")
+        print("🚀 [App] ========== RunbotAIWatchApp INITIALIZING ==========")
+        print("🚀 [App] Platform: watchOS")
+        print("🚀 [App] Bundle ID: com.runbotai.ioswrapper.watchapp")
+        print("🚀 [App] If you see this log, watch logging is working!")
+        print("🚀 [App] =================================================")
     }
     
     var body: some Scene {
@@ -35,9 +39,18 @@ struct RunbotAIWatchApp: App {
             )
         }
         .onChange(of: scenePhase) { oldPhase, newPhase in
+            // CRITICAL: Don't kill sessions if workout is active
+            // Workout sessions MUST continue in background for HR monitoring
+            let isWorkoutActive = healthManager.workoutStatus == .running || healthManager.workoutStatus == .starting
+            
             if newPhase == .inactive || newPhase == .background {
-                print("⚠️ [App] App going inactive/background - killing all sessions")
-                SessionCleanupManager.shared.killAllSessions()
+                if isWorkoutActive {
+                    print("🏃 [App] App going inactive/background BUT workout is active - keeping workout session alive")
+                    print("🏃 [App] Workout will continue in background (healthkit + workout-processing modes)")
+                } else {
+                    print("⚠️ [App] App going inactive/background - killing AI sessions (workout not active)")
+                    SessionCleanupManager.shared.killAllSessions()
+                }
             }
         }
     }
@@ -112,8 +125,10 @@ struct ContentViewWrapper: View {
         runTracker.healthManager = healthManager
         runTracker.supabaseManager = supabaseManager
         
-        // Request HealthKit authorization
+        // Request HealthKit authorization ON WATCH
+        print("🚀 [App] Requesting HealthKit authorization on watch...")
         healthManager.requestHealthDataAccess()
+        print("✅ [App] HealthKit authorization request submitted")
         
         print("✅ [App] Setup complete - User ID available: \(authManager.currentUser?.id ?? "none")")
     }

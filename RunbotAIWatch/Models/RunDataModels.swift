@@ -20,9 +20,9 @@ struct RunSession: Identifiable, Codable {
     var coachingSessions: [CoachingSession] = []
     var isCompleted: Bool = false
     var isSyncedToSupabase: Bool = false
-    var mode: RunMode = .run // run or train mode
-    var shadowRunData: ShadowRunData? = nil // populated in train mode
-    var shadowReferenceRunId: String? = nil // preserve baseline PR run id for train mode saves
+    var mode: RunMode = .run // run mode only (train mode removed)
+    var shadowRunData: ShadowRunData? = nil // legacy field (train mode removed)
+    var shadowReferenceRunId: String? = nil // legacy field (train mode removed)
     
     var elapsedTime: TimeInterval {
         if let endTime = endTime {
@@ -256,7 +256,7 @@ struct RunningStatsUpdate {
 // MARK: - Run Mode
 enum RunMode: String, Codable {
     case run = "run"
-    case train = "train"
+    // Train mode removed - only run mode supported
 }
 
 // MARK: - Target Distance (Race Type)

@@ -1,6 +1,7 @@
 import SwiftUI
 import Combine
 import ImageIO
+import Network
 #if canImport(WatchKit)
 import WatchKit
 #endif
@@ -221,6 +222,7 @@ struct MainRunbotView: View {
     @EnvironmentObject var healthManager: HealthManager
     @StateObject private var aiCoach = AICoachManager()
     @StateObject private var voiceManager = VoiceManager()
+    @StateObject private var networkMonitor = NetworkMonitor()
     
     @State private var carouselSelection: CarouselPage = .startStop
     @State private var wavePhase: Double = 0
@@ -229,10 +231,8 @@ struct MainRunbotView: View {
     @State private var didTriggerInitialCoaching = false
     @State private var showSaveSuccess = false
     @State private var saveMessage = ""
-    @State private var selectedMode: RunMode = .run
-    @State private var showModeSelector = false
-    @State private var activePRModel: PRModel? = nil
-    @State private var shadowIntervals: [ShadowInterval] = []
+    // Train mode removed - only run mode supported
+    private let runMode: RunMode = .run
     
     private enum CarouselPage: Int, Hashable {
         case startStop
@@ -241,12 +241,12 @@ struct MainRunbotView: View {
         case heartZone
         case heartZoneChart   // New page for pie chart
         case energyPulse      // ECG-style pace visualization
-        case trainVisualization
+        case splitIntervals   // Split intervals timeline
         case settings
     }
     
     private var carouselPages: [CarouselPage] {
-        [.startStop, .aiCoach, .runStats, .heartZone, .heartZoneChart, .energyPulse, .trainVisualization, .settings]
+        [.startStop, .aiCoach, .runStats, .heartZone, .heartZoneChart, .energyPulse, .splitIntervals, .settings]
     }
     
     var body: some View {
@@ -303,54 +303,28 @@ struct MainRunbotView: View {
                 print("🔵 User authenticated, initializing Supabase session")
                 supabaseManager.initializeSession(for: userId)
             }
-            
-            // Load active PR model if available - with retry
-            print("🔵 MainRunbotView onAppear - Loading PR Model")
-            loadActivePRModel()
-            // Retry after 2 seconds if first attempt fails
-            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
-                if self.activePRModel == nil {
-                    print("🔄 Retry 1: PR model load (after 2s)...")
-                    self.loadActivePRModel()
-                }
-            }
-            // Another retry after 5 seconds
-            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) {
-                if self.activePRModel == nil {
-                    print("🔄 Retry 2: PR model load (after 5s)...")
-                    self.loadActivePRModel()
-                }
-            }
+            // Train mode and PR model loading removed
         }
         .onChange(of: authManager.isAuthenticated) { oldValue, isAuth in
             if isAuth, let userId = authManager.currentUser?.id {
-                print("🔵 User logged in, initializing session and loading PR model")
+                print("🔵 User logged in, initializing Supabase session")
                 supabaseManager.initializeSession(for: userId)
-                // Give session a moment to initialize, then load PR
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    self.loadActivePRModel()
-                }
             }
         }
-        .onChange(of: selectedMode) { _, _ in
-            withAnimation {
-                carouselSelection = .startStop
-            }
-        }
+        // Train mode removed - no mode changes
         // Trigger scheduled coaching on first stats update and distance milestones
         // Enhanced with RAG-driven closed-loop performance analysis
         .onReceive(runTracker.$statsUpdate.compactMap { $0 }) { stats in
             // Kickoff once at run start when stats first arrive
             if isRunning && !didTriggerInitialCoaching {
-                let isTrainMode = runTracker.currentSession?.mode == .train
-                let shadowData = runTracker.currentSession?.shadowRunData
+                // Train mode removed - always use run mode
                 aiCoach.startScheduledCoaching(
                     for: stats,
                     with: userPreferences.settings,
                     voiceManager: voiceManager,
                     runSessionId: runTracker.currentSession?.id,
-                    isTrainMode: isTrainMode,
-                    shadowData: shadowData,
+                    isTrainMode: false,
+                    shadowData: nil,
                     healthManager: healthManager,
                     intervals: runTracker.currentSession?.intervals ?? [],
                     runStartTime: runTracker.currentSession?.startTime
@@ -360,16 +334,15 @@ struct MainRunbotView: View {
             let km = Int(stats.distance / 1000.0)
             let freq = userPreferences.settings.feedbackFrequency
             if freq > 0, km > lastCoachingKm, km % freq == 0 {
-                let isTrainMode = runTracker.currentSession?.mode == .train
-                let shadowData = runTracker.currentSession?.shadowRunData
+                // Train mode removed - always use run mode
                 // RAG-enhanced interval coaching with full performance analysis
                 aiCoach.startScheduledCoaching(
                     for: stats,
                     with: userPreferences.settings,
                     voiceManager: voiceManager,
                     runSessionId: runTracker.currentSession?.id,
-                    isTrainMode: isTrainMode,
-                    shadowData: shadowData,
+                    isTrainMode: false,
+                    shadowData: nil,
                     healthManager: healthManager,
                     intervals: runTracker.currentSession?.intervals ?? [],
                     runStartTime: runTracker.currentSession?.startTime
@@ -394,8 +367,8 @@ struct MainRunbotView: View {
             heartZoneChartPage()
         case .energyPulse:
             energyPulseViewPage()
-        case .trainVisualization:
-            trainModeVisualizationPage()
+        case .splitIntervals:
+            splitIntervalsPage()
         case .settings:
             settingsPage()
         }
@@ -414,27 +387,8 @@ struct MainRunbotView: View {
                             .foregroundColor(.white)
                 
                     if !isRunning {
-                        // Show selected mode
-                        HStack(spacing: 4) {
-                            Image(systemName: selectedMode == .train ? "bolt.fill" : "figure.run")
-                                .font(.system(size: 10))
-                                .foregroundColor(selectedMode == .train ? .orange : .cyan)
-                            Text(selectedMode == .train ? "Train Mode" : "Run Mode")
-                                .font(.system(size: 11, weight: .semibold))
-                                .foregroundColor(selectedMode == .train ? .orange : .cyan)
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 4)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(selectedMode == .train ? Color.orange.opacity(0.2) : Color.cyan.opacity(0.2))
-                        )
-                        
-                        if selectedMode == .train, let pr = activePRModel {
-                            Text("vs \(pr.name)")
-                                .font(.system(size: 9, weight: .regular))
-                                .foregroundColor(.gray)
-                        }
+                    // Workout Status Indicator
+                    workoutStatusIndicator()
                     } else {
                         Text("Tap to Stop")
                     .font(.system(size: 12, weight: .regular))
@@ -449,8 +403,63 @@ struct MainRunbotView: View {
                     if isRunning {
                         stopRun()
                     } else {
-                        // Show mode selector before starting
-                        showModeSelector = true
+                        // Start run - all functionality consolidated here
+                        print("🟢🟢🟢 [MainRunbotView] ========== START RUN TAPPED ==========")
+                        print("🟢 [MainRunbotView] Thread: \(Thread.isMainThread ? "Main" : "Background")")
+                        print("🟢 [MainRunbotView] HealthManager: \(healthManager != nil ? "available" : "nil")")
+                        print("🟢 [MainRunbotView] RunTracker: \(runTracker != nil ? "available" : "nil")")
+                        
+                        // Start run tracker (creates session, starts location, starts HR monitoring)
+                        runTracker.startRun(mode: .run, shadowData: nil)
+                        
+                        // Set running state
+                        isRunning = true
+                        didTriggerInitialCoaching = false
+                        lastCoachingKm = 0
+                        
+                        print("🟢 [MainRunbotView] Run started, isRunning = true")
+                        
+                        // Log run UUID
+                        if let session = runTracker.currentSession {
+                            print("🆔 [MainRunbotView] Run started with UUID: \(session.id)")
+                            
+                            // Initial save to database to create the run_activities record
+                            let userId = authManager.currentUser?.id ?? "watch_user"
+                            Task {
+                                print("💾 [MainRunbotView] Creating initial run_activities record: \(session.id)")
+                                let success = await supabaseManager.saveRunActivity(session, userId: userId, healthManager: healthManager)
+                                print(success ? "✅ [MainRunbotView] Initial run record created" : "❌ [MainRunbotView] Failed to create initial run record")
+                            }
+                        }
+                        
+                        // Kick off an initial AI coaching prompt shortly after start
+                        let stats = runTracker.getCurrentStats() ?? RunningStatsUpdate(
+                            distance: 0,
+                            pace: 0,
+                            avgSpeed: 0,
+                            calories: 0,
+                            elevation: 0,
+                            maxSpeed: 0,
+                            minSpeed: 0,
+                            currentLocation: nil
+                        )
+                        didTriggerInitialCoaching = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                            // START-OF-RUN COACHING (personalized welcome)
+                            // This also initializes RAG cache with preferences, language, Mem0 for the entire run
+                            aiCoach.startOfRunCoaching(
+                                for: stats,
+                                with: userPreferences.settings,
+                                voiceManager: voiceManager,
+                                runSessionId: runTracker.currentSession?.id,
+                                runnerName: userPreferences.runnerName
+                            )
+                            
+                            // Note: Interval coaching is triggered by distance milestones
+                            // See onReceive(runTracker.$statsUpdate) below (every N km based on feedbackFrequency)
+                        }
+                        
+                        print("🟢🟢🟢 [MainRunbotView] ========== START RUN COMPLETE ==========")
                     }
                 }) {
                         Circle()
@@ -458,8 +467,6 @@ struct MainRunbotView: View {
                                 LinearGradient(
                                 gradient: Gradient(colors: isRunning ?
                                     [Color(red: 0.8, green: 0.2, blue: 0.2), Color(red: 0.7, green: 0.1, blue: 0.1)] :
-                                    selectedMode == .train ? 
-                                        [Color(red: 1.0, green: 0.6, blue: 0.2), Color(red: 1.0, green: 0.4, blue: 0.0)] :
                                         [Color(red: 0.2, green: 0.8, blue: 0.4), Color(red: 0.1, green: 0.7, blue: 0.3)]),
                                     startPoint: .topLeading,
                                     endPoint: .bottomTrailing
@@ -471,124 +478,10 @@ struct MainRunbotView: View {
                                 .font(.system(size: 32, weight: .bold))
                                 .foregroundColor(.white)
                         )
-                        .shadow(color: isRunning ? Color.red.opacity(0.6) : (selectedMode == .train ? Color.orange.opacity(0.6) : Color.green.opacity(0.6)), radius: 15, y: 5)
+                        .shadow(color: isRunning ? Color.red.opacity(0.6) : Color.green.opacity(0.6), radius: 15, y: 5)
                 }
                 
                 Spacer()
-            }
-            
-            // Mode Selector Overlay
-            if showModeSelector && !isRunning {
-                Color.black.opacity(0.8)
-                    .ignoresSafeArea()
-                
-                VStack(spacing: 12) {
-                    Text("Select Mode")
-                        .font(.system(size: 15, weight: .bold))
-                        .foregroundColor(.white)
-                        .padding(.bottom, 4)
-                    
-                    // Debug info
-                    if activePRModel != nil {
-                        Text("PR Available: \(activePRModel?.name ?? "Unknown")")
-                            .font(.system(size: 8))
-                            .foregroundColor(.green)
-                    } else {
-                        Text("No PR found - loading...")
-                            .font(.system(size: 8))
-                            .foregroundColor(.red)
-                    }
-                    
-                    // Run Mode
-                    Button(action: {
-                        selectedMode = .run
-                        showModeSelector = false
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                            startRun()
-                        }
-                    }) {
-                        VStack(spacing: 6) {
-                            Image(systemName: "figure.run")
-                                .font(.system(size: 24, weight: .bold))
-                                .foregroundColor(.cyan)
-                            Text("RUN")
-                                .font(.system(size: 14, weight: .bold))
-                                .foregroundColor(.white)
-                            Text("Training")
-                                .font(.system(size: 9))
-                                .foregroundColor(.gray)
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 16)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(Color.cyan.opacity(0.2))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .stroke(Color.cyan, lineWidth: 2)
-                                )
-                        )
-                    }
-                    .buttonStyle(.plain)
-                    
-                    // Train Mode - ALWAYS show, just disable if no PR
-                    Button(action: {
-                        if activePRModel != nil {
-                            selectedMode = .train
-                            showModeSelector = false
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-                                startRun()
-                            }
-                        }
-                    }) {
-                        VStack(spacing: 6) {
-                            Image(systemName: "bolt.fill")
-                                .font(.system(size: 24, weight: .bold))
-                                .foregroundColor(activePRModel != nil ? .orange : .gray)
-                            Text("TRAIN")
-                                .font(.system(size: 14, weight: .bold))
-                        .foregroundColor(.white)
-                            if let pr = activePRModel {
-                                Text("vs \(pr.name)")
-                                    .font(.system(size: 9))
-                                    .foregroundColor(.gray)
-                            } else {
-                                Text("No PR Set")
-                                    .font(.system(size: 9))
-                                    .foregroundColor(.red)
-                            }
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 16)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill((activePRModel != nil ? Color.orange : Color.gray).opacity(0.2))
-                                .overlay(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .stroke(activePRModel != nil ? Color.orange : Color.gray, lineWidth: 2)
-                                )
-                        )
-                        .opacity(activePRModel != nil ? 1.0 : 0.5)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(activePRModel == nil)
-                    
-                    Button("Cancel") {
-                        withAnimation {
-                            showModeSelector = false
-                        }
-                    }
-                    .font(.system(size: 11, weight: .regular))
-                    .foregroundColor(.gray)
-                    .padding(.top, 4)
-                }
-                .padding(20)
-                .background(
-                    RoundedRectangle(cornerRadius: 16)
-                        .fill(Color(red: 0.1, green: 0.1, blue: 0.15))
-                        .shadow(radius: 20)
-                )
-                .padding(.horizontal, 16)
             }
         }
     }
@@ -795,7 +688,7 @@ struct MainRunbotView: View {
                 // Current Pace - Left (Elegant & Readable)
                 ZStack {
                     // Subtle background glow
-                    Circle()
+                                Circle()
                         .fill(
                             RadialGradient(
                                 colors: [
@@ -958,46 +851,56 @@ struct MainRunbotView: View {
     // MARK: - ❤️ Heart Zone Page
     @ViewBuilder
     private func heartZonePage() -> some View {
+        // Force refresh by observing published properties
+        let _ = healthManager.currentHeartRate
+        let _ = healthManager.currentZone
+        let _ = healthManager.zonePercentages
+        let _ = healthManager.adaptiveGuidance
+        
         VStack(spacing: 6) {
             Text("Heart Zones")
                 .font(.system(size: 14, weight: .bold))
                 .foregroundColor(.rbAccent)
                 .padding(.top, 8)
             
+            // HR Data Status Indicator
+            hrStatusIndicator()
+                .padding(.top, 2)
+            
             if isRunning {
                 let currentHR = healthManager.currentHeartRate
                 let currentZone = healthManager.currentZone
-                let _ = healthManager.zonePercentages
+                let zonePercentages = healthManager.zonePercentages
                 let adaptiveGuidance = healthManager.adaptiveGuidance
                 
                 // Beautiful Heart Rate Display (No Circle)
                 VStack(spacing: 8) {
                     // Heart icon with pulsing animation
-                    Image(systemName: "heart.fill")
+                        Image(systemName: "heart.fill")
                         .font(.system(size: 24))
-                        .foregroundColor(currentZone != nil ? HeartZoneCalculator.zoneColor(for: currentZone!) : .rbError)
+                            .foregroundColor(currentZone != nil ? HeartZoneCalculator.zoneColor(for: currentZone!) : .rbError)
                         .scaleEffect(1.0 + sin(wavePhase * 0.2) * 0.15)
                         .shadow(color: (currentZone != nil ? HeartZoneCalculator.zoneColor(for: currentZone!) : .rbError).opacity(0.6), radius: 8)
-                    
+                        
                     // Large HR value
-                    if let hr = currentHR {
-                        Text("\(Int(hr))")
+                        if let hr = currentHR {
+                            Text("\(Int(hr))")
                             .font(.system(size: 56, weight: .black, design: .rounded))
                             .foregroundColor(.white)
                             .shadow(color: .white.opacity(0.3), radius: 4)
                     } else {
                         Text("--")
                             .font(.system(size: 56, weight: .black, design: .rounded))
-                            .foregroundColor(.white.opacity(0.5))
-                    }
-                    
+                                .foregroundColor(.white.opacity(0.5))
+                        }
+                        
                     // BPM label
-                    Text("BPM")
+                        Text("BPM")
                         .font(.system(size: 20, weight: .bold, design: .rounded))
                         .foregroundColor(.white.opacity(0.6))
-                }
+                    }
                 .padding(.vertical, 12)
-                
+                    
                 // Beautiful Color-Coded Zone Badge
                 if let zone = currentZone {
                     HStack(spacing: 8) {
@@ -1076,30 +979,60 @@ struct MainRunbotView: View {
                         .padding(.top, 2)
                 }
                 
+                // Show HR status if no data
                 if currentHR == nil {
+                    VStack(spacing: 4) {
                     Text("Waiting for heart rate...")
                         .font(.system(size: 8))
                         .foregroundColor(.white.opacity(0.3))
+                        
+                        // Show HR status error if applicable
+                        if case .error(let msg) = healthManager.hrDataStatus {
+                            Text("Error: \(msg)")
+                                .font(.system(size: 7))
+                                .foregroundColor(.red)
+                                .multilineTextAlignment(.center)
+                        }
+                    }
                         .padding(.top, 2)
                 }
                 
             } else {
                     Spacer()
+                VStack(spacing: 8) {
                     Image(systemName: "heart.fill")
                         .font(.system(size: 32))
                     .foregroundColor(.rbSecondary.opacity(0.4))
                 Text("Start running to track")
                     .font(.system(size: 10))
                     .foregroundColor(.white.opacity(0.3))
+                    
+                    // Show HR status when not running
+                    hrStatusIndicator()
+                        .padding(.top, 4)
+                }
                     Spacer()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            // Real-time refresh every 2 seconds for heart rate display
+            Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { _ in
+                // Force UI refresh
+                let _ = healthManager.currentHeartRate
+                let _ = healthManager.currentZone
+            }
+        }
     }
     
     // MARK: - ❤️ Heart Zone Chart Page (Pie Chart)
+    @State private var chartRefreshTimer: Timer?
+    
     private func heartZoneChartPage() -> some View {
+        // Force refresh by observing published properties
         let _ = healthManager.zonePercentages
+        let _ = healthManager.currentZone
+        let _ = healthManager.currentHeartRate
         
         // Calculate pie chart data (must be outside ViewBuilder)
         let zonePercentages = healthManager.zonePercentages
@@ -1124,7 +1057,9 @@ struct MainRunbotView: View {
                 .foregroundStyle(LinearGradient(colors: [.rbAccent, .rbSecondary], startPoint: .leading, endPoint: .trailing))
                 .padding(.top, 6)
             
-            if isRunning && !zonePercentages.isEmpty && !angles.isEmpty {
+            if isRunning {
+                // Show chart if we have data, or show "collecting data" message
+                if !zonePercentages.isEmpty && !angles.isEmpty && total > 0 {
                 // Beautiful Donut Chart with % on Segments
                 ZStack {
                     // Outer glow ring
@@ -1204,7 +1139,7 @@ struct MainRunbotView: View {
                                 .font(.system(size: 24, weight: .black, design: .rounded))
                                 .foregroundColor(HeartZoneCalculator.zoneColor(for: currentZone))
                                 .shadow(color: HeartZoneCalculator.zoneColor(for: currentZone).opacity(0.5), radius: 4)
-                        } else {
+        } else {
                             Text("—")
                                 .font(.system(size: 20, weight: .bold))
                                 .foregroundColor(.white.opacity(0.5))
@@ -1213,8 +1148,28 @@ struct MainRunbotView: View {
                 }
                 .frame(width: 150, height: 150)
                 .padding(.vertical, 8)
-            } else {
+                } else {
+                    // Data is being collected - show loading state
                     Spacer()
+                    VStack(spacing: 8) {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .rbAccent))
+                            .scaleEffect(1.2)
+                        
+                        Text("Collecting zone data...")
+                            .font(.system(size: 11))
+                            .foregroundColor(.white.opacity(0.5))
+                        
+                        if let hr = healthManager.currentHeartRate {
+                            Text("\(Int(hr)) BPM")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(.rbAccent)
+                        }
+                    }
+                    Spacer()
+                }
+            } else {
+                Spacer()
                 Image(systemName: "chart.pie.fill")
                         .font(.system(size: 32))
                     .foregroundColor(.rbSecondary.opacity(0.4))
@@ -1226,48 +1181,20 @@ struct MainRunbotView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
-            // Real-time refresh every 5 seconds
-            Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
-                // Force refresh by accessing zonePercentages
+            // Real-time refresh every 5 seconds (matches HealthManager update interval)
+            chartRefreshTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { _ in
+                // Force UI refresh by accessing published properties
                 let _ = healthManager.zonePercentages
+                let _ = healthManager.currentZone
             }
+        }
+        .onDisappear {
+            chartRefreshTimer?.invalidate()
+            chartRefreshTimer = nil
         }
     }
     
-    // MARK: - Page 2: Train Mode Visualization (Tron-style)
-    @ViewBuilder
-    private func trainModeVisualizationPage() -> some View {
-        // Only show in train mode - updates in real-time
-        if isRunning && runTracker.currentSession?.mode == .train,
-           let session = runTracker.currentSession,
-           let shadowData = session.shadowRunData {
-            
-            // Pass current stats for real-time updates
-            TrainModeRaceView(
-                currentDistance: session.distance,
-                startTime: session.startTime,
-                shadowData: shadowData,
-                currentPace: runTracker.statsUpdate?.pace ?? 0
-            )
-        } else {
-            // Show placeholder when not in train mode
-        VStack(spacing: 12) {
-                Spacer()
-                Image(systemName: "bolt.slash")
-                    .font(.system(size: 32))
-                    .foregroundColor(.gray)
-                Text("Train Mode Only")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.gray)
-                Text("Select Train Mode to race against your PR")
-                    .font(.system(size: 9))
-                    .foregroundColor(.gray.opacity(0.7))
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 20)
-                Spacer()
-            }
-        }
-    }
+    // Train mode visualization removed - only run mode now
     
     // MARK: - ⚡ Energy Pulse View (ECG-style pace) - Next-Gen
     @ViewBuilder
@@ -1282,8 +1209,10 @@ struct MainRunbotView: View {
                     .padding(.top, 4)
                 
                 // Waveform visualization - takes most of the space
-                    EnergyWaveform(
-                        pace: runTracker.statsUpdate?.pace ?? 0,
+                    EnhancedEnergyWaveform(
+                        paceHistory: runTracker.paceHistory,
+                        currentPace: runTracker.statsUpdate?.pace ?? 0,
+                        targetPace: userPreferences.settings.targetPaceMinPerKm,
                     phase: wavePhase
                 )
                 .frame(height: 110)
@@ -1355,6 +1284,87 @@ struct MainRunbotView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+    
+    // MARK: - Split Intervals Page
+    @ViewBuilder
+    private func splitIntervalsPage() -> some View {
+        let intervals = runTracker.currentSession?.intervals ?? []
+        let targetPace = userPreferences.settings.targetPaceMinPerKm
+        
+        VStack(spacing: 6) {
+            Text("SPLIT INTERVALS")
+                .font(.system(size: 14, weight: .black, design: .rounded))
+                .tracking(1.5)
+                .foregroundStyle(LinearGradient(colors: [.rbAccent, .rbSecondary], startPoint: .leading, endPoint: .trailing))
+                .padding(.top, 6)
+            
+            // Target pace text
+            HStack(spacing: 4) {
+                Text("Target:")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.5))
+                Text(formatPace(targetPace))
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundColor(.rbWarning)
+            }
+            .padding(.top, 2)
+            
+            if isRunning && !intervals.isEmpty {
+                ScrollView {
+                    VStack(spacing: 8) {
+                        // Show last 3 km intervals
+                        let last3Intervals = Array(intervals.suffix(3))
+                        let reversedIntervals = Array(last3Intervals.reversed())
+                        
+                        ForEach(reversedIntervals, id: \.id) { interval in
+                            SplitIntervalBar(
+                                interval: interval,
+                                targetPace: targetPace,
+                                isLast: interval.id == last3Intervals.last?.id
+                            )
+                        }
+                        
+                        // Average of all intervals
+                        if intervals.count > 0 {
+                            let avgPace = intervals.map { $0.paceMinPerKm }.reduce(0, +) / Double(intervals.count)
+                            SplitIntervalBar(
+                                interval: RunInterval(
+                                    id: "average",
+                                    runId: runTracker.currentSession?.id ?? "",
+                                    index: -1,
+                                    startTime: Date(),
+                                    endTime: Date(),
+                                    distanceMeters: Double(intervals.count) * 1000.0,
+                                    durationSeconds: intervals.map { $0.durationSeconds }.reduce(0, +),
+                                    paceMinPerKm: avgPace
+                                ),
+                                targetPace: targetPace,
+                                isAverage: true
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                }
+            } else {
+                Spacer()
+                VStack(spacing: 8) {
+                    Image(systemName: "chart.bar.fill")
+                        .font(.system(size: 32))
+                        .foregroundColor(.rbSecondary.opacity(0.4))
+                    Text("Split Intervals")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(.white.opacity(0.5))
+                    Text(isRunning ? "Complete 1km to see splits" : "Start running to see splits")
+                        .font(.system(size: 9))
+                        .foregroundColor(.white.opacity(0.3))
+                        .multilineTextAlignment(.center)
+                }
+                Spacer()
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     
     
@@ -1455,6 +1465,16 @@ struct MainRunbotView: View {
                     .tracking(2)
                     .foregroundStyle(LinearGradient(colors: [.rbAccent, .rbSecondary], startPoint: .leading, endPoint: .trailing))
                     .padding(.top, 6)
+                
+                // Workout Status
+                SettingsSection(title: "WORKOUT", icon: "figure.run", color: .rbSuccess) {
+                    WorkoutStatusRow(healthManager: healthManager, isRunning: isRunning)
+                }
+                
+                // Network Status
+                SettingsSection(title: "NETWORK", icon: "wifi", color: .rbAccent) {
+                    NetworkStatusRow(networkMonitor: networkMonitor)
+                }
                 
                 // Voice AI Model
                 SettingsSection(title: "VOICE AI", icon: "waveform.circle.fill", color: .rbAccent) {
@@ -1633,96 +1653,9 @@ struct MainRunbotView: View {
         }
     }
     
-    private func loadActivePRModel() {
-        guard let userId = authManager.currentUser?.id else {
-            print("❌ No user ID available for PR model load")
-            print("❌ Auth status: \(authManager.isAuthenticated)")
-            return
-        }
-        
-        print("🔍 Loading active PR model for user: \(userId)")
-        print("🔍 Supabase initialized: \(supabaseManager.isInitialized)")
-        
-        Task {
-            // First, try to fetch all PR models to debug
-            let allModels = await supabaseManager.fetchAllPRModels(userId: userId)
-            print("🔍 Total PR models found: \(allModels.count)")
-            for model in allModels {
-                print("  - PR: \(model.name), Active: \(model.isActive), ID: \(model.id)")
-            }
-            
-            let prModel = await supabaseManager.fetchActivePRModel(userId: userId)
-            if let pr = prModel {
-                print("✅ Found active PR model: \(pr.name) (ID: \(pr.id))")
-                let intervals = await supabaseManager.fetchShadowIntervals(runId: pr.runId)
-                print("✅ Loaded \(intervals.count) intervals for run \(pr.runId)")
-                
-                await MainActor.run {
-                    self.activePRModel = pr
-                    self.shadowIntervals = intervals
-                    print("✅ PR Model SET: \(pr.name) with \(intervals.count) intervals")
-                    print("✅ activePRModel is now: \(self.activePRModel?.name ?? "nil")")
-                }
-            } else {
-                print("❌ No active PR model found in fetchActivePRModel")
-                await MainActor.run {
-                    self.activePRModel = nil
-                    self.shadowIntervals = []
-                    print("❌ activePRModel set to nil")
-                }
-            }
-        }
-    }
+    // Train mode and PR model loading removed - only run mode now
     
-    private func startRun() {
-        print("🟢 [MainRunbotView] Start Run tapped - Mode: \(selectedMode.rawValue)")
-        runTracker.startRun(mode: selectedMode, shadowData: selectedMode == .train ? createShadowRunData() : nil)
-        isRunning = true
-        didTriggerInitialCoaching = false
-        lastCoachingKm = 0
-        
-        // Log run UUID
-        if let session = runTracker.currentSession {
-            print("🆔 [MainRunbotView] Run started with UUID: \(session.id)")
-        }
-        
-        // Initial save to database to create the run_activities record
-        let userId = authManager.currentUser?.id ?? "watch_user"
-        Task {
-            if let session = runTracker.currentSession {
-                print("💾 [MainRunbotView] Creating initial run_activities record: \(session.id)")
-                let success = await supabaseManager.saveRunActivity(session, userId: userId, healthManager: healthManager)
-                print(success ? "✅ [MainRunbotView] Initial run record created" : "❌ [MainRunbotView] Failed to create initial run record")
-            }
-        }
-        
-        // Kick off an initial AI coaching prompt shortly after start
-        let stats = runTracker.getCurrentStats() ?? RunningStatsUpdate(
-            distance: 0,
-            pace: 0,
-            avgSpeed: 0,
-            calories: 0,
-            elevation: 0,
-            maxSpeed: 0,
-            minSpeed: 0,
-            currentLocation: nil
-        )
-        didTriggerInitialCoaching = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-            // START-OF-RUN COACHING (personalized welcome)
-            // This also initializes RAG cache with preferences, language, Mem0 for the entire run
-            aiCoach.startOfRunCoaching(
-                for: stats,
-                with: userPreferences.settings,
-                voiceManager: voiceManager,
-                runSessionId: runTracker.currentSession?.id,
-                runnerName: userPreferences.runnerName
-            )
-            
-            // Note: Interval coaching is triggered by distance milestones
-            // See onReceive(runTracker.$statsUpdate) below (every N km based on feedbackFrequency)
-        }
-    }
+    // startRun() function removed - all functionality now directly in start button action
     
     private func stopRun() {
         print("🔴 [MainRunbotView] Stop Run tapped")
@@ -1844,16 +1777,7 @@ struct MainRunbotView: View {
         authManager.logout()
     }
     
-    private func createShadowRunData() -> ShadowRunData? {
-        guard let pr = activePRModel, !shadowIntervals.isEmpty else { return nil }
-        return ShadowRunData(
-            prModel: pr,
-            intervals: shadowIntervals,
-            currentKm: 0,
-            timeDifference: 0.0,
-            paceDifference: 0.0
-        )
-    }
+    // Train mode removed - createShadowRunData no longer needed
     
     private func savePreferencesToSupabase() {
         let userId = authManager.currentUser?.id ?? "watch_user"
@@ -1864,6 +1788,66 @@ struct MainRunbotView: View {
             } else {
                 print("❌ Failed to save preferences")
             }
+        }
+    }
+    
+    // MARK: - Workout Status Indicator
+    @ViewBuilder
+    private func workoutStatusIndicator() -> some View {
+        VStack(spacing: 4) {
+            HStack(spacing: 4) {
+                Image(systemName: workoutStatusIcon)
+                    .font(.system(size: 10))
+                    .foregroundColor(healthManager.workoutStatus.color)
+                Text(healthManager.workoutStatus.displayText)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(healthManager.workoutStatus.color)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(healthManager.workoutStatus.color.opacity(0.15))
+            )
+        }
+    }
+    
+    private var workoutStatusIcon: String {
+        switch healthManager.workoutStatus {
+        case .notStarted: return "circle"
+        case .starting: return "hourglass"
+        case .running: return "checkmark.circle.fill"
+        case .error: return "exclamationmark.triangle.fill"
+        }
+    }
+    
+    // MARK: - HR Status Indicator (for HR page)
+    @ViewBuilder
+    private func hrStatusIndicator() -> some View {
+        VStack(spacing: 4) {
+            HStack(spacing: 4) {
+                Image(systemName: hrStatusIcon)
+                    .font(.system(size: 10))
+                    .foregroundColor(healthManager.hrDataStatus.color)
+                Text(healthManager.hrDataStatus.displayText)
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(healthManager.hrDataStatus.color)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(healthManager.hrDataStatus.color.opacity(0.15))
+            )
+        }
+    }
+    
+    private var hrStatusIcon: String {
+        switch healthManager.hrDataStatus {
+        case .noData: return "heart.slash"
+        case .collecting: return "heart.fill"
+        case .active: return "heart.fill"
+        case .error: return "exclamationmark.triangle.fill"
         }
     }
 }
@@ -2196,37 +2180,6 @@ struct DynamicPaceView: View {
     }
 }
 
-// MARK: - Formatters
-private func formatDistanceKm(_ meters: Double) -> String {
-    let km = meters / 1000.0
-    return String(format: "%.2f", km)
-}
-
-private func formatElapsed(_ seconds: Double) -> String {
-    guard seconds.isFinite && seconds >= 0 else { return "00:00" }
-    let mins = Int(seconds) / 60
-    let secs = Int(seconds) % 60
-    return String(format: "%02d:%02d", mins, secs)
-}
-
-private func formatPace(_ paceMinutesPerKm: Double) -> String {
-    if paceMinutesPerKm <= 0 || !paceMinutesPerKm.isFinite { return "--:--" }
-    let mins = Int(paceMinutesPerKm)
-    let secs = Int((paceMinutesPerKm - Double(mins)) * 60)
-    return String(format: "%d:%02d", mins, secs)
-}
-
-private func formatAvgPaceFromAvgSpeed(_ avgSpeedKmPerHr: Double) -> String {
-    if avgSpeedKmPerHr <= 0 || !avgSpeedKmPerHr.isFinite { return "--:--" }
-    let paceMinPerKm = 60.0 / avgSpeedKmPerHr
-    return formatPace(paceMinPerKm)
-}
-
-private func paceFromAvgSpeed(_ avgSpeedKmPerHr: Double) -> Double {
-    if avgSpeedKmPerHr <= 0 || !avgSpeedKmPerHr.isFinite { return 0.0 }
-    return 60.0 / avgSpeedKmPerHr
-}
-
 // MARK: - Beaming Pulse Component (Tron-style)
 struct BeamingPulse: View {
     let color: Color
@@ -2378,6 +2331,136 @@ struct EnergyWaveform: View {
                 p.addLine(to: CGPoint(x: width, y: midY))
             }
             context.stroke(baselinePath, with: .color(Color.rbAccent.opacity(0.15)), lineWidth: 0.5)
+        }
+    }
+}
+
+// MARK: - Enhanced Energy Waveform with Dynamic Axis
+struct EnhancedEnergyWaveform: View {
+    let paceHistory: [Double]
+    let currentPace: Double
+    let targetPace: Double
+    let phase: Double
+    
+    var body: some View {
+        Canvas { context, size in
+            let width = size.width
+            let height = size.height
+            
+            // Use real pace history if available, otherwise use current pace
+            let dataPoints = paceHistory.isEmpty ? [currentPace] : paceHistory
+            guard !dataPoints.isEmpty, dataPoints.allSatisfy({ $0 > 0 }) else {
+                // Draw placeholder if no data
+                let placeholderText = "No pace data"
+                context.draw(Text(placeholderText).foregroundColor(.gray), at: CGPoint(x: width/2, y: height/2))
+                return
+            }
+            
+            // Calculate dynamic axis bounds based on actual data
+            let minPace = dataPoints.min() ?? targetPace
+            let maxPace = dataPoints.max() ?? targetPace
+            let paceRange = max(maxPace - minPace, 1.0) // Ensure at least 1.0 range
+            
+            // Add padding to axis (10% on each side)
+            let axisMin = max(0, minPace - paceRange * 0.1)
+            let axisMax = maxPace + paceRange * 0.1
+            
+            // Calculate Y position for a given pace value
+            let paceToY = { (pace: Double) -> CGFloat in
+                guard axisMax > axisMin else { return height / 2 }
+                let normalized = (pace - axisMin) / (axisMax - axisMin)
+                // Invert: lower pace (faster) = higher Y, higher pace (slower) = lower Y
+                return height - (CGFloat(normalized) * height * 0.8) - height * 0.1
+            }
+            
+            // Draw dynamic axis labels
+            let axisLabels = [
+                axisMin,
+                axisMin + (axisMax - axisMin) * 0.25,
+                axisMin + (axisMax - axisMin) * 0.5,
+                axisMin + (axisMax - axisMin) * 0.75,
+                axisMax
+            ]
+            
+            // Draw grid lines and labels
+            for (index, labelPace) in axisLabels.enumerated() {
+                let y = paceToY(labelPace)
+                let gridPath = Path { path in
+                    path.move(to: CGPoint(x: 0, y: y))
+                    path.addLine(to: CGPoint(x: width, y: y))
+                }
+                context.stroke(gridPath, with: .color(Color.white.opacity(0.1)), lineWidth: 0.5)
+                
+                // Draw label
+                let labelText = String(format: "%.1f", labelPace)
+                let text = Text(labelText).font(.system(size: 8)).foregroundColor(.white.opacity(0.4))
+                context.draw(text, at: CGPoint(x: width - 25, y: y))
+            }
+            
+            // Draw target pace line
+            let targetY = paceToY(targetPace)
+            let targetPath = Path { path in
+                path.move(to: CGPoint(x: 0, y: targetY))
+                path.addLine(to: CGPoint(x: width, y: targetY))
+            }
+            context.stroke(targetPath, with: .color(Color.rbWarning.opacity(0.5)), lineWidth: 1)
+            
+            // Draw pace line from history
+            guard dataPoints.count > 1 else { return }
+            
+            var path = Path()
+            let stepX = width / CGFloat(dataPoints.count - 1)
+            var first = true
+            
+            for (index, pace) in dataPoints.enumerated() {
+                let x = CGFloat(index) * stepX
+                let y = paceToY(pace)
+                
+                if first {
+                    path.move(to: CGPoint(x: x, y: y))
+                    first = false
+                } else {
+                    path.addLine(to: CGPoint(x: x, y: y))
+                }
+            }
+            
+            // Determine line color based on pace vs target
+            let avgPace = dataPoints.reduce(0, +) / Double(dataPoints.count)
+            let deviation = ((avgPace - targetPace) / targetPace) * 100
+            let lineColor: Color = {
+                if abs(deviation) <= 5 { return .rbSuccess }
+                else if deviation < -10 { return .rbAccent } // Fast
+                else if deviation < -5 { return Color(red: 0.0, green: 0.7, blue: 1.0) } // Slightly fast
+                else if deviation <= 10 { return .rbWarning } // Slightly slow
+                else { return .rbError } // Slow
+            }()
+            
+            // Multi-layer glow effect
+            context.stroke(path, with: .color(lineColor.opacity(0.2)), style: StrokeStyle(lineWidth: 8, lineCap: .round, lineJoin: .round))
+            context.stroke(path, with: .color(lineColor.opacity(0.4)), style: StrokeStyle(lineWidth: 5, lineCap: .round, lineJoin: .round))
+            context.stroke(path, with: .color(lineColor.opacity(0.7)), style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+            context.stroke(path, with: .color(lineColor), style: StrokeStyle(lineWidth: 2, lineCap: .round, lineJoin: .round))
+            
+            // Draw gradient fill under the line
+            var fillPath = path
+            fillPath.addLine(to: CGPoint(x: width, y: height))
+            fillPath.addLine(to: CGPoint(x: 0, y: height))
+            fillPath.closeSubpath()
+            
+            let gradient = Gradient(colors: [lineColor.opacity(0.3), lineColor.opacity(0.0)])
+            context.fill(fillPath, with: .linearGradient(gradient, startPoint: CGPoint(x: width/2, y: 0), endPoint: CGPoint(x: width/2, y: height)))
+            
+            // Draw current pace indicator (pulsing dot at end)
+            if let lastPace = dataPoints.last {
+                let lastX = width - 5
+                let lastY = paceToY(lastPace)
+                
+                // Pulsing effect
+                let pulseSize = 6 + sin(phase * 0.2) * 2
+                let pulsePath = Path(ellipseIn: CGRect(x: lastX - pulseSize/2, y: lastY - pulseSize/2, width: pulseSize, height: pulseSize))
+                context.fill(pulsePath, with: .color(lineColor.opacity(0.5)))
+                context.fill(Path(ellipseIn: CGRect(x: lastX - 3, y: lastY - 3, width: 6, height: 6)), with: .color(lineColor))
+            }
         }
     }
 }
@@ -3206,6 +3289,320 @@ struct CurvedRaceArc: View {
     }
 }
 
+// MARK: - Split Interval Bar Component
+struct SplitIntervalBar: View {
+    let interval: RunInterval
+    let targetPace: Double
+    var isLast: Bool = false
+    var isAverage: Bool = false
+    
+    var body: some View {
+        let pace = interval.paceMinPerKm
+        let deviation = targetPace > 0 ? ((pace - targetPace) / targetPace) * 100 : 0
+        
+        // Color coding based on % deviation
+        let barColor: Color = {
+            if abs(deviation) <= 5 {
+                return .rbSuccess // On track (within 5%)
+            } else if deviation < -10 {
+                return .rbAccent // Fast (more than 10% faster)
+            } else if deviation < -5 {
+                return Color(red: 0.0, green: 0.7, blue: 1.0) // Slightly fast (5-10% faster)
+            } else if deviation <= 10 {
+                return .rbWarning // Slightly slow (5-10% slower)
+            } else {
+                return .rbError // Very slow (more than 10% slower)
+            }
+        }()
+        
+        VStack(spacing: 4) {
+            HStack(spacing: 6) {
+                // Interval label
+                Text(isAverage ? "AVG" : "KM \(interval.index + 1)")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.7))
+                    .frame(width: 35, alignment: .leading)
+                
+                // Pace value
+                Text(formatPace(pace))
+                    .font(.system(size: 13, weight: .bold, design: .monospaced))
+                    .foregroundColor(barColor)
+                    .frame(width: 50, alignment: .leading)
+                
+                // Deviation indicator
+                HStack(spacing: 2) {
+                    if abs(deviation) <= 5 {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(.rbSuccess)
+                    } else if deviation < -10 {
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(.rbAccent)
+                    } else if deviation < -5 {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(Color(red: 0.0, green: 0.7, blue: 1.0))
+                    } else if deviation <= 10 {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(.rbWarning)
+                    } else {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(.rbError)
+                    }
+                    
+                    Text(String(format: "%.1f%%", abs(deviation)))
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(barColor.opacity(0.8))
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            
+            // Horizontal bar visualization - length represents pace (faster = shorter, slower = longer)
+            GeometryReader { geometry in
+                let barWidth = geometry.size.width
+                
+                // Normalize pace to bar length: pace range 3-12 min/km maps to bar width
+                // Faster pace (lower min/km) = shorter bar, slower pace (higher min/km) = longer bar
+                let minPaceRange: Double = 3.0  // Fastest expected pace
+                let maxPaceRange: Double = 12.0 // Slowest expected pace
+                let normalizedPace = min(max((pace - minPaceRange) / (maxPaceRange - minPaceRange), 0), 1.0)
+                let barLength = barWidth * CGFloat(normalizedPace)
+                
+                ZStack(alignment: .leading) {
+                    // Background bar (full width)
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color.white.opacity(0.1))
+                        .frame(width: barWidth, height: 10)
+                    
+                    // Colored pace bar (length = pace value)
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(
+                            LinearGradient(
+                                colors: [barColor, barColor.opacity(0.7)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: max(barLength, 4), height: 10) // Minimum 4pt width for visibility
+                        .shadow(color: barColor.opacity(0.5), radius: 4)
+                }
+            }
+            .frame(height: 10)
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.white.opacity(0.05))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(barColor.opacity(0.3), lineWidth: isLast ? 1.5 : 0.5)
+                )
+        )
+    }
+    
+    private func formatPace(_ paceMinutesPerKm: Double) -> String {
+        if paceMinutesPerKm <= 0 || !paceMinutesPerKm.isFinite { return "--:--" }
+        let mins = Int(paceMinutesPerKm)
+        let secs = Int((paceMinutesPerKm - Double(mins)) * 60)
+        return String(format: "%d:%02d", mins, secs)
+    }
+}
+
+// MARK: - Network Monitor
+class NetworkMonitor: ObservableObject {
+    @Published var isConnected = false
+    @Published var connectionType: ConnectionType = .none
+    
+    enum ConnectionType {
+        case none
+        case watchCellular
+        case iphonePaired
+        
+        var displayText: String {
+            switch self {
+            case .none: return "No Connection"
+            case .watchCellular: return "Watch Cellular"
+            case .iphonePaired: return "iPhone Paired"
+            }
+        }
+    }
+    
+    private let monitor = NWPathMonitor()
+    private let queue = DispatchQueue(label: "NetworkMonitor")
+    private let watchConnectivity = WatchConnectivityManager.shared
+    
+    init() {
+        startMonitoring()
+    }
+    
+    private func startMonitoring() {
+        monitor.pathUpdateHandler = { [weak self] path in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                
+                let isConnected = path.status == .satisfied
+                self.isConnected = isConnected
+                
+                if isConnected {
+                    // Check if watch has cellular capability
+                    if path.usesInterfaceType(.cellular) {
+                        // Watch has its own cellular connection (priority)
+                        self.connectionType = .watchCellular
+                    } else if self.watchConnectivity.isReachable {
+                        // iPhone is paired and reachable
+                        self.connectionType = .iphonePaired
+                    } else if path.usesInterfaceType(.wifi) {
+                        // Watch connected via WiFi (if available)
+                        self.connectionType = .watchCellular // Treat WiFi as watch's own connection
+                    } else {
+                        // Connected but unknown type
+                        self.connectionType = .iphonePaired // Default to iPhone assumption
+                    }
+                } else {
+                    self.connectionType = .none
+                }
+            }
+        }
+        
+        monitor.start(queue: queue)
+    }
+    
+    deinit {
+        monitor.cancel()
+    }
+}
+
+// MARK: - Workout Status Row
+struct WorkoutStatusRow: View {
+    @ObservedObject var healthManager: HealthManager
+    let isRunning: Bool
+    
+    var body: some View {
+        HStack(spacing: 8) {
+            // Status indicator
+            Circle()
+                .fill(statusColor)
+                .frame(width: 8, height: 8)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text(statusText)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(statusColor)
+                
+                Text(statusDetail)
+                    .font(.system(size: 9, weight: .regular))
+                    .foregroundColor(.white.opacity(0.6))
+            }
+            
+            Spacer()
+            
+            // Workout icon
+            Image(systemName: statusIcon)
+                .font(.system(size: 12))
+                .foregroundColor(statusColor.opacity(0.7))
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(statusColor.opacity(0.1))
+        )
+    }
+    
+    private var statusColor: Color {
+        if isRunning {
+            switch healthManager.workoutStatus {
+            case .running: return .rbSuccess
+            case .starting: return .rbWarning
+            case .error(_): return .rbError
+            case .notStarted: return .rbError
+            }
+        } else {
+            return .gray
+        }
+    }
+    
+    private var statusText: String {
+        if isRunning {
+            switch healthManager.workoutStatus {
+            case .running: return "Workout Active"
+            case .starting: return "Starting..."
+            case .error(let msg): return "Error: \(msg)"
+            case .notStarted: return "Not Started"
+            }
+        } else {
+            return "Not Running"
+        }
+    }
+    
+    private var statusDetail: String {
+        if isRunning {
+            switch healthManager.workoutStatus {
+            case .running: return "HealthKit session running"
+            case .starting: return "Initializing workout..."
+            case .error(let msg): return msg
+            case .notStarted: return "Workout not started"
+            }
+        } else {
+            return "Tap start to begin"
+        }
+    }
+    
+    private var statusIcon: String {
+        if isRunning {
+            switch healthManager.workoutStatus {
+            case .running: return "checkmark.circle.fill"
+            case .starting: return "hourglass"
+            case .error(_): return "exclamationmark.triangle.fill"
+            case .notStarted: return "xmark.circle.fill"
+            }
+        } else {
+            return "circle"
+        }
+    }
+}
+
+// MARK: - Network Status Row
+struct NetworkStatusRow: View {
+    @ObservedObject var networkMonitor: NetworkMonitor
+    
+    var body: some View {
+        HStack(spacing: 8) {
+            // Status indicator
+            Circle()
+                .fill(networkMonitor.isConnected ? Color.rbSuccess : Color.rbError)
+                .frame(width: 8, height: 8)
+            
+            VStack(alignment: .leading, spacing: 2) {
+                Text(networkMonitor.isConnected ? "Connected" : "Disconnected")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(networkMonitor.isConnected ? .rbSuccess : .rbError)
+                
+                Text(networkMonitor.connectionType.displayText)
+                    .font(.system(size: 9, weight: .regular))
+                    .foregroundColor(.white.opacity(0.6))
+            }
+            
+            Spacer()
+            
+            // Connection type icon
+            Image(systemName: networkMonitor.connectionType == .watchCellular ? "antenna.radiowaves.left.and.right" : "iphone")
+                .font(.system(size: 12))
+                .foregroundColor(networkMonitor.isConnected ? .rbAccent.opacity(0.7) : .white.opacity(0.3))
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(networkMonitor.isConnected ? Color.rbSuccess.opacity(0.1) : Color.rbError.opacity(0.1))
+        )
+    }
+}
+
 // MARK: - ⚙️ Settings Helper Views
 
 struct SettingsSection<Content: View>: View {
@@ -3308,6 +3705,15 @@ struct AllLanguagesView: View {
         .navigationTitle("Language")
     }
 }
+
+#Preview {
+    MainRunbotView()
+        .environmentObject(RunTracker())
+        .environmentObject(AuthenticationManager())
+        .environmentObject(UserPreferences())
+        .environmentObject(SupabaseManager())
+}
+
 
 #Preview {
     MainRunbotView()

@@ -1,0 +1,8 @@
+# Coach RAG AI Engine Dependencies
+# Python 3.9+
+
+httpx>=0.25.0          # Async HTTP client
+python-dotenv>=1.0.0   # Environment variable loading
+
+
+

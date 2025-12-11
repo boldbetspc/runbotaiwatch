@@ -5,6 +5,7 @@ struct AuthenticationView: View {
     @EnvironmentObject var runTracker: RunTracker
     @EnvironmentObject var voiceManager: VoiceManager
     @EnvironmentObject var supabaseManager: SupabaseManager
+    @EnvironmentObject var healthManager: HealthManager
     @State private var email = ""
     @State private var password = ""
     @State private var name = ""
@@ -97,6 +98,14 @@ struct AuthenticationView: View {
                     print("✅ [AuthView] Supabase session initialized for user: \(userId)")
                 }
                 
+                // Request HealthKit authorization ON WATCH if not already authorized
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    print("💓 [AuthView] Requesting HealthKit authorization on watch after login...")
+                    healthManager.requestHealthDataAccess()
+                    print("✅ [AuthView] HealthKit authorization request submitted")
+                }
+                
+                // Request location permission
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
                     runTracker.requestLocationPermission()
                     print("📍 [AuthView] Requested location permission")
@@ -112,4 +121,5 @@ struct AuthenticationView: View {
         .environmentObject(RunTracker())
         .environmentObject(VoiceManager())
         .environmentObject(SupabaseManager())
+        .environmentObject(HealthManager())
 }

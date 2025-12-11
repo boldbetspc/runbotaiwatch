@@ -24,6 +24,11 @@
 	<string>RunbotAI Watch saves your workouts to Apple Health to track your running progress</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>RunbotAI Watch needs your location to track your running route and distance</string>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>healthkit</string>
+		<string>workout-processing</string>
+	</array>
 	<key>UIUserInterfaceStyle</key>
 	<string>Dark</string>
 	<key>WKApplication</key>
