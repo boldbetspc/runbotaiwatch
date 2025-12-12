@@ -67,12 +67,15 @@ class AICoachManager: NSObject, ObservableObject {
             
             let aggregates = await SupabaseManager().fetchRunAggregates(userId: userId)
             
-            // RAG-DRIVEN PERFORMANCE ANALYSIS (includes adaptive coach RAG)
-            // Even at start, RAG can provide: similar runs context, initial strategy, adaptive microstrategy
+            // SEQUENCE: Mem0 → Performance RAG (historic/big picture) → Coach Strategy RAG (race strategy)
+            // Goal: Overall race strategy for 5K/10K/half/full/casual, not tactical microstrategy
+            
+            // Step 1: RAG-DRIVEN PERFORMANCE ANALYSIS (historic context)
             var ragContext: String? = nil
+            var ragAnalysis: RAGPerformanceAnalyzer.RAGAnalysisResult? = nil
             if let startTime = runStartTime ?? Date() {
-                print("📊 [AICoach] Running RAG performance analysis for start-of-run...")
-                let ragAnalysis = await ragAnalyzer.analyzePerformance(
+                print("📊 [AICoach] Step 1: Running RAG performance analysis for start-of-run (historic context)...")
+                ragAnalysis = await ragAnalyzer.analyzePerformance(
                     stats: stats,
                     preferences: preferences,
                     healthManager: healthManager,
@@ -80,9 +83,38 @@ class AICoachManager: NSObject, ObservableObject {
                     runStartTime: startTime,
                     userId: userId
                 )
-                ragContext = ragAnalysis.llmContext
-                print("📊 [AICoach] RAG analysis complete - Target Status: \(ragAnalysis.targetStatus)")
-                print("📊 [AICoach] Adaptive Microstrategy: \(ragAnalysis.adaptiveMicrostrategy.prefix(100))...")
+                ragContext = ragAnalysis!.llmContext
+                print("📊 [AICoach] Performance RAG complete - Target Status: \(ragAnalysis!.targetStatus)")
+            }
+            
+            // Step 2: COACH STRATEGY RAG (race strategy from KB)
+            var coachStrategy: CoachStrategyRAGManager.StrategyResponse.Strategy? = nil
+            if let analysis = ragAnalysis {
+                print("📚 [AICoach] Step 2: Calling Coach Strategy RAG for race strategy...")
+                let elapsedTime = Date().timeIntervalSince(runStartTime ?? Date())
+                let perfAnalysis = CoachStrategyRAGManager.shared.createPerformanceAnalysis(
+                    from: analysis,
+                    stats: stats,
+                    preferences: preferences,
+                    healthManager: healthManager,
+                    intervals: [],
+                    elapsedTime: elapsedTime
+                )
+                
+                coachStrategy = await CoachStrategyRAGManager.shared.getStrategy(
+                    performanceAnalysis: perfAnalysis,
+                    personality: preferences.coachPersonality.rawValue.lowercased(),
+                    energyLevel: preferences.coachEnergy.rawValue.lowercased(),
+                    userId: userId,
+                    runId: runSessionId,
+                    goal: "race_strategy" // Goal: Overall race strategy, not tactical
+                )
+                
+                if let strategy = coachStrategy {
+                    print("📚 [AICoach] Coach Strategy RAG complete - Strategy: \(strategy.strategy_name)")
+                } else {
+                    print("⚠️ [AICoach] Coach Strategy RAG failed - continuing without KB strategy")
+                }
             }
             
             let feedback = await generateCoachingFeedback(
@@ -92,7 +124,8 @@ class AICoachManager: NSObject, ObservableObject {
                 aggregates: aggregates,
                 trigger: .runStart,
                 runnerName: name,
-                ragAnalysisContext: ragContext // NOW INCLUDES RAG ANALYSIS + ADAPTIVE COACH RAG
+                ragAnalysisContext: ragContext,
+                coachStrategy: coachStrategy // Include Coach Strategy RAG
             )
             
             await deliverFeedback(feedback, voiceManager: voiceManager, preferences: preferences)
@@ -128,11 +161,15 @@ class AICoachManager: NSObject, ObservableObject {
             self.runnerName = name
             let aggregates = await SupabaseManager().fetchRunAggregates(userId: userId)
             
-            // RAG-DRIVEN PERFORMANCE ANALYSIS
+            // SEQUENCE: Performance RAG → Mem0 → Coach Strategy RAG (tactical/monitoring)
+            // Goal: Tactical/adaptive microstrategy + monitor if user is following strategy
+            
+            // Step 1: RAG-DRIVEN PERFORMANCE ANALYSIS
             var ragContext: String? = nil
+            var ragAnalysis: RAGPerformanceAnalyzer.RAGAnalysisResult? = nil
             if let startTime = runStartTime {
-                print("📊 [AICoach] Running RAG performance analysis...")
-                let ragAnalysis = await ragAnalyzer.analyzePerformance(
+                print("📊 [AICoach] Step 1: Running RAG performance analysis...")
+                ragAnalysis = await ragAnalyzer.analyzePerformance(
                     stats: stats,
                     preferences: preferences,
                     healthManager: healthManager,
@@ -140,8 +177,38 @@ class AICoachManager: NSObject, ObservableObject {
                     runStartTime: startTime,
                     userId: userId
                 )
-                ragContext = ragAnalysis.llmContext
-                print("📊 [AICoach] RAG analysis complete - Target Status: \(ragAnalysis.targetStatus)")
+                ragContext = ragAnalysis!.llmContext
+                print("📊 [AICoach] Performance RAG complete - Target Status: \(ragAnalysis!.targetStatus)")
+            }
+            
+            // Step 2: COACH STRATEGY RAG (tactical/adaptive microstrategy + monitoring)
+            var coachStrategy: CoachStrategyRAGManager.StrategyResponse.Strategy? = nil
+            if let analysis = ragAnalysis {
+                print("📚 [AICoach] Step 2: Calling Coach Strategy RAG for tactical microstrategy...")
+                let elapsedTime = Date().timeIntervalSince(runStartTime)
+                let perfAnalysis = CoachStrategyRAGManager.shared.createPerformanceAnalysis(
+                    from: analysis,
+                    stats: stats,
+                    preferences: preferences,
+                    healthManager: healthManager,
+                    intervals: intervals,
+                    elapsedTime: elapsedTime
+                )
+                
+                coachStrategy = await CoachStrategyRAGManager.shared.getStrategy(
+                    performanceAnalysis: perfAnalysis,
+                    personality: preferences.coachPersonality.rawValue.lowercased(),
+                    energyLevel: preferences.coachEnergy.rawValue.lowercased(),
+                    userId: userId,
+                    runId: runSessionId,
+                    goal: "tactical" // Goal: Tactical/adaptive microstrategy + monitoring
+                )
+                
+                if let strategy = coachStrategy {
+                    print("📚 [AICoach] Coach Strategy RAG complete - Strategy: \(strategy.strategy_name)")
+                } else {
+                    print("⚠️ [AICoach] Coach Strategy RAG failed - continuing without KB strategy")
+                }
             }
             
             let feedback = await generateCoachingFeedback(
@@ -153,7 +220,8 @@ class AICoachManager: NSObject, ObservableObject {
                 runnerName: name,
                 isTrainMode: isTrainMode,
                 shadowData: shadowData,
-                ragAnalysisContext: ragContext
+                ragAnalysisContext: ragContext,
+                coachStrategy: coachStrategy // Include Coach Strategy RAG
             )
             
             await deliverFeedback(feedback, voiceManager: voiceManager, preferences: preferences)
@@ -182,7 +250,10 @@ class AICoachManager: NSObject, ObservableObject {
             let (insights, name) = await fetchMem0InsightsWithName(for: userId)
             self.runnerName = name
             
-            // Generate RAG-powered end-of-run analysis
+            // SEQUENCE: Mem0 → Performance RAG → Coach Strategy RAG (learning/takeaways)
+            // Goal: Learning/takeaways - how well runner followed coaching, lessons for next runs
+            
+            // Step 1: Generate RAG-powered end-of-run analysis
             let ragEndOfRunAnalysis = await ragAnalyzer.analyzeEndOfRun(
                 session: session,
                 stats: stats,
@@ -191,14 +262,71 @@ class AICoachManager: NSObject, ObservableObject {
                 userId: userId
             )
             
-            // Generate final AI coaching feedback using RAG analysis
+            // Step 2: COACH STRATEGY RAG (learning/takeaways)
+            // Create a performance analysis from end-of-run data for strategy selection
+            print("📚 [AICoach] Step 2: Calling Coach Strategy RAG for learning/takeaways...")
+            var coachStrategy: CoachStrategyRAGManager.StrategyResponse.Strategy? = nil
+            
+            // Build performance analysis from end-of-run data
+            var zonePercentages: [String: Double] = [:]
+            if let hm = healthManager {
+                for (zone, pct) in hm.zonePercentages {
+                    zonePercentages[String(zone)] = pct
+                }
+            }
+            
+            let intervalPaces = session.intervals.map { $0.paceMinPerKm }
+            let perfAnalysis = CoachStrategyRAGManager.PerformanceAnalysis(
+                current_pace: session.pace,
+                target_pace: preferences.targetPaceMinPerKm,
+                current_distance: stats.distance,
+                target_distance: preferences.targetDistanceMeters,
+                elapsed_time: session.duration,
+                current_hr: healthManager?.currentHeartRate,
+                average_hr: healthManager?.averageHeartRate,
+                max_hr: healthManager?.maxHeartRate,
+                current_zone: healthManager?.currentZone,
+                zone_percentages: zonePercentages,
+                pace_trend: ragEndOfRunAnalysis.paceVariation.contains("positive") ? "declining" : 
+                           ragEndOfRunAnalysis.paceVariation.contains("negative") ? "improving" : "stable",
+                hr_trend: "stable",
+                fatigue_level: "moderate",
+                target_status: ragEndOfRunAnalysis.targetMet ? "on track" : "behind",
+                performance_summary: ragEndOfRunAnalysis.intervalAnalysis,
+                heart_zone_analysis: ragEndOfRunAnalysis.zoneDistribution,
+                interval_trends: ragEndOfRunAnalysis.paceVariation,
+                hr_variation_analysis: ragEndOfRunAnalysis.zonePaceCorrelation,
+                injury_risk_signals: [],
+                adaptive_microstrategy: ragEndOfRunAnalysis.overallRating,
+                pace_deviation: abs(session.pace - preferences.targetPaceMinPerKm) / preferences.targetPaceMinPerKm * 100,
+                completed_intervals: session.intervals.count,
+                interval_paces: intervalPaces
+            )
+            
+            coachStrategy = await CoachStrategyRAGManager.shared.getStrategy(
+                performanceAnalysis: perfAnalysis,
+                personality: preferences.coachPersonality.rawValue.lowercased(),
+                energyLevel: preferences.coachEnergy.rawValue.lowercased(),
+                userId: userId,
+                runId: session.id,
+                goal: "learning" // Goal: Learning/takeaways - how well followed coaching
+            )
+            
+            if let strategy = coachStrategy {
+                print("📚 [AICoach] Coach Strategy RAG complete - Strategy: \(strategy.strategy_name)")
+            } else {
+                print("⚠️ [AICoach] Coach Strategy RAG failed - continuing without KB strategy")
+            }
+            
+            // Generate final AI coaching feedback using RAG analysis + Coach Strategy RAG
             let feedback = await generateEndOfRunFeedback(
                 session: session,
                 stats: stats,
                 preferences: preferences,
                 mem0Insights: insights,
                 ragAnalysis: ragEndOfRunAnalysis,
-                runnerName: name
+                runnerName: name,
+                coachStrategy: coachStrategy // Include Coach Strategy RAG
             )
             
             await deliverFeedback(feedback, voiceManager: voiceManager, preferences: preferences)
@@ -226,14 +354,15 @@ class AICoachManager: NSObject, ObservableObject {
         startCoachingTimer()
     }
     
-    /// Generate end-of-run feedback using RAG analysis
+    /// Generate end-of-run feedback using RAG analysis + Coach Strategy RAG
     private func generateEndOfRunFeedback(
         session: RunSession,
         stats: RunningStatsUpdate,
         preferences: UserPreferences.Settings,
         mem0Insights: String,
         ragAnalysis: RAGPerformanceAnalyzer.EndOfRunAnalysis,
-        runnerName: String
+        runnerName: String,
+        coachStrategy: CoachStrategyRAGManager.StrategyResponse.Strategy? = nil
     ) async -> String {
         let prompt = buildEndOfRunPrompt(
             session: session,
@@ -241,20 +370,39 @@ class AICoachManager: NSObject, ObservableObject {
             preferences: preferences,
             mem0Insights: mem0Insights,
             ragAnalysis: ragAnalysis,
-            runnerName: runnerName
+            runnerName: runnerName,
+            coachStrategy: coachStrategy
         )
         return await requestAICoachingFeedback(prompt, energy: preferences.coachEnergy)
     }
     
-    /// Build comprehensive end-of-run LLM prompt with RAG analysis
+    /// Build comprehensive end-of-run LLM prompt with RAG analysis + Coach Strategy RAG (learning/takeaways)
     private func buildEndOfRunPrompt(
         session: RunSession,
         stats: RunningStatsUpdate,
         preferences: UserPreferences.Settings,
         mem0Insights: String,
         ragAnalysis: RAGPerformanceAnalyzer.EndOfRunAnalysis,
-        runnerName: String
+        runnerName: String,
+        coachStrategy: CoachStrategyRAGManager.StrategyResponse.Strategy? = nil
     ) -> String {
+        var coachStrategySection = ""
+        if let strategy = coachStrategy {
+            coachStrategySection = """
+            
+            📚 COACH STRATEGY FROM KNOWLEDGE BASE (Learning/Takeaways):
+            Strategy: \(strategy.strategy_name)
+            \(strategy.strategy_text)
+            Situation: \(strategy.situation_summary)
+            Reason: \(strategy.selection_reason)
+            Expected Outcome: \(strategy.expected_outcome)
+            
+            IMPORTANT: This is a LEARNING/TAKEAWAYS strategy from the knowledge base.
+            Focus: How well did the runner follow the coaching? What are the lessons learned for next runs?
+            This is NOT tactical advice - it's reflection and improvement insights.
+            """
+        }
+        
         return """
         You are an ELITE RUNNING COACH giving \(runnerName) their END-OF-RUN ANALYSIS.
         
@@ -266,6 +414,7 @@ class AICoachManager: NSObject, ObservableObject {
         ============================================================================
         
         \(ragAnalysis.llmContext)
+        \(coachStrategySection)
         
         MEM0 PERSONALIZED INSIGHTS:
         \(mem0Insights.isEmpty ? "First tracked run!" : mem0Insights)
@@ -279,11 +428,15 @@ class AICoachManager: NSObject, ObservableObject {
         1. TARGET ASSESSMENT: Did they hit \(preferences.targetDistance.displayName) target? Be specific.
         2. WHAT WENT WELL: One specific thing with data (e.g., "Zone 2 efficiency at 65% was excellent")
         3. WHAT NEEDS WORK: One critical improvement area with facts (e.g., "Pace dropped 45s in final km")
-        4. PERSONAL TOUCH: Reference their history from Mem0 if available
+        4. LEARNING/TAKEAWAYS: Use the COACH STRATEGY from KB above to assess how well they followed coaching
+        5. LESSONS FOR NEXT RUN: What should they focus on next time based on KB learning strategy?
+        6. PERSONAL TOUCH: Reference their history from Mem0 if available
         
         RULES:
         - Be CRITICAL but constructive - real coaches don't sugarcoat
         - Use SPECIFIC NUMBERS from the analysis (pace, zones, intervals)
+        - Use the COACH STRATEGY from KB to provide learning insights and takeaways
+        - Assess how well they followed the coaching strategy during the run
         - Match personality: \(preferences.coachPersonality.rawValue)
         - Match energy: \(preferences.coachEnergy.rawValue)
         \(preferences.language != .english ? "- Generate in \(preferences.language.displayName) language" : "")
@@ -375,7 +528,8 @@ class AICoachManager: NSObject, ObservableObject {
         runnerName: String,
         isTrainMode: Bool = false,
         shadowData: ShadowRunData? = nil,
-        ragAnalysisContext: String? = nil
+        ragAnalysisContext: String? = nil,
+        coachStrategy: CoachStrategyRAGManager.StrategyResponse.Strategy? = nil
     ) async -> String {
         let prompt = buildCoachingPrompt(
             stats: stats,
@@ -388,7 +542,8 @@ class AICoachManager: NSObject, ObservableObject {
             targetPace: preferences.targetPaceMinPerKm,
             isTrainMode: isTrainMode,
             shadowData: shadowData,
-            ragAnalysisContext: ragAnalysisContext
+            ragAnalysisContext: ragAnalysisContext,
+            coachStrategy: coachStrategy
         )
         return await requestAICoachingFeedback(prompt, energy: preferences.coachEnergy)
     }
@@ -425,7 +580,8 @@ class AICoachManager: NSObject, ObservableObject {
         targetPace: Double,
         isTrainMode: Bool = false,
         shadowData: ShadowRunData? = nil,
-        ragAnalysisContext: String? = nil
+        ragAnalysisContext: String? = nil,
+        coachStrategy: CoachStrategyRAGManager.StrategyResponse.Strategy? = nil
     ) -> String {
         let distanceKm = stats.distance / 1000.0
         let currentPaceStr = formatPace(stats.pace)
@@ -529,12 +685,30 @@ class AICoachManager: NSObject, ObservableObject {
                     lastRunInfo = "This is your first tracked run - let's set a great baseline!"
                 }
                 
-                // Enhanced start-of-run with RAG analysis if available
+                // Enhanced start-of-run with RAG analysis + Coach Strategy RAG (race strategy)
                 if let ragContext = ragAnalysisContext {
+                    var coachStrategySection = ""
+                    if let strategy = coachStrategy {
+                        coachStrategySection = """
+                        
+                        📚 COACH STRATEGY FROM KNOWLEDGE BASE (Race Strategy):
+                        Strategy: \(strategy.strategy_name)
+                        \(strategy.strategy_text)
+                        Situation: \(strategy.situation_summary)
+                        Reason: \(strategy.selection_reason)
+                        Expected Outcome: \(strategy.expected_outcome)
+                        
+                        IMPORTANT: This is the OVERALL RACE STRATEGY from the knowledge base.
+                        Use this as the foundation for the entire run plan (5K/10K/half/full/casual).
+                        This is NOT a tactical microstrategy - it's the big picture race plan.
+                        """
+                    }
+                    
                     triggerContext = """
-                    THIS IS THE START OF THE RUN with RAG-DRIVEN PERFORMANCE ANALYSIS.
+                    THIS IS THE START OF THE RUN with RAG-DRIVEN PERFORMANCE ANALYSIS + COACH STRATEGY RAG.
                     
                     \(ragContext)
+                    \(coachStrategySection)
                     
                     PERSONALIZATION REQUIREMENTS:
                     1. Use runner's name "\(runnerName)" naturally
@@ -542,21 +716,24 @@ class AICoachManager: NSObject, ObservableObject {
                     3. Acknowledge what they did well in previous runs (from Mem0 insights)
                     4. Be target-aware: Target pace is \(targetPaceStr) min/km
                     5. Use the RAG analysis above (similar runs, adaptive microstrategy) to inform your coaching
-                    6. Give heart zone advice based on RAG zone analysis: "Start in Zone 2-3, build gradually"
-                    7. Provide detailed race strategy based on RAG adaptive microstrategy
-                    8. Reference similar past runs if available from RAG context
+                    6. Use the COACH STRATEGY from KB above as the overall race strategy foundation
+                    7. Give heart zone advice based on RAG zone analysis: "Start in Zone 2-3, build gradually"
+                    8. Provide detailed race strategy combining RAG adaptive microstrategy + KB race strategy
+                    9. Reference similar past runs if available from RAG context
                     
                     COACHING PRIORITY:
                     1. Use the RAG analysis above to understand the runner's historical patterns
-                    2. Reference the ADAPTIVE MICROSTRATEGY for initial pacing plan
-                    3. Incorporate similar runs context to set expectations
-                    4. Be specific about pace adjustments needed based on target status
-                    5. Give actionable initial strategy (first km approach, zone targets)
+                    2. Use the COACH STRATEGY from KB as the overall race plan (start plan, strategic advice)
+                    3. Reference the ADAPTIVE MICROSTRATEGY for initial pacing plan
+                    4. Incorporate similar runs context to set expectations
+                    5. Be specific about pace adjustments needed based on target status
+                    6. Give actionable initial strategy (first km approach, zone targets) based on KB race strategy
                     
                     STRUCTURE (max 60 words):
                     - Greeting with name
                     - Brief reference to last run/what they did well
                     - Target pace reminder
+                    - Overall race strategy from KB (start plan, strategic advice)
                     - Initial strategy from RAG adaptive microstrategy
                     - Heart zone guidance from RAG analysis
                     - Motivation to finish strong
@@ -588,19 +765,39 @@ class AICoachManager: NSObject, ObservableObject {
                     """
                 }
             case .interval:
-                // Enhanced interval coaching with RAG analysis if available
+                // Enhanced interval coaching with RAG analysis + Coach Strategy RAG (tactical/monitoring)
                 if let ragContext = ragAnalysisContext {
+                    var coachStrategySection = ""
+                    if let strategy = coachStrategy {
+                        coachStrategySection = """
+                        
+                        📚 COACH STRATEGY FROM KNOWLEDGE BASE (Tactical/Adaptive Microstrategy):
+                        Strategy: \(strategy.strategy_name)
+                        \(strategy.strategy_text)
+                        Situation: \(strategy.situation_summary)
+                        Reason: \(strategy.selection_reason)
+                        Expected Outcome: \(strategy.expected_outcome)
+                        
+                        IMPORTANT: This is a TACTICAL/ADAPTIVE MICROSTRATEGY from the knowledge base.
+                        Focus: Monitor if user is following strategy, provide situation-specific tactical adjustments.
+                        This is NOT the overall race strategy - it's the immediate next 500m-1km tactical plan.
+                        """
+                    }
+                    
                     triggerContext = """
-                    THIS IS MID-RUN COACHING with RAG-DRIVEN PERFORMANCE ANALYSIS.
+                    THIS IS MID-RUN COACHING with RAG-DRIVEN PERFORMANCE ANALYSIS + COACH STRATEGY RAG.
                     
                     \(ragContext)
+                    \(coachStrategySection)
                     
                     COACHING PRIORITY:
                     1. Use the RAG analysis above to understand the runner's EXACT situation
                     2. Reference specific data points (zones, trends, target status)
-                    3. Give coaching based on the ADAPTIVE MICROSTRATEGY recommendation
-                    4. If injury risk signals exist, prioritize safety
-                    5. Be specific about pace adjustments needed (e.g., "drop 10 sec/km")
+                    3. Use the COACH STRATEGY from KB above for tactical/adaptive microstrategy
+                    4. Monitor if the runner is following the strategy - adjust if needed
+                    5. Give coaching based on the ADAPTIVE MICROSTRATEGY recommendation + KB tactical strategy
+                    6. If injury risk signals exist, prioritize safety
+                    7. Be specific about pace adjustments needed (e.g., "drop 10 sec/km")
                     """
                 } else {
                     triggerContext = """
