@@ -79,19 +79,20 @@ struct SettingsView: View {
                         .background(Color.black.opacity(0.5))
                         .cornerRadius(8)
                         
-                        // Voice Selection
+                        // Voice AI Model Selection (CRITICAL: This controls TTS for scheduled coaching)
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Voice")
+                            Text("Voice AI")
                                 .font(.system(size: 11, weight: .semibold))
                                 .foregroundColor(.cyan)
                             
                             VStack(spacing: 6) {
-                                ForEach(VoiceOption.allCases, id: \.self) { voice in
+                                ForEach(VoiceAIModel.allCases, id: \.self) { model in
                                     VoiceButton(
-                                        title: voice.rawValue,
-                                        isSelected: userPreferences.settings.voiceOption == voice,
+                                        title: model.displayName,
+                                        isSelected: userPreferences.settings.voiceAIModel == model,
                                         action: {
-                                            userPreferences.updateVoice(voice)
+                                            print("🎤 [SettingsView] User selected Voice AI Model: \(model.rawValue)")
+                                            userPreferences.updateVoiceAIModel(model)
                                         }
                                     )
                                 }
@@ -203,18 +204,29 @@ struct SettingsView: View {
     private func savePreferences() {
         isSaving = true
         guard let userId = authManager.currentUser?.id else {
+            print("❌ [SettingsView] No user ID - cannot save preferences")
             isSaving = false
             return
         }
         
+        print("💾 [SettingsView] Saving preferences to Supabase...")
+        print("💾 [SettingsView] Voice AI Model: \(userPreferences.settings.voiceAIModel.rawValue)")
+        print("💾 [SettingsView] Coach Personality: \(userPreferences.settings.coachPersonality.rawValue)")
+        print("💾 [SettingsView] Coach Energy: \(userPreferences.settings.coachEnergy.rawValue)")
+        print("💾 [SettingsView] Feedback Frequency: \(userPreferences.settings.feedbackFrequency)")
+        print("💾 [SettingsView] Target Pace: \(userPreferences.settings.targetPaceMinPerKm)")
+        print("💾 [SettingsView] Language: \(userPreferences.settings.language.rawValue)")
+        
         Task {
-            let success = await supabaseManager.saveUserPreferences(userPreferences.settings, userId: userId)
+            // Use selective update method to only update changed fields
+            let success = await supabaseManager.saveWatchPreferences(userPreferences.settings, userId: userId)
             
             await MainActor.run {
                 isSaving = false
                 if success {
                     showSaveSuccess = true
-                    print("✅ [SettingsView] Preferences saved successfully")
+                    print("✅ [SettingsView] Preferences saved successfully to Supabase")
+                    print("✅ [SettingsView] Voice AI Model saved: \(userPreferences.settings.voiceAIModel.rawValue)")
                     
                     // Hide success message after 2 seconds
                     DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
@@ -223,7 +235,7 @@ struct SettingsView: View {
                         }
                     }
                 } else {
-                    print("❌ [SettingsView] Failed to save preferences")
+                    print("❌ [SettingsView] Failed to save preferences to Supabase")
                 }
             }
         }

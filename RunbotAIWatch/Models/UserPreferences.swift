@@ -82,8 +82,11 @@ final class UserPreferences: ObservableObject {
     }
     
     func updateVoiceAIModel(_ model: VoiceAIModel) {
+        let oldModel = settings.voiceAIModel
         settings.voiceAIModel = model
         saveToStorage()
+        print("🎤 [Preferences] Voice AI Model updated: \(oldModel.rawValue) -> \(model.rawValue)")
+        // Note: Settings are saved to Supabase when user taps Save button in SettingsView
     }
     
     func updateLanguage(_ language: SupportedLanguage) {

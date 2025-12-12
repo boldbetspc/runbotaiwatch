@@ -130,7 +130,8 @@ struct ContentViewWrapper: View {
         print("🚀 [App] Scheduling HealthKit authorization request on watch...")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             print("🚀 [App] Requesting HealthKit authorization on watch...")
-            self.healthManager.requestHealthDataAccess()
+            // Don't auto-request - user must refresh in Connections page
+            // self.healthManager.requestHealthDataAccess()
             print("✅ [App] HealthKit authorization request submitted")
         }
         

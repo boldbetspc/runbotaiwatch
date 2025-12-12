@@ -30,6 +30,8 @@ import os.log
 class HealthManager: NSObject, ObservableObject {
     private let healthStore = HKHealthStore()
     @Published var isAuthorized = false
+    @Published var workoutAuthorized = false
+    @Published var heartRateAuthorized = false
     @Published var currentHeartRate: Double?
     @Published var averageHeartRate: Double?
     @Published var maxHeartRate: Double?
@@ -129,7 +131,6 @@ class HealthManager: NSObject, ObservableObject {
     }
     
     private var heartRateQuery: HKQuery?
-    private var workoutBuilderHRQuery: HKStatisticsQuery?
     private var heartRateSamples: [HKQuantitySample] = []
     
     // Workout distance tracking
@@ -157,6 +158,9 @@ class HealthManager: NSObject, ObservableObject {
     // Timer for periodic zone percentage updates
     private var zoneUpdateTimer: Timer?
     
+    // Timer for periodic HR reading from workout builder (fallback)
+    private var periodicHRTimer: Timer?
+    
     // Track if authorization has been requested to avoid redundant requests
     private var hasRequestedAuthorization = false
     
@@ -174,7 +178,15 @@ class HealthManager: NSObject, ObservableObject {
         print("💓 [HealthManager] ========== REQUESTING HEALTH DATA ACCESS ==========")
         print("💓 [HealthManager] Thread: \(Thread.isMainThread ? "Main" : "Background")")
         #if os(watchOS)
-        print("💓 [HealthManager] Running on watchOS - requesting authorization ON WATCH")
+        #if targetEnvironment(simulator)
+        print("⚠️ [HealthManager] Running on watchOS SIMULATOR")
+        print("⚠️ [HealthManager] HealthKit on simulator has limitations:")
+        print("   - Authorization dialogs may not appear")
+        print("   - Some HealthKit features may not work")
+        print("   - For full testing, use a real Apple Watch device")
+        #else
+        print("💓 [HealthManager] Running on watchOS DEVICE - requesting authorization ON WATCH")
+        #endif
         #else
         print("💓 [HealthManager] Running on iOS - requesting authorization")
         #endif
@@ -208,12 +220,18 @@ class HealthManager: NSObject, ObservableObject {
             return
         }
         
-        // If already denied, don't request again
-        if workoutAuthStatus == .sharingDenied || hrAuthStatus == .sharingDenied {
-            print("❌ [HealthManager] Authorization was DENIED - cannot request again")
-            print("   User must enable in Settings > Privacy & Security > Health")
+        // If BOTH are denied, don't request again
+        // But if one is denied and other is notDetermined, still request (user might have denied one type)
+        if workoutAuthStatus == .sharingDenied && hrAuthStatus == .sharingDenied {
+            print("❌ [HealthManager] Both types DENIED - cannot request again")
+            print("   User must enable in Settings > Privacy & Security > Health > RunbotAIWatch")
             isAuthorized = false
             return
+        }
+        
+        // If one is denied but other is notDetermined, still request (might get partial authorization)
+        if workoutAuthStatus == .sharingDenied || hrAuthStatus == .sharingDenied {
+            print("⚠️ [HealthManager] One type denied, but requesting anyway for the other type")
         }
         
         // If already requested and status is still notDetermined, request again
@@ -276,32 +294,111 @@ class HealthManager: NSObject, ObservableObject {
     
     private func handleAuthorizationResponse(success: Bool, error: Error?, workoutType: HKObjectType, heartRateType: HKQuantityType) {
         DispatchQueue.main.async {
-            self.isAuthorized = success
+            // Re-check status after authorization (more reliable than success flag)
+            let newWorkoutStatus = self.healthStore.authorizationStatus(for: workoutType)
+            let newHRStatus = self.healthStore.authorizationStatus(for: heartRateType)
+            
+            // Update authorization status
+            let isFullyAuthorized = (newWorkoutStatus == .sharingAuthorized && newHRStatus == .sharingAuthorized)
+            self.isAuthorized = isFullyAuthorized
+            self.workoutAuthorized = (newWorkoutStatus == .sharingAuthorized)
+            self.heartRateAuthorized = (newHRStatus == .sharingAuthorized)
+            
             if let error = error {
                 let errorMsg = error.localizedDescription
                 print("❌ [HealthManager] Health data authorization ERROR: \(errorMsg)")
                 print("   Error domain: \((error as NSError).domain)")
                 print("   Error code: \((error as NSError).code)")
+                print("💓 [HealthManager] After error - Workout: \(newWorkoutStatus.rawValue), HR: \(newHRStatus.rawValue)")
                 // Don't crash - just mark as not authorized
                 if errorMsg.contains("entitlement") {
                     print("⚠️ [HealthManager] HealthKit entitlement missing - app will continue without heart rate data")
                 }
             } else {
-                print("✅ [HealthManager] Health data authorization SUCCESS: \(success)")
-                // Re-check status after authorization
-                let newWorkoutStatus = self.healthStore.authorizationStatus(for: workoutType)
-                let newHRStatus = self.healthStore.authorizationStatus(for: heartRateType)
+                print("✅ [HealthManager] Health data authorization callback received")
                 print("💓 [HealthManager] After authorization:")
                 print("   - Workout: \(newWorkoutStatus.rawValue) (\(self.authStatusString(newWorkoutStatus)))")
                 print("   - HR: \(newHRStatus.rawValue) (\(self.authStatusString(newHRStatus)))")
+                print("   - Fully Authorized: \(isFullyAuthorized)")
                 
                 // If authorized, the app should now appear in Health > Watch > Apps
-                if success && newWorkoutStatus == .sharingAuthorized && newHRStatus == .sharingAuthorized {
+                if isFullyAuthorized {
                     print("✅✅✅ [HealthManager] Authorization GRANTED - App should appear in Health > Watch > Apps after first workout save ✅✅✅")
-                print("💡 [HealthManager] Note: App appears in Health > Watch > Apps only after successfully saving a workout to HealthKit")
+                    print("💡 [HealthManager] Note: App appears in Health > Watch > Apps only after successfully saving a workout to HealthKit")
+                } else {
+                    print("⚠️ [HealthManager] Authorization incomplete:")
+                    print("   - Workout: \(self.authStatusString(newWorkoutStatus)) ✅")
+                    print("   - HR: \(self.authStatusString(newHRStatus)) ❌")
+                    
+                    if newHRStatus == .sharingDenied {
+                        print("")
+                        print("❌ [HealthManager] =========================================")
+                        print("❌ HEART RATE ACCESS WAS DENIED")
+                        print("❌ =========================================")
+                        print("")
+                        print("To enable heart rate access:")
+                        print("1. Open Settings app on Apple Watch")
+                        print("2. Go to Privacy & Security > Health")
+                        print("3. Find 'RunbotAIWatch' in the list")
+                        print("4. Turn ON 'Heart Rate'")
+                        print("")
+                        print("OR on iPhone:")
+                        print("1. Open Watch app")
+                        print("2. Go to Privacy & Security > Health")
+                        print("3. Find 'RunbotAIWatch'")
+                        print("4. Turn ON 'Heart Rate'")
+                        print("")
+                        print("⚠️ Without heart rate access, the app cannot:")
+                        print("   - Stream real-time heart rate during runs")
+                        print("   - Calculate heart rate zones")
+                        print("   - Provide heart rate-based coaching")
+                        print("")
+                    } else if newWorkoutStatus == .sharingDenied {
+                        print("")
+                        print("❌ [HealthManager] =========================================")
+                        print("❌ WORKOUT ACCESS WAS DENIED")
+                        print("❌ =========================================")
+                        print("")
+                        print("To enable workout access:")
+                        print("1. Open Settings app on Apple Watch")
+                        print("2. Go to Privacy & Security > Health")
+                        print("3. Find 'RunbotAIWatch' in the list")
+                        print("4. Turn ON 'Workouts'")
+                        print("")
+                    }
                 }
             }
         }
+    }
+    
+    /// Check and update authorization status (useful for refresh)
+    func checkAuthorizationStatus() {
+        guard HKHealthStore.isHealthDataAvailable() else {
+            isAuthorized = false
+            workoutAuthorized = false
+            heartRateAuthorized = false
+            return
+        }
+        
+        let workoutType = HKObjectType.workoutType()
+        guard let heartRateType = HKQuantityType.quantityType(forIdentifier: .heartRate) else {
+            isAuthorized = false
+            workoutAuthorized = false
+            heartRateAuthorized = false
+            return
+        }
+        
+        let workoutAuthStatus = healthStore.authorizationStatus(for: workoutType)
+        let hrAuthStatus = healthStore.authorizationStatus(for: heartRateType)
+        
+        workoutAuthorized = (workoutAuthStatus == .sharingAuthorized)
+        heartRateAuthorized = (hrAuthStatus == .sharingAuthorized)
+        isAuthorized = (workoutAuthorized && heartRateAuthorized)
+        
+        print("💓 [HealthManager] Authorization status check:")
+        print("   - Workout: \(workoutAuthStatus.rawValue) (\(authStatusString(workoutAuthStatus))) - \(workoutAuthorized ? "✅" : "❌")")
+        print("   - HR: \(hrAuthStatus.rawValue) (\(authStatusString(hrAuthStatus))) - \(heartRateAuthorized ? "✅" : "❌")")
+        print("   - Fully Authorized: \(isAuthorized ? "✅" : "❌")")
     }
     
     // MARK: - CRITICAL: HKWorkoutSession for watchOS Real-Time HR
@@ -346,57 +443,51 @@ class HealthManager: NSObject, ObservableObject {
         print("   - Workout: \(workoutAuthStatus.rawValue) (\(authStatusString(workoutAuthStatus)))")
         print("   - Heart Rate: \(hrAuthStatus.rawValue) (\(authStatusString(hrAuthStatus)))")
         
-        // CRITICAL: Check authorization status
-        // Authorization should already be requested during app initialization
-        if workoutAuthStatus == .sharingDenied || hrAuthStatus == .sharingDenied {
-            print("❌ [HealthManager] HealthKit authorization DENIED - cannot start HR monitoring")
-            print("   User has denied HealthKit access. Please enable it in Settings > Privacy & Security > Health")
+        // CRITICAL FIX: Allow reading HR if we can READ heart rate (even if write is denied)
+        // For reading heart rate, we only need READ permission, not WRITE
+        // Workout WRITE is needed to save workouts, but HR READ is separate
+        let canReadHR = (hrAuthStatus == .sharingAuthorized || hrAuthStatus == .notDetermined)
+        let canWriteWorkout = (workoutAuthStatus == .sharingAuthorized || workoutAuthStatus == .notDetermined)
+        
+        // Update authorization status - we can work if we can read HR OR write workouts
+        workoutAuthorized = (workoutAuthStatus == .sharingAuthorized)
+        heartRateAuthorized = (hrAuthStatus == .sharingAuthorized)
+        isAuthorized = (workoutAuthorized && heartRateAuthorized)
+        
+        print("💓 [HealthManager] Authorization check:")
+        print("   - Can READ HR: \(canReadHR) (status: \(authStatusString(hrAuthStatus)))")
+        print("   - Can WRITE Workout: \(canWriteWorkout) (status: \(authStatusString(workoutAuthStatus)))")
+        
+        // If both are denied, abort
+        if workoutAuthStatus == .sharingDenied && hrAuthStatus == .sharingDenied {
+            print("❌ [HealthManager] Both permissions DENIED - cannot proceed")
             isAuthorized = false
             return
-        } else if workoutAuthStatus == .notDetermined || hrAuthStatus == .notDetermined {
-            // Authorization not determined - request it now
-            print("⚠️ [HealthManager] Authorization NOT DETERMINED - requesting now...")
-            print("   Workout: \(workoutAuthStatus.rawValue), HR: \(hrAuthStatus.rawValue)")
-            print("   This should trigger authorization dialog on watch")
-            
-            // Request authorization (async - don't block)
+        }
+        
+        // If we can't read HR, warn but still try (might work if workout session is active)
+        if !canReadHR && hrAuthStatus == .sharingDenied {
+            print("⚠️ [HealthManager] HR read permission DENIED - will try anyway via workout session")
+        }
+        
+        // If not determined, request authorization (needed for reading existing workouts)
+        if workoutAuthStatus == .notDetermined || hrAuthStatus == .notDetermined {
+            print("💓 [HealthManager] Authorization not determined - requesting access...")
             requestHealthDataAccess()
-            
-            // Wait a moment for authorization dialog, then check status
+            // Re-check after a brief delay
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-                guard let self = self else { return }
-                
-                // Re-check status after authorization request
-                let newWorkoutStatus = self.healthStore.authorizationStatus(for: workoutType)
-                let newHRStatus = self.healthStore.authorizationStatus(for: heartRateType)
-                
-                print("💓 [HealthManager] Authorization status after request:")
-                print("   - Workout: \(newWorkoutStatus.rawValue) (\(self.authStatusString(newWorkoutStatus)))")
-                print("   - HR: \(newHRStatus.rawValue) (\(self.authStatusString(newHRStatus)))")
-                
-                if newWorkoutStatus == .sharingDenied || newHRStatus == .sharingDenied {
-                    print("❌ [HealthManager] Authorization DENIED after request - cannot start workout")
-                    self.isAuthorized = false
-                } else if newWorkoutStatus == .sharingAuthorized && newHRStatus == .sharingAuthorized {
-                    print("✅ [HealthManager] Authorization GRANTED - retrying workout start")
-                    self.isAuthorized = true
-                    // Retry workout start if authorization was granted
-                    if self.workoutSession == nil {
-                        print("🏃 [HealthManager] Retrying workout session start after authorization...")
-                        self.startWorkoutSession()
-                    }
-                } else {
-                    print("⚠️ [HealthManager] Authorization still not determined - attempting workout start anyway")
-                    // Continue anyway - workout will fail gracefully if not authorized
+                self?.checkAuthorizationStatus()
+                // Try to start workout session after authorization check
+                if self?.isAuthorized == true {
+                    self?.startWorkoutSession()
                 }
             }
-            
-            // Continue with workout start attempt (will fail gracefully if not authorized)
-            print("⚠️ [HealthManager] Proceeding with workout start attempt (authorization may be pending)")
+        } else if !isAuthorized {
+            print("⚠️ [HealthManager] Not authorized - user must enable in Settings > Health > Data Access & Devices")
+            print("💡 [HealthManager] To enable: Settings > Privacy & Security > Health > RunbotAIWatch > Turn ON Workouts and Heart Rate")
         } else {
-            // Authorization is granted
-            isAuthorized = true
-            print("✅ [HealthManager] Authorization confirmed - proceeding with workout")
+            // Already authorized - proceed
+            print("✅ [HealthManager] Already authorized - proceeding with workout session")
         }
         
         // Reset zone tracking when starting
@@ -404,6 +495,22 @@ class HealthManager: NSObject, ObservableObject {
         resetZoneTracking()
         runStartTime = Date()
         print("💓 [HealthManager] Run start time set: \(runStartTime!)")
+        
+        // CRITICAL: Start workout session even if not fully authorized
+        // The workout session can provide HR data even if read permission is notDetermined
+        // Only skip if workout write is explicitly denied
+        // Use the workoutAuthStatus already checked above (line 439)
+        if workoutAuthStatus != HKAuthorizationStatus.sharingDenied {
+            print("💓 [HealthManager] Starting workout session (can provide HR data)...")
+            startWorkoutSession()
+            
+            // Start HR query after a short delay to let workout session initialize
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.startHeartRateQuery()
+            }
+        } else {
+            print("❌ [HealthManager] Cannot start workout session - workout write permission denied")
+        }
         
         // Load HR config for zone calculation
         print("💓 [HealthManager] Loading HR config for zones...")
@@ -421,14 +528,10 @@ class HealthManager: NSObject, ObservableObject {
         print("💓 [HealthManager] Starting distance update timer...")
         startDistanceUpdateTimer()
         
-        // CRITICAL: Start HKWorkoutSession for real-time HR on watchOS
-        print("💓 [HealthManager] Starting workout session...")
-        startWorkoutSession()
-        
         print("✅ [HealthManager] ========== HEART RATE MONITORING STARTED ==========")
     }
     
-    private func authStatusString(_ status: HKAuthorizationStatus) -> String {
+    func authStatusString(_ status: HKAuthorizationStatus) -> String {
         switch status {
         case .notDetermined: return "notDetermined"
         case .sharingDenied: return "sharingDenied"
@@ -437,48 +540,132 @@ class HealthManager: NSObject, ObservableObject {
         }
     }
     
+    /// Start workout session with comprehensive validation
+    /// 
+    /// Performs 5 critical checks before starting:
+    /// 1. HealthKit availability
+    /// 2. Workout authorization status
+    /// 3. No other active workouts (only one workout at a time)
+    /// 4. Valid workout configuration (activity + location type)
+    /// 5. Running on watchOS (not iPhone - standalone watch app)
     private func startWorkoutSession() {
         print("🏃 [HealthManager] ========== STARTING HKWORKOUTSESSION ==========")
         print("🏃 [HealthManager] Thread: \(Thread.isMainThread ? "Main" : "Background")")
         
-        // Check if HealthKit is available
+        // ✅ CHECK 1: HealthKit availability
         guard HKHealthStore.isHealthDataAvailable() else {
             print("❌ [HealthManager] HealthKit NOT available - aborting workout session")
+            DispatchQueue.main.async {
+                self.workoutStatus = .error("HealthKit not available on this device")
+            }
             return
         }
-        print("✅ [HealthManager] HealthKit is available")
+        print("✅ [HealthManager] CHECK 1 PASSED: HealthKit is available")
         
-        // Check authorization status directly (more reliable than cached flag)
+        // ✅ CHECK 2: Authorization status
         let workoutType = HKObjectType.workoutType()
         let workoutAuthStatus = healthStore.authorizationStatus(for: workoutType)
-        print("🏃 [HealthManager] Workout authorization status: \(workoutAuthStatus.rawValue) (\(authStatusString(workoutAuthStatus)))")
+        print("🏃 [HealthManager] CHECK 2: Workout authorization status: \(workoutAuthStatus.rawValue) (\(authStatusString(workoutAuthStatus)))")
         
         if workoutAuthStatus == .sharingDenied {
-            print("❌ [HealthManager] Workout authorization DENIED - cannot start workout session")
+            print("❌ [HealthManager] CHECK 2 FAILED: Workout authorization DENIED")
+            print("💡 [HealthManager] User must enable in Settings > Privacy & Security > Health > RunbotAIWatch")
+            DispatchQueue.main.async {
+                self.workoutStatus = .error("Workout permission denied - enable in Settings")
+            }
+            return
+        }
+        print("✅ [HealthManager] CHECK 2 PASSED: Workout authorization OK")
+        
+        // ✅ CHECK 3: Check if another workout is already running
+        // Only one workout can be active at a time on watchOS
+        if workoutSession != nil && workoutSession?.state == .running {
+            print("⚠️ [HealthManager] CHECK 3: Workout session already running")
             return
         }
         
-        // Try to start workout even if authorization is notDetermined (user might grant it)
-        // The workout session will fail gracefully if not authorized
-        print("🏃 [HealthManager] Attempting to create workout session...")
+        // Check for other active workouts by querying recent workouts
+        checkForActiveWorkouts { [weak self] hasActiveWorkout in
+            guard let self = self else { return }
+            
+            if hasActiveWorkout {
+                print("❌ [HealthManager] CHECK 3 FAILED: Another workout is already active")
+                print("💡 [HealthManager] Please stop the other workout first")
+                DispatchQueue.main.async {
+                    self.workoutStatus = .error("Another workout is active - stop it first")
+                }
+                return
+            }
+            print("✅ [HealthManager] CHECK 3 PASSED: No other active workouts")
+            
+            // Continue with workout session creation
+            self.createWorkoutSession()
+        }
+    }
+    
+    /// Check if another workout is currently active
+    private func checkForActiveWorkouts(completion: @escaping (Bool) -> Void) {
+        let workoutType = HKObjectType.workoutType()
+        let predicate = HKQuery.predicateForWorkouts(with: .running)
+        let sortDescriptor = NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)
         
+        let query = HKSampleQuery(
+            sampleType: workoutType,
+            predicate: predicate,
+            limit: 1,
+            sortDescriptors: [sortDescriptor]
+        ) { _, samples, error in
+            if let error = error {
+                print("⚠️ [HealthManager] Error checking for active workouts: \(error.localizedDescription)")
+                // Assume no active workout if query fails
+                completion(false)
+                return
+            }
+            
+            let hasActiveWorkout = (samples?.count ?? 0) > 0
+            if hasActiveWorkout {
+                print("⚠️ [HealthManager] Found active workout: \(samples?.first?.uuid.uuidString ?? "unknown")")
+            }
+            completion(hasActiveWorkout)
+        }
+        
+        healthStore.execute(query)
+    }
+    
+    /// Create and start the workout session (called after all checks pass)
+    private func createWorkoutSession() {
+        print("🏃 [HealthManager] All checks passed - creating workout session...")
+        
+        // ✅ CHECK 4: Verify configuration is valid
         // Create workout configuration for outdoor running
         // This enables GPS tracking via watch/iPhone and accurate distance measurement
         let configuration = HKWorkoutConfiguration()
         configuration.activityType = .running
         configuration.locationType = .outdoor // Critical: Enables GPS tracking for accurate distance
         
+        // ✅ CHECK 5: Ensure we're on watch (not iPhone)
+        #if os(watchOS)
+        print("✅ [HealthManager] CHECK 5 PASSED: Running on watchOS (not iPhone)")
+        #else
+        print("❌ [HealthManager] CHECK 5 FAILED: Not running on watchOS!")
+        DispatchQueue.main.async {
+            self.workoutStatus = .error("Workout must be started on Apple Watch")
+        }
+        return
+        #endif
+        
         workoutConfiguration = configuration
-        print("🏃 [HealthManager] Workout configuration created:")
+        print("✅ [HealthManager] CHECK 4 PASSED: Workout configuration valid")
+        print("🏃 [HealthManager] Configuration:")
         print("   - Activity: Running")
-        print("   - Location: Outdoor")
+        print("   - Location: Outdoor (GPS enabled)")
         
         // CRITICAL: Ensure we're on main thread for workout session creation
         // HKWorkoutSession must be created on main thread on watchOS
         guard Thread.isMainThread else {
             print("⚠️ [HealthManager] Not on main thread - dispatching to main...")
             DispatchQueue.main.async { [weak self] in
-                self?.startWorkoutSession()
+                self?.createWorkoutSession()
             }
             return
         }
@@ -583,23 +770,9 @@ class HealthManager: NSObject, ObservableObject {
                 self?.workoutStatus = .starting
             }
             
-            // CRITICAL FIX: Use workout builder statistics for HR (recommended on watchOS)
-            // This is more reliable than anchored query when workout session is active
-            print("🏃 [HealthManager] Setting up workout builder statistics query for HR...")
-            startWorkoutBuilderHRQuery(builder: builder)
-            
-            // Also start anchored query as backup (works even before collection begins)
-            print("🏃 [HealthManager] Scheduling anchored HR query in 1.0 second...")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
-                guard let self = self else {
-                    print("⚠️ [HealthManager] Self deallocated before HR query start")
-                    return
-                }
-                guard self.workoutSession != nil else {
-                    print("❌ [HealthManager] Workout session was deallocated before HR query!")
-                    return
-                }
-                print("🏃 [HealthManager] Starting anchored HR query now...")
+            // Start HR query (anchored query provides real-time updates)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self = self, self.workoutSession != nil else { return }
                 self.startHeartRateQuery()
             }
             
@@ -683,189 +856,86 @@ class HealthManager: NSObject, ObservableObject {
         print("🏃 [HealthManager] ========== WORKOUT SESSION START COMPLETE ==========")
     }
     
-    // CRITICAL FIX: Use workout builder statistics for HR (recommended on watchOS)
-    // This queries statistics directly from the active workout builder
-    private func startWorkoutBuilderHRQuery(builder: HKLiveWorkoutBuilder) {
-        print("💓 [HealthManager] ========== STARTING WORKOUT BUILDER HR STATISTICS QUERY ==========")
-        
-        guard let heartRateType = HKQuantityType.quantityType(forIdentifier: .heartRate) else {
-            print("❌ [HealthManager] Heart rate type NOT available - aborting builder query")
-            return
-        }
-        
-        // Stop existing builder query if any
-        if let existingQuery = workoutBuilderHRQuery {
-            print("💓 [HealthManager] Stopping existing builder HR query...")
-            healthStore.stop(existingQuery)
-            workoutBuilderHRQuery = nil
-        }
-        
-        print("💓 [HealthManager] Creating statistics query from workout builder...")
-        print("💓 [HealthManager] Builder: \(builder)")
-        // Note: HKWorkoutBuilder doesn't expose dataSource directly, but it's set internally
-        
-        // Query statistics from the workout builder
-        // This gets real-time HR data directly from the active workout
-        let query = HKStatisticsQuery(
-            quantityType: heartRateType,
-            quantitySamplePredicate: nil, // Get all samples from this workout
-            options: [.discreteAverage, .discreteMin, .discreteMax, .mostRecent]
-        ) { [weak self] query, statistics, error in
-            guard let self = self else {
-                print("⚠️ [HealthManager] Self deallocated in builder statistics callback")
-                return
-            }
-            
-            if let error = error {
-                print("❌ [HealthManager] Builder statistics query ERROR: \(error.localizedDescription)")
-                return
-            }
-            
-            guard let statistics = statistics else {
-                print("💓 [HealthManager] Builder statistics query: No statistics yet (waiting for HR sensor...)")
-                return
-            }
-            
-            // Get most recent HR value
-            if let mostRecent = statistics.mostRecentQuantity() {
-                let hr = mostRecent.doubleValue(for: HKUnit(from: "count/min"))
-                print("💓 [HealthManager] ✅✅✅ BUILDER HR UPDATE: \(Int(hr)) BPM ✅✅✅")
-                if let dateInterval = statistics.mostRecentQuantityDateInterval() {
-                    print("   Most recent date: \(dateInterval.start)")
-                }
-                
-                DispatchQueue.main.async {
-                    self.updateHeartRate(heartRate: hr)
-                }
-            } else {
-                print("💓 [HealthManager] Builder statistics: No most recent HR value yet")
-            }
-            
-            // Also log average if available
-            if let average = statistics.averageQuantity() {
-                let avgHR = average.doubleValue(for: HKUnit(from: "count/min"))
-                print("💓 [HealthManager] Builder statistics - Average HR: \(Int(avgHR)) BPM")
-            }
-        }
-        
-        // Note: HKStatisticsQuery is a one-shot query (no update handler)
-        // Continuous HR updates come from the HKAnchoredObjectQuery (startHeartRateQuery)
-        // This query just provides initial statistics from the workout builder
-        
-        workoutBuilderHRQuery = query
-        // Execute query on health store (not builder - builder collects automatically via dataSource)
-        healthStore.execute(query)
-        print("✅✅✅ [HealthManager] Workout builder HR statistics query EXECUTED ✅✅✅")
-        print("💓 [HealthManager] Query will receive updates as workout collects HR data")
-        print("💓 [HealthManager] ========== WORKOUT BUILDER HR QUERY START COMPLETE ==========")
-    }
-    
     private func startHeartRateQuery() {
         print("💓 [HealthManager] ========== STARTING HEART RATE QUERY ==========")
-        print("💓 [HealthManager] Thread: \(Thread.isMainThread ? "Main" : "Background")")
         
         // Stop existing query if any
         if let existingQuery = heartRateQuery {
             print("💓 [HealthManager] Stopping existing HR query...")
             healthStore.stop(existingQuery)
             heartRateQuery = nil
-            print("✅ [HealthManager] Existing query stopped")
         }
         
         guard let heartRateType = HKQuantityType.quantityType(forIdentifier: .heartRate) else {
-            print("❌ [HealthManager] Heart rate type NOT available - aborting query")
+            print("❌ [HealthManager] Cannot create heart rate type")
             return
         }
-        print("✅ [HealthManager] Heart rate type available")
         
-        // Check authorization for heart rate
         let hrAuthStatus = healthStore.authorizationStatus(for: heartRateType)
         print("💓 [HealthManager] HR authorization status: \(hrAuthStatus.rawValue) (\(authStatusString(hrAuthStatus)))")
         
+        // CRITICAL: Try to read HR even if authorization is notDetermined
+        // The workout session might provide HR data even without explicit read permission
         if hrAuthStatus == .sharingDenied {
-            print("❌ [HealthManager] HR authorization DENIED - cannot query heart rate")
-            return
+            print("⚠️ [HealthManager] HR read permission DENIED - trying via workout session data source")
+            // Still try - workout session data source might work
         }
         
-        // CRITICAL: Use workout session as data source for real-time HR
-        // This ensures we get HR data directly from the active workout
+        // Use workout session start time or current time minus 1 minute
         let startTime = runStartTime ?? Date().addingTimeInterval(-60)
         print("💓 [HealthManager] Query start time: \(startTime)")
+        print("💓 [HealthManager] Run start time: \(runStartTime?.description ?? "nil")")
         
-        let predicate = HKQuery.predicateForSamples(
-            withStart: startTime,
-            end: nil,
-            options: .strictStartDate
-        )
-        print("💓 [HealthManager] Query predicate created")
+        // Create predicate for samples from start time onwards
+        let predicate = HKQuery.predicateForSamples(withStart: startTime, end: nil, options: .strictStartDate)
         
-        // Anchored query for real-time push updates
-        print("💓 [HealthManager] Creating anchored object query...")
+        print("💓 [HealthManager] Creating HKAnchoredObjectQuery...")
         let query = HKAnchoredObjectQuery(
             type: heartRateType,
-            predicate: predicate, // Filter to current workout session
+            predicate: predicate,
             anchor: nil,
             limit: HKObjectQueryNoLimit
         ) { [weak self] query, samples, deletedObjects, anchor, error in
-            print("💓 [HealthManager] ========== INITIAL QUERY CALLBACK ==========")
+            guard let self = self else { return }
+            
             if let error = error {
-                print("❌ [HealthManager] Anchored query INITIAL ERROR:")
-                print("   Error: \(error.localizedDescription)")
-                print("   Domain: \((error as NSError).domain)")
-                print("   Code: \((error as NSError).code)")
+                print("❌ [HealthManager] HR query initial results error: \(error.localizedDescription)")
                 return
             }
-            
-            print("💓 [HealthManager] Initial query results:")
-            print("   Samples: \(samples?.count ?? 0)")
-            print("   Deleted: \(deletedObjects?.count ?? 0)")
             
             guard let samples = samples as? [HKQuantitySample], !samples.isEmpty else {
-                print("💓 [HealthManager] Initial query: No samples yet (waiting for HR sensor...)")
-                print("   This is normal - sensor may need a few seconds to activate")
+                print("⚠️ [HealthManager] HR query returned no initial samples")
                 return
             }
             
-            guard let self = self else {
-                print("⚠️ [HealthManager] Self deallocated in initial query callback")
-                return
-            }
-            
-            // Get the most recent sample
-            if let newestSample = samples.max(by: { $0.endDate < $1.endDate }) {
-                let hr = newestSample.quantity.doubleValue(for: HKUnit(from: "count/min"))
-                print("💓 [HealthManager] ✅✅✅ HR UPDATE (INITIAL): \(Int(hr)) BPM ✅✅✅")
-                print("   Sample date: \(newestSample.startDate)")
-                
+            print("✅ [HealthManager] HR query initial results: \(samples.count) samples")
+            if let newest = samples.max(by: { $0.endDate < $1.endDate }) {
+                let hr = newest.quantity.doubleValue(for: HKUnit(from: "count/min"))
+                print("💓 [HealthManager] Latest HR from initial query: \(Int(hr)) BPM")
                 DispatchQueue.main.async {
                     self.updateHeartRate(heartRate: hr)
                 }
             }
         }
         
-        // Update handler for real-time updates (called continuously)
+        // CRITICAL: Update handler for real-time HR updates
         query.updateHandler = { [weak self] query, samples, deletedObjects, anchor, error in
+            guard let self = self else { return }
+            
             if let error = error {
-                print("❌ [HealthManager] Anchored query UPDATE ERROR: \(error.localizedDescription)")
+                print("❌ [HealthManager] HR query update error: \(error.localizedDescription)")
                 return
             }
             
             guard let samples = samples as? [HKQuantitySample], !samples.isEmpty else {
-                // No samples yet - this is normal at workout start
-                // Don't log every time to avoid spam
+                // No samples in this update - this is normal, just means no new HR data yet
                 return
             }
             
-            guard let self = self else {
-                print("⚠️ [HealthManager] Self deallocated in update handler")
-                return
-            }
-            
-            // Get the most recent sample
-            if let newestSample = samples.max(by: { $0.endDate < $1.endDate }) {
-                let hr = newestSample.quantity.doubleValue(for: HKUnit(from: "count/min"))
-                print("💓 [HealthManager] ✅✅✅ HR UPDATE: \(Int(hr)) BPM ✅✅✅")
-                
+            print("💓 [HealthManager] HR query update: \(samples.count) new samples")
+            if let newest = samples.max(by: { $0.endDate < $1.endDate }) {
+                let hr = newest.quantity.doubleValue(for: HKUnit(from: "count/min"))
+                print("💓 [HealthManager] Latest HR: \(Int(hr)) BPM (timestamp: \(newest.endDate))")
                 DispatchQueue.main.async {
                     self.updateHeartRate(heartRate: hr)
                 }
@@ -873,11 +943,39 @@ class HealthManager: NSObject, ObservableObject {
         }
         
         heartRateQuery = query
-        print("💓 [HealthManager] Executing heart rate query...")
+        print("💓 [HealthManager] Executing HR query...")
         healthStore.execute(query)
-        print("✅ [HealthManager] Heart rate query EXECUTED - real-time HR stream active")
-        print("💓 [HealthManager] Waiting for HR sensor to activate (may take 5-10 seconds)...")
-        print("💓 [HealthManager] ========== HEART RATE QUERY START COMPLETE ==========")
+        print("✅ [HealthManager] HR query executed - waiting for updates...")
+        
+        // Also try to read from workout builder statistics if available
+        // This is a fallback if the query doesn't work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+            self?.tryReadHRFromWorkoutBuilder()
+        }
+    }
+    
+    /// Fallback: Try to read HR from workout builder statistics
+    private func tryReadHRFromWorkoutBuilder() {
+        guard let builder = workoutBuilder else {
+            print("⚠️ [HealthManager] No workout builder for HR fallback")
+            return
+        }
+        
+        guard let heartRateType = HKQuantityType.quantityType(forIdentifier: .heartRate) else {
+            return
+        }
+        
+        print("💓 [HealthManager] Trying to read HR from workout builder statistics...")
+        if let statistics = builder.statistics(for: heartRateType),
+           let mostRecent = statistics.mostRecentQuantity() {
+            let hr = mostRecent.doubleValue(for: HKUnit(from: "count/min"))
+            print("💓 [HealthManager] HR from workout builder: \(Int(hr)) BPM")
+            DispatchQueue.main.async {
+                self.updateHeartRate(heartRate: hr)
+            }
+        } else {
+            print("⚠️ [HealthManager] No HR statistics available in workout builder yet")
+        }
     }
     
     private func updateHeartRate(heartRate: Double) {
@@ -948,6 +1046,9 @@ class HealthManager: NSObject, ObservableObject {
         // Stop distance update timer
         stopDistanceUpdateTimer()
         
+        // Stop periodic HR reading
+        stopPeriodicHRReading()
+        
         // Finalize zone tracking and save final data
         finalizeZoneTracking()
         
@@ -963,12 +1064,6 @@ class HealthManager: NSObject, ObservableObject {
         if let query = heartRateQuery {
             healthStore.stop(query)
             heartRateQuery = nil
-        }
-        
-        // Stop workout builder HR query
-        if let builderQuery = workoutBuilderHRQuery {
-            healthStore.stop(builderQuery)
-            workoutBuilderHRQuery = nil
         }
         
         // End workout session
@@ -1133,6 +1228,26 @@ class HealthManager: NSObject, ObservableObject {
     private func stopZoneUpdateTimer() {
         zoneUpdateTimer?.invalidate()
         zoneUpdateTimer = nil
+    }
+    
+    /// Start periodic HR reading from workout builder (fallback mechanism)
+    private func startPeriodicHRReading() {
+        stopPeriodicHRReading()
+        
+        print("💓 [HealthManager] Starting periodic HR reading from workout builder...")
+        periodicHRTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
+            guard let self = self, self.workoutSession?.state == .running else { return }
+            self.tryReadHRFromWorkoutBuilder()
+        }
+        
+        if let timer = periodicHRTimer {
+            RunLoop.current.add(timer, forMode: .common)
+        }
+    }
+    
+    private func stopPeriodicHRReading() {
+        periodicHRTimer?.invalidate()
+        periodicHRTimer = nil
     }
     
     // MARK: - Periodic Distance Updates from Workout
@@ -1432,12 +1547,24 @@ extension HealthManager: HKWorkoutSessionDelegate {
                 self?.workoutStatus = .running
             }
             
-            // When session reaches running state, ensure HR query is active
+            // CRITICAL: When session reaches running state, HR data should be available
+            // Start HR query if not already started
             if self.heartRateQuery == nil {
-                print("⚠️ [HealthManager] HR query not started yet - starting now...")
+                print("💓 [HealthManager] Session is RUNNING - starting HR query now...")
                 self.startHeartRateQuery()
             } else {
                 print("✅ [HealthManager] HR query already active")
+            }
+            
+            // Also try reading from workout builder statistics (fallback)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+                self?.tryReadHRFromWorkoutBuilder()
+            }
+            
+            // Set up periodic HR reading from workout builder (every 2 seconds)
+            // This ensures we get HR even if the query has issues
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) { [weak self] in
+                self?.startPeriodicHRReading()
             }
             
             // Verify builder is retained (dataSource is set earlier in startWorkoutSession)

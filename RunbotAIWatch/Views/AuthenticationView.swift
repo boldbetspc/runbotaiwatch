@@ -99,35 +99,43 @@ struct AuthenticationView: View {
                     print("✅ [AuthView] Supabase session initialized for user: \(userId)")
                 }
                 
-                // Request HealthKit authorization ON WATCH if not already authorized
-                // Check current status first
-                let workoutType = HKObjectType.workoutType()
-                let heartRateType = HKQuantityType.quantityType(forIdentifier: .heartRate)!
-                let healthStore = HKHealthStore()
-                let workoutStatus = healthStore.authorizationStatus(for: workoutType)
-                let hrStatus = healthStore.authorizationStatus(for: heartRateType)
-                
-                print("💓 [AuthView] Current HealthKit authorization status:")
-                print("   - Workout: \(workoutStatus.rawValue)")
-                print("   - HR: \(hrStatus.rawValue)")
-                
-                // Only request if not already authorized or denied
-                if workoutStatus == .notDetermined || hrStatus == .notDetermined {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                        print("💓 [AuthView] Requesting HealthKit authorization on watch after login...")
-                        healthManager.requestHealthDataAccess()
-                        print("✅ [AuthView] HealthKit authorization request submitted")
-                    }
-                } else if workoutStatus == .sharingAuthorized && hrStatus == .sharingAuthorized {
-                    print("✅ [AuthView] HealthKit already authorized - no need to request")
-                } else {
-                    print("⚠️ [AuthView] HealthKit authorization denied - user must enable in Settings")
-                }
-                
-                // Request location permission
+                // STEP 1: Request HealthKit authorization FIRST (before location)
+                // Always request on login to ensure dialog shows (even if previously denied, user can change in Settings)
+                print("💓 [AuthView] STEP 1: Requesting HealthKit authorization on login...")
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-                    runTracker.requestLocationPermission()
-                    print("📍 [AuthView] Requested location permission")
+                    // Request authorization - this will show dialog if notDetermined, or do nothing if denied/authorized
+                    healthManager.requestHealthDataAccess()
+                    print("✅ [AuthView] HealthKit authorization request submitted")
+                    
+                    // Check status after request
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        let workoutType = HKObjectType.workoutType()
+                        let heartRateType = HKQuantityType.quantityType(forIdentifier: .heartRate)!
+                        let healthStore = HKHealthStore()
+                        let workoutStatus = healthStore.authorizationStatus(for: workoutType)
+                        let hrStatus = healthStore.authorizationStatus(for: heartRateType)
+                        
+                        print("💓 [AuthView] HealthKit status after request:")
+                        print("   - Workout: \(workoutStatus.rawValue)")
+                        print("   - HR: \(hrStatus.rawValue)")
+                        
+                        // Check if authorization was granted
+                        if workoutStatus == .sharingAuthorized && hrStatus == .sharingAuthorized {
+                            print("✅ [AuthView] HealthKit authorization GRANTED")
+                        } else if workoutStatus == .notDetermined || hrStatus == .notDetermined {
+                            print("⚠️ [AuthView] HealthKit authorization still notDetermined - dialog may not have shown")
+                            print("💡 [AuthView] Check: Xcode > Signing & Capabilities > HealthKit entitlement enabled")
+                        } else {
+                            print("❌ [AuthView] HealthKit authorization DENIED - user must enable in Settings")
+                        }
+                        
+                        // STEP 2: Request location permission AFTER HealthKit (with delay to avoid overlap)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                            print("📍 [AuthView] STEP 2: Requesting location permission...")
+                            runTracker.requestLocationPermission()
+                            print("✅ [AuthView] Location permission request submitted")
+                        }
+                    }
                 }
             }
         }

@@ -29,6 +29,10 @@
 		<string>healthkit</string>
 		<string>workout-processing</string>
 	</array>
+	<key>WKBackgroundModes</key>
+	<array>
+		<string>workout-processing</string>
+	</array>
 	<key>UIUserInterfaceStyle</key>
 	<string>Dark</string>
 	<key>WKApplication</key>

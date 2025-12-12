@@ -259,19 +259,32 @@ final class Mem0Manager: ObservableObject {
     
     // MARK: - API Calls
     
-    /// Fetch from Mem0 API
+    /// Fetch from Mem0 via Supabase edge function (shared with iOS app)
+    /// Edge function uses MEM0_API_KEY from Supabase secrets
     /// URLSession automatically uses best connection: watch cellular → iPhone connection
-    /// No per-call checking needed - system handles efficiently
     private func fetchFromAPI(
         userId: String,
         query: String,
         category: String?,
         limit: Int
     ) async -> [String] {
-        guard !supabaseURL.isEmpty else { return [] }
+        guard !supabaseURL.isEmpty else {
+            print("❌ [Mem0] Supabase URL not configured")
+            return []
+        }
         
         let proxyURL = "\(supabaseURL)/functions/v1/mem0-proxy"
-        guard let url = URL(string: proxyURL) else { return [] }
+        guard let url = URL(string: proxyURL) else {
+            print("❌ [Mem0] Invalid edge function URL")
+            return []
+        }
+        
+        print("📦 [Mem0] ========== SEARCHING MEM0 ==========")
+        print("📦 [Mem0] Using Supabase edge function: mem0-proxy (shared with iOS)")
+        print("📦 [Mem0] URL: \(url)")
+        print("📦 [Mem0] Query: \(query.prefix(50))...")
+        print("📦 [Mem0] User ID: \(userId)")
+        print("📦 [Mem0] Note: Edge function uses MEM0_API_KEY from Supabase secrets")
         
         do {
             var request = URLRequest(url: url)
@@ -292,35 +305,59 @@ final class Mem0Manager: ObservableObject {
             }
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             
-            // Use URLSession.shared - automatically uses best connection (watch cellular → iPhone)
-            // No custom configuration needed - system handles connection priority efficiently
+            print("📦 [Mem0] Sending search request to edge function...")
+            let startTime = Date()
             let (data, response) = try await URLSession.shared.data(for: request)
+            let duration = Date().timeIntervalSince(startTime)
             
-            if let http = response as? HTTPURLResponse, http.statusCode == 200,
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let results = json["results"] as? [[String: Any]] {
-                return results.compactMap { $0["memory"] as? String }
+            print("📦 [Mem0] Response received in \(String(format: "%.2f", duration)) seconds")
+            
+            if let http = response as? HTTPURLResponse {
+                print("📦 [Mem0] HTTP Status Code: \(http.statusCode)")
+                if http.statusCode == 200,
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let results = json["results"] as? [[String: Any]] {
+                    let memories = results.compactMap { $0["memory"] as? String }
+                    print("📦 [Mem0] ✅✅✅ Mem0 search SUCCESS - found \(memories.count) memories ✅✅✅")
+                    return memories
+                } else {
+                    let errorBody = String(data: data, encoding: .utf8) ?? "Unknown"
+                    print("❌ [Mem0] Search failed - Status: \(http.statusCode), Error: \(errorBody)")
+                }
             }
         } catch {
-            print("⚠️ [Mem0] Search failed: \(error.localizedDescription)")
+            print("❌ [Mem0] Search error: \(error.localizedDescription)")
         }
         
         return []
     }
     
-    /// Write to Mem0 API
+    /// Write to Mem0 via Supabase edge function (shared with iOS app)
+    /// Edge function uses MEM0_API_KEY from Supabase secrets
     /// URLSession automatically uses best connection: watch cellular → iPhone connection
-    /// Optimized for outdoor running - no connection type checking overhead
     private func writeToAPI(
         userId: String,
         text: String,
         category: String,
         metadata: [String: String]
     ) async -> Bool {
-        guard !supabaseURL.isEmpty else { return false }
+        guard !supabaseURL.isEmpty else {
+            print("❌ [Mem0] Supabase URL not configured")
+            return false
+        }
         
         let proxyURL = "\(supabaseURL)/functions/v1/mem0-proxy"
-        guard let url = URL(string: proxyURL) else { return false }
+        guard let url = URL(string: proxyURL) else {
+            print("❌ [Mem0] Invalid edge function URL")
+            return false
+        }
+        
+        print("📝 [Mem0] ========== WRITING TO MEM0 ==========")
+        print("📝 [Mem0] Using Supabase edge function: mem0-proxy (shared with iOS)")
+        print("📝 [Mem0] URL: \(url)")
+        print("📝 [Mem0] Category: \(category)")
+        print("📝 [Mem0] Text length: \(text.count) characters")
+        print("📝 [Mem0] Note: Edge function uses MEM0_API_KEY from Supabase secrets")
         
         do {
             var request = URLRequest(url: url)
@@ -330,22 +367,46 @@ final class Mem0Manager: ObservableObject {
             request.setValue(getAuthToken(), forHTTPHeaderField: "Authorization")
             request.timeoutInterval = 15
             
+            // Edge function expects: action, user_id, data (not text), and optional metadata
+            // Edge function transforms this to Mem0 API format: { messages: [{ role: "user", content: data }], user_id }
+            var requestMetadata = metadata
+            requestMetadata["category"] = category // Include category in metadata
+            requestMetadata["platform"] = "watchOS"
+            requestMetadata["timestamp"] = ISO8601DateFormatter().string(from: Date())
+            
             let body: [String: Any] = [
                 "action": "add",
                 "user_id": userId,
-                "text": text,
-                "category": category,
-                "metadata": metadata
+                "data": text, // Edge function expects "data" not "text"
+                "metadata": requestMetadata
             ]
+            print("📝 [Mem0] Request body format:")
+            print("   - action: add")
+            print("   - user_id: \(userId)")
+            print("   - data: \(text.count) characters")
+            print("   - metadata: \(requestMetadata)")
+            
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             
-            let (_, response) = try await URLSession.shared.data(for: request)
+            print("📝 [Mem0] Sending write request to edge function...")
+            let startTime = Date()
+            let (data, response) = try await URLSession.shared.data(for: request)
+            let duration = Date().timeIntervalSince(startTime)
             
-            if let http = response as? HTTPURLResponse, http.statusCode == 200 {
-                return true
+            print("📝 [Mem0] Response received in \(String(format: "%.2f", duration)) seconds")
+            
+            if let http = response as? HTTPURLResponse {
+                print("📝 [Mem0] HTTP Status Code: \(http.statusCode)")
+                if http.statusCode == 200 {
+                    print("📝 [Mem0] ✅✅✅ Mem0 write SUCCESS ✅✅✅")
+                    return true
+                } else {
+                    let errorBody = String(data: data, encoding: .utf8) ?? "Unknown"
+                    print("❌ [Mem0] Write failed - Status: \(http.statusCode), Error: \(errorBody)")
+                }
             }
         } catch {
-            print("⚠️ [Mem0] Write failed: \(error.localizedDescription)")
+            print("❌ [Mem0] Write error: \(error.localizedDescription)")
         }
         
         return false

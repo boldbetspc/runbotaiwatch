@@ -87,6 +87,7 @@
 				Models/WatchConnectivityManager.swift,
 				RunbotAIWatchApp.swift,
 				Views/AuthenticationView.swift,
+				Views/ConnectionsView.swift,
 				Views/ContentView.swift,
 				Views/MainRunbotView.swift,
 				Views/RunningView.swift,

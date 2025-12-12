@@ -242,11 +242,12 @@ struct MainRunbotView: View {
         case heartZoneChart   // New page for pie chart
         case energyPulse      // ECG-style pace visualization
         case splitIntervals   // Split intervals timeline
+        case connections      // Network & Workout connections
         case settings
     }
     
     private var carouselPages: [CarouselPage] {
-        [.startStop, .aiCoach, .runStats, .heartZone, .heartZoneChart, .energyPulse, .splitIntervals, .settings]
+        [.startStop, .aiCoach, .runStats, .heartZone, .heartZoneChart, .energyPulse, .splitIntervals, .connections, .settings]
     }
     
     var body: some View {
@@ -369,6 +370,9 @@ struct MainRunbotView: View {
             energyPulseViewPage()
         case .splitIntervals:
             splitIntervalsPage()
+        case .connections:
+            ConnectionsView(networkMonitor: networkMonitor)
+                .environmentObject(healthManager)
         case .settings:
             settingsPage()
         }
@@ -1467,16 +1471,6 @@ struct MainRunbotView: View {
                     .tracking(2)
                     .foregroundStyle(LinearGradient(colors: [.rbAccent, .rbSecondary], startPoint: .leading, endPoint: .trailing))
                     .padding(.top, 6)
-                
-                // Workout Status
-                SettingsSection(title: "WORKOUT", icon: "figure.run", color: .rbSuccess) {
-                    WorkoutStatusRow(healthManager: healthManager, isRunning: isRunning)
-                }
-                
-                // Network Status
-                SettingsSection(title: "NETWORK", icon: "wifi", color: .rbAccent) {
-                    NetworkStatusRow(networkMonitor: networkMonitor)
-                }
                 
                 // Voice AI Model
                 SettingsSection(title: "VOICE AI", icon: "waveform.circle.fill", color: .rbAccent) {
@@ -3436,12 +3430,13 @@ class NetworkMonitor: ObservableObject {
     private let monitor = NWPathMonitor()
     private let queue = DispatchQueue(label: "NetworkMonitor")
     private let watchConnectivity = WatchConnectivityManager.shared
-    private var retryTimer: Timer?
-    private let retryInterval: TimeInterval = 2.0 // Retry every 2 seconds if disconnected
+    private var startupRetryTimer: Timer?
+    private var startupRetryCount = 0
+    private let maxStartupRetries = 10 // Retry up to 10 times (20 seconds total)
     
     init() {
         startMonitoring()
-        startRetryTimer()
+        startStartupRetry()
     }
     
     private func startMonitoring() {
@@ -3450,39 +3445,51 @@ class NetworkMonitor: ObservableObject {
                 guard let self = self else { return }
                 
                 let isConnected = path.status == .satisfied
-                let wasConnected = self.isConnected
                 self.isConnected = isConnected
                 
                 if isConnected {
-                    // Check if watch has cellular capability
+                    // PRIORITY 1: Check if watch has cellular capability (watch cellular)
                     if path.usesInterfaceType(.cellular) {
-                        // Watch has its own cellular connection (priority)
                         self.connectionType = .watchCellular
-                        print("🌐 [NetworkMonitor] Connected via Watch Cellular")
-                    } else if self.watchConnectivity.isReachable {
-                        // iPhone is paired and reachable
+                        print("🌐 [NetworkMonitor] ✅ Connected via Watch Cellular (Priority 1)")
+                    }
+                    // PRIORITY 2: If no watch cellular, try iPhone Bluetooth internet
+                    else if self.watchConnectivity.isReachable {
+                        // iPhone is paired and reachable via Bluetooth
                         self.connectionType = .iphonePaired
-                        print("🌐 [NetworkMonitor] Connected via iPhone Paired")
-                    } else if path.usesInterfaceType(.wifi) {
-                        // Watch connected via WiFi (if available)
+                        print("🌐 [NetworkMonitor] ✅ Connected via iPhone Bluetooth Internet (Priority 2)")
+                    }
+                    // PRIORITY 3: WiFi (if available on watch)
+                    else if path.usesInterfaceType(.wifi) {
                         self.connectionType = .watchCellular // Treat WiFi as watch's own connection
-                        print("🌐 [NetworkMonitor] Connected via WiFi")
-                    } else {
-                        // Connected but unknown type
-                        self.connectionType = .iphonePaired // Default to iPhone assumption
-                        print("🌐 [NetworkMonitor] Connected (unknown type, defaulting to iPhone)")
+                        print("🌐 [NetworkMonitor] ✅ Connected via WiFi")
+                    }
+                    // FALLBACK: Connected but unknown type - try iPhone
+                    else {
+                        // Check if iPhone is reachable even if path doesn't show it
+                        if self.watchConnectivity.isReachable {
+                            self.connectionType = .iphonePaired
+                            print("🌐 [NetworkMonitor] ✅ Connected via iPhone (fallback check)")
+                        } else {
+                            // Unknown connection type
+                            self.connectionType = .iphonePaired // Default assumption
+                            print("🌐 [NetworkMonitor] ⚠️ Connected (unknown type, defaulting to iPhone)")
+                        }
                     }
                     
-                    // Stop retry timer if we just connected
-                    if !wasConnected {
-                        print("✅ [NetworkMonitor] Connection restored - stopping retry timer")
-                        self.stopRetryTimer()
-                    }
+                    print("✅ [NetworkMonitor] Connection established")
+                    // Stop startup retry once connected
+                    self.stopStartupRetry()
                 } else {
+                    // Not connected - check iPhone as fallback
                     self.connectionType = .none
-                    if wasConnected {
-                        print("❌ [NetworkMonitor] Connection lost - starting retry timer")
-                        self.startRetryTimer()
+                    if self.watchConnectivity.isReachable {
+                        self.isConnected = true
+                        self.connectionType = .iphonePaired
+                        print("🌐 [NetworkMonitor] ✅ Connected via iPhone Bluetooth (fallback check)")
+                        self.stopStartupRetry()
+                    } else {
+                        print("❌ [NetworkMonitor] No connection available - will retry during startup")
                     }
                 }
             }
@@ -3491,36 +3498,117 @@ class NetworkMonitor: ObservableObject {
         monitor.start(queue: queue)
     }
     
-    private func startRetryTimer() {
-        // Stop existing timer if any
-        stopRetryTimer()
+    /// Force refresh connection check (only called when user hits refresh button)
+    func refreshConnection() {
+        print("🔄 [NetworkMonitor] Manual refresh requested")
         
-        print("🔄 [NetworkMonitor] Starting connection retry timer (every \(retryInterval)s)")
-        retryTimer = Timer.scheduledTimer(withTimeInterval: retryInterval, repeats: true) { [weak self] _ in
-            guard let self = self else { return }
+        // Check current path status
+        let currentPath = monitor.currentPath
+        let pathConnected = currentPath.status == .satisfied
+        
+        // PRIORITY 1: Check watch cellular first
+        if pathConnected && currentPath.usesInterfaceType(.cellular) {
+            self.isConnected = true
+            self.connectionType = .watchCellular
+            print("🌐 [NetworkMonitor] ✅ Refreshed: Watch Cellular")
+            return
+        }
+        
+        // PRIORITY 2: Check iPhone Bluetooth internet
+        if watchConnectivity.isReachable {
+            self.isConnected = true
+            self.connectionType = .iphonePaired
+            print("🌐 [NetworkMonitor] ✅ Refreshed: iPhone Bluetooth Internet")
+            return
+        }
+        
+        // PRIORITY 3: Check WiFi
+        if pathConnected && currentPath.usesInterfaceType(.wifi) {
+            self.isConnected = true
+            self.connectionType = .watchCellular
+            print("🌐 [NetworkMonitor] ✅ Refreshed: WiFi")
+            return
+        }
+        
+        // No connection available
+        if pathConnected {
+            // Connected but unknown type
+            self.isConnected = true
+            self.connectionType = .iphonePaired // Default assumption
+            print("🌐 [NetworkMonitor] ⚠️ Refreshed: Connected (unknown type)")
+        } else {
+            self.isConnected = false
+            self.connectionType = .none
+            print("❌ [NetworkMonitor] Refreshed: No connection")
+        }
+    }
+    
+    /// Startup retry logic - only retries during app startup, not continuously
+    private func startStartupRetry() {
+        stopStartupRetry()
+        startupRetryCount = 0
+        
+        print("🔄 [NetworkMonitor] Starting startup connection retry...")
+        startupRetryTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] timer in
+            guard let self = self else {
+                timer.invalidate()
+                return
+            }
             
-            // Force a path check by accessing current path
+            // Stop if already connected
+            if self.isConnected {
+                print("✅ [NetworkMonitor] Connected - stopping startup retry")
+                self.stopStartupRetry()
+                return
+            }
+            
+            // Stop if max retries reached
+            self.startupRetryCount += 1
+            if self.startupRetryCount >= self.maxStartupRetries {
+                print("⏹️ [NetworkMonitor] Max startup retries reached - stopping")
+                self.stopStartupRetry()
+                return
+            }
+            
+            print("🔄 [NetworkMonitor] Startup retry \(self.startupRetryCount)/\(self.maxStartupRetries) - checking connection...")
+            
+            // PRIORITY 1: Check watch cellular
             let currentPath = self.monitor.currentPath
-            DispatchQueue.main.async {
-                let isConnected = currentPath.status == .satisfied
-                if isConnected != self.isConnected {
-                    print("🔄 [NetworkMonitor] Retry check: Connection status changed")
-                    // Trigger path update handler
-                    self.monitor.pathUpdateHandler?(currentPath)
-                } else if !isConnected {
-                    print("🔄 [NetworkMonitor] Retry check: Still disconnected, will retry in \(self.retryInterval)s")
-                }
+            if currentPath.status == .satisfied && currentPath.usesInterfaceType(.cellular) {
+                self.isConnected = true
+                self.connectionType = .watchCellular
+                print("🌐 [NetworkMonitor] ✅ Connected via Watch Cellular (startup retry)")
+                self.stopStartupRetry()
+                return
+            }
+            
+            // PRIORITY 2: Check iPhone Bluetooth
+            if self.watchConnectivity.isReachable {
+                self.isConnected = true
+                self.connectionType = .iphonePaired
+                print("🌐 [NetworkMonitor] ✅ Connected via iPhone Bluetooth (startup retry)")
+                self.stopStartupRetry()
+                return
+            }
+            
+            // PRIORITY 3: Check WiFi
+            if currentPath.status == .satisfied && currentPath.usesInterfaceType(.wifi) {
+                self.isConnected = true
+                self.connectionType = .watchCellular
+                print("🌐 [NetworkMonitor] ✅ Connected via WiFi (startup retry)")
+                self.stopStartupRetry()
+                return
             }
         }
     }
     
-    private func stopRetryTimer() {
-        retryTimer?.invalidate()
-        retryTimer = nil
+    private func stopStartupRetry() {
+        startupRetryTimer?.invalidate()
+        startupRetryTimer = nil
     }
     
     deinit {
-        stopRetryTimer()
+        stopStartupRetry()
         monitor.cancel()
     }
 }

@@ -550,7 +550,7 @@ class SupabaseManager: ObservableObject {
     }
     
     /// Save only watch-specific preferences (selective update)
-    /// Only updates: voice_ai_model, language, feedback_frequency, target_pace, voice_energy
+    /// Only updates: voice_ai_model, language, feedback_frequency, target_pace, voice_energy, coach_personality, target_distance
     func saveWatchPreferences(_ settings: UserPreferences.Settings, userId: String) async -> Bool {
         guard isInitialized else { 
             print("❌ [Supabase] Not initialized for watch prefs save")
@@ -559,14 +559,22 @@ class SupabaseManager: ObservableObject {
         
         do {
             // ONLY update watch-relevant fields - don't touch iOS-specific fields
-            let watchPrefsPayload: [String: Any] = [
+            var watchPrefsPayload: [String: Any] = [
+                "user_id": userId,
                 "voice_ai_model": settings.voiceAIModel.rawValue,
                 "language": settings.language.rawValue,
                 "feedback_frequency": settings.feedbackFrequency,
                 "target_pace": settings.targetPaceMinPerKm,
                 "voice_energy": settings.coachEnergy.rawValue,
+                "voice_mode": settings.coachPersonality.rawValue, // Also save coach personality
+                "target_distance": settings.targetDistance.rawValue,
                 "updated_at": ISO8601DateFormatter().string(from: Date())
             ]
+            
+            // Add custom_distance_km if target_distance is custom
+            if settings.targetDistance == .custom {
+                watchPrefsPayload["custom_distance_km"] = settings.customDistanceKm
+            }
             
             print("⌚ [Supabase] Saving watch preferences for user: \(userId)")
             print("⌚ [Supabase] Payload: \(watchPrefsPayload)")

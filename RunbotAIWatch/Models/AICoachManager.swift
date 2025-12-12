@@ -16,8 +16,6 @@ class AICoachManager: NSObject, ObservableObject {
     private var coachingTimer: Timer?
     private var feedbackTimer: Timer?
     private let openAIKey: String
-    private let mem0APIKey: String
-    private let mem0BaseURL: String
     private let maxCoachingDuration: TimeInterval = 60.0 // 60 seconds auto-terminate for voice TTS
     private var runnerName: String = "Runner"
     private var currentTrigger: CoachingTrigger = .interval
@@ -29,16 +27,11 @@ class AICoachManager: NSObject, ObservableObject {
     override init() {
         if let config = ConfigLoader.loadConfig() {
             self.openAIKey = (config["OPENAI_API_KEY"] as? String) ?? ""
-            self.mem0APIKey = (config["MEM0_API_KEY"] as? String) ?? ""
-            self.mem0BaseURL = (config["MEM0_BASE_URL"] as? String)
-                ?? (config["MEM0_PROXY_URL"] as? String)
-                ?? "https://api.mem0.ai/v1"
         } else {
             self.openAIKey = ""
-            self.mem0APIKey = ""
-            self.mem0BaseURL = "https://api.mem0.ai/v1"
         }
         super.init()
+        print("🤖 [AICoach] Initialized - Mem0 uses Supabase edge function (mem0-proxy)")
     }
     
     // MARK: - Coaching Control
@@ -689,58 +682,32 @@ class AICoachManager: NSObject, ObservableObject {
     }
     
     // MARK: - Mem0 Integration (Enhanced)
+    /// Fetches Mem0 insights via Supabase edge function (shared with iOS app)
+    /// Edge function uses MEM0_API_KEY from Supabase secrets
     private func fetchMem0InsightsWithName(for userId: String) async -> (insights: String, runnerName: String) {
-        guard !mem0APIKey.isEmpty else { return ("", "Runner") }
-        
         var runnerName = "Runner"
         var allInsights: [String] = []
         
-        // Fetch runner profile (name)
-        if let profile = await fetchMem0Search(userId: userId, query: "runner name, user name, profile") {
-            if let nameMatch = profile.first(where: { $0.lowercased().contains("name") }) {
-                // Extract name from text like "Runner's name is John" or "User name: Sarah"
-                let components = nameMatch.components(separatedBy: CharacterSet.alphanumerics.inverted)
-                if let extractedName = components.first(where: { $0.count > 2 && $0.count < 20 && !["name", "user", "runner", "is"].contains($0.lowercased()) }) {
-                    runnerName = extractedName
-                }
+        // Fetch runner profile (name) via Mem0Manager (uses mem0-proxy edge function)
+        let profile = await Mem0Manager.shared.search(userId: userId, query: "runner name, user name, profile", limit: 5)
+        if let nameMatch = profile.first(where: { $0.lowercased().contains("name") }) {
+            // Extract name from text like "Runner's name is John" or "User name: Sarah"
+            let components = nameMatch.components(separatedBy: CharacterSet.alphanumerics.inverted)
+            if let extractedName = components.first(where: { $0.count > 2 && $0.count < 20 && !["name", "user", "runner", "is"].contains($0.lowercased()) }) {
+                runnerName = extractedName
             }
         }
         
-        // Fetch performance insights
-        if let perfInsights = await fetchMem0Search(userId: userId, query: "pace, performance, speed, endurance, fatigue, strengths, weaknesses") {
-            allInsights.append(contentsOf: perfInsights.prefix(3))
-        }
+        // Fetch performance insights via Mem0Manager (uses mem0-proxy edge function)
+        let perfInsights = await Mem0Manager.shared.search(userId: userId, query: "pace, performance, speed, endurance, fatigue, strengths, weaknesses", limit: 5)
+        allInsights.append(contentsOf: perfInsights.prefix(3))
         
-        // Fetch recent run summaries
-        if let runSummaries = await fetchMem0Search(userId: userId, query: "recent run, last run, run summary, completed") {
-            allInsights.append(contentsOf: runSummaries.prefix(2))
-        }
+        // Fetch recent run summaries via Mem0Manager (uses mem0-proxy edge function)
+        let runSummaries = await Mem0Manager.shared.search(userId: userId, query: "recent run, last run, run summary, completed", limit: 5)
+        allInsights.append(contentsOf: runSummaries.prefix(2))
         
         let insightsText = allInsights.isEmpty ? "" : allInsights.joined(separator: "\n- ")
         return (insightsText, runnerName)
-    }
-    
-    private func fetchMem0Search(userId: String, query: String) async -> [String]? {
-        do {
-            let url = URL(string: "\(mem0BaseURL)/memories/search")!
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue("Bearer \(mem0APIKey)", forHTTPHeaderField: "Authorization")
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            let body: [String: Any] = ["query": query, "user_id": userId, "limit": 5]
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
-            
-            let (data, response) = try await URLSession.shared.data(for: request)
-            if let http = response as? HTTPURLResponse, http.statusCode == 200,
-               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                if let results = json["results"] as? [[String: Any]] {
-                    return results.compactMap { $0["memory"] as? String }
-                }
-            }
-        } catch {
-            print("❌ [AICoach] Mem0 search failed: \(error)")
-        }
-        return nil
     }
     
     private func saveMem0Memory(userId: String, text: String, category: String = "ai_coaching_feedback", metadata: [String: String] = [:]) {
@@ -801,13 +768,30 @@ class AICoachManager: NSObject, ObservableObject {
     // MARK: - Helpers
     private func deliverFeedback(_ feedback: String, voiceManager: VoiceManager, preferences: UserPreferences.Settings) async {
         let trimmed = feedback.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        // CRITICAL: Map voiceAIModel to voiceOption for TTS
+        // This ensures the user's selection in settings is used for scheduled coaching
+        let voiceOption: VoiceOption = {
+            switch preferences.voiceAIModel {
+            case .openai:
+                print("🎤 [AICoach] User selected OpenAI GPT-4 Mini - using GPT-4 TTS")
+                return .gpt4 // Use OpenAI GPT-4 TTS
+            case .apple:
+                print("🎤 [AICoach] User selected Apple Samantha - using Apple TTS")
+                return .samantha // Use Apple Samantha TTS
+            }
+        }()
+        
+        print("🎤 [AICoach] Voice mapping: voiceAIModel=\(preferences.voiceAIModel.rawValue) -> voiceOption=\(voiceOption.rawValue)")
+        
         await MainActor.run {
             if let last = self.lastDeliveredFeedback,
                last.caseInsensitiveCompare(trimmed) == .orderedSame {
                 self.currentFeedback = trimmed
                 self.isCoaching = true
                 if !voiceManager.isSpeaking {
-                    voiceManager.speak(trimmed, using: preferences.voiceOption, rate: 0.48)
+                    print("🎤 [AICoach] Speaking duplicate feedback using \(voiceOption.rawValue)")
+                    voiceManager.speak(trimmed, using: voiceOption, rate: 0.48)
                 }
                 return
             }
@@ -815,7 +799,8 @@ class AICoachManager: NSObject, ObservableObject {
             self.lastDeliveredFeedback = trimmed
             self.currentFeedback = trimmed
             self.isCoaching = true
-            voiceManager.speak(trimmed, using: preferences.voiceOption, rate: 0.48)
+            print("🎤 [AICoach] Delivering NEW feedback using \(preferences.voiceAIModel.displayName) (mapped to \(voiceOption.rawValue))")
+            voiceManager.speak(trimmed, using: voiceOption, rate: 0.48)
         }
     }
     

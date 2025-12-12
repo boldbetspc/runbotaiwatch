@@ -38,12 +38,12 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
     private func setupLocationManager() {
         locationManager.delegate = self
         // Best accuracy for outdoor running - uses GPS, cellular, and Bluetooth beacons
-        locationManager.desiredAccuracy = kCLLocationAccuracyBest
-        // Small distance filter for real-time updates during running
-        locationManager.distanceFilter = 3 // 3 meters for very accurate tracking
+        locationManager.desiredAccuracy = kCLLocationAccuracyBestForNavigation // Most accurate for running
+        // Distance filter: only update when moved at least 3 meters (reduces noise while maintaining accuracy)
+        locationManager.distanceFilter = 3 // 3 meters for precise tracking
         locationManager.activityType = .fitness
-        // Allow deferred updates for better battery efficiency while maintaining accuracy
         locationManager.allowsBackgroundLocationUpdates = false // Not needed for watchOS
+        // Note: pausesLocationUpdatesAutomatically is not available on watchOS
         
         // Request location permission
         if locationManager.authorizationStatus == .notDetermined {
@@ -142,49 +142,87 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
             return
         }
         
-        // Calculate final stats
-        let distanceKm = totalDistance / 1000.0
+        // Use HealthKit workout distance if available (most accurate)
+        let finalDistanceMeters: Double
+        if let workoutDistance = healthManager?.workoutDistance, workoutDistance > 0 {
+            finalDistanceMeters = workoutDistance
+            totalDistance = workoutDistance
+        } else {
+            finalDistanceMeters = totalDistance
+        }
+        
+        let distanceKm = finalDistanceMeters / 1000.0
         let elapsedSeconds = Date().timeIntervalSince(session.startTime)
         let elapsedHours = elapsedSeconds / 3600.0
         let avgSpeed = elapsedHours > 0 ? distanceKm / elapsedHours : 0.0
-        let pace = distanceKm > 0 ? elapsedSeconds / 60.0 / distanceKm : 0.0
+        
+        // Average pace: total time (minutes) / total distance (km) = min/km
+        let averagePace = distanceKm > 0 ? elapsedSeconds / 60.0 / distanceKm : 0.0
         let caloriesEstimate = distanceKm * caloriesBurnedPerKm
         
-        // Calculate final current pace from last 30 seconds
+        // Calculate final current pace from last 30 seconds (same improved logic as updateStats)
         let currentPace: Double = {
-            guard previousLocations.count >= 2 else { return pace }
+            guard previousLocations.count >= 2 else { return averagePace }
+            
             let cutoffTime = Date().addingTimeInterval(-30)
-            let recentLocations = previousLocations.filter { $0.timestamp >= cutoffTime }
-            guard recentLocations.count >= 2 else { return pace }
-            
-            var totalDistance30s: Double = 0.0
-            for i in 1..<recentLocations.count {
-                totalDistance30s += haversineDistance(
-                    from: recentLocations[i-1].coordinate,
-                    to: recentLocations[i].coordinate
-                )
+            let recentLocations = previousLocations.filter { 
+                $0.timestamp >= cutoffTime && 
+                $0.horizontalAccuracy > 0 && 
+                $0.horizontalAccuracy < 15 &&
+                abs($0.timestamp.timeIntervalSinceNow) < 3.0
             }
-            guard totalDistance30s >= 1 else { return pace }
             
-            let timeInterval = recentLocations.last!.timestamp.timeIntervalSince(recentLocations.first!.timestamp)
-            guard timeInterval > 0 else { return pace }
+            guard recentLocations.count >= 3 else { return averagePace }
             
-            let metersPerSecond = totalDistance30s / timeInterval
-            let kmPerMin = (metersPerSecond * 3.6) / 60.0
-            guard kmPerMin > 0 else { return pace }
-            return 1.0 / kmPerMin
+            var segmentPaces: [Double] = []
+            var totalDistance30s: Double = 0.0
+            
+            for i in 1..<recentLocations.count {
+                let prev = recentLocations[i-1]
+                let curr = recentLocations[i]
+                
+                let segmentDistance = haversineDistance(from: prev.coordinate, to: curr.coordinate)
+                let segmentTime = abs(curr.timestamp.timeIntervalSince(prev.timestamp))
+                
+                if segmentDistance > 2.0 && segmentTime > 0 && segmentTime < 5.0 {
+                    totalDistance30s += segmentDistance
+                    let segmentDistanceKm = segmentDistance / 1000.0
+                    if segmentDistanceKm > 0 && segmentTime > 0 {
+                        let segmentPace = segmentTime / 60.0 / segmentDistanceKm
+                        if segmentPace >= 2.0 && segmentPace <= 20.0 {
+                            segmentPaces.append(segmentPace)
+                        }
+                    }
+                }
+            }
+            
+            guard totalDistance30s >= 15.0 && segmentPaces.count >= 2 else { return averagePace }
+            
+            // Use weighted average for smoother pace
+            if segmentPaces.count >= 3 {
+                var weightedSum: Double = 0.0
+                var totalWeight: Double = 0.0
+                for (index, pace) in segmentPaces.enumerated() {
+                    let weight = pow(1.2, Double(segmentPaces.count - index))
+                    weightedSum += pace * weight
+                    totalWeight += weight
+                }
+                return weightedSum / totalWeight
+            } else {
+                return segmentPaces.reduce(0.0, +) / Double(segmentPaces.count)
+            }
         }()
         
         // Update session with final values
-        session.distance = totalDistance
-        session.pace = pace
+        session.distance = finalDistanceMeters
+        session.pace = averagePace // Average pace: total time / total distance
         session.avgSpeed = avgSpeed
         session.calories = caloriesEstimate
         session.elevation = totalElevation
         session.maxSpeed = maxSpeed > 0 ? maxSpeed * 3.6 : 0.0
         session.minSpeed = minSpeed != Double.infinity ? minSpeed * 3.6 : 0.0
         session.duration = elapsedSeconds
-        session.endTime = Date()  // Set end time now
+        session.endTime = Date()
         session.isCompleted = true
         
         // Shadow comparison removed (train mode removed)
@@ -192,8 +230,8 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         if session.shadowRunData != nil {
             updateShadowComparison(
                 for: &session,
-                currentPace: currentPace > 0 ? currentPace : pace,
-                averagePace: pace,
+                currentPace: currentPace > 0 ? currentPace : averagePace,
+                averagePace: averagePace,
                 elapsedSeconds: elapsedSeconds
             )
         }
@@ -201,10 +239,9 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         currentSession = session
         
         // Update pace history for energy signature graph
-        let finalPace = currentPace > 0 ? currentPace : pace
+        let finalPace = currentPace > 0 ? currentPace : averagePace
         if finalPace > 0 {
             paceHistory.append(finalPace)
-            // Keep only last maxPaceHistorySize entries
             if paceHistory.count > maxPaceHistorySize {
                 paceHistory.removeFirst()
             }
@@ -212,8 +249,8 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         
         // Create final stats update
         statsUpdate = RunningStatsUpdate(
-            distance: totalDistance,
-            pace: finalPace,
+            distance: finalDistanceMeters,
+            pace: currentPace > 0 ? currentPace : averagePace,
             avgSpeed: avgSpeed,
             calories: caloriesEstimate,
             elevation: totalElevation,
@@ -225,7 +262,7 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         print("✅ [RunTracker] Final stats updated:")
         print("   Distance: \(String(format: "%.2f", distanceKm))km")
         print("   Duration: \(String(format: "%.1f", elapsedSeconds))s")
-        print("   Pace: \(String(format: "%.2f", pace)) min/km")
+        print("   Average Pace: \(String(format: "%.2f", averagePace)) min/km")
         print("   Current Pace: \(String(format: "%.2f", currentPace)) min/km")
         print("   Calories: \(Int(caloriesEstimate))")
     }
@@ -267,69 +304,101 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
     
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard isRunning, var session = currentSession else {
-            print("⚠️ [RunTracker] Location update ignored - not running or no session")
             return
         }
         
-        print("📍 [RunTracker] Received \(locations.count) location update(s)")
-        
-        for (index, newLocation) in locations.enumerated() {
-            // Ensure location accuracy is good for outdoor running
-            // Accept locations with accuracy better than 50m (GPS typically 5-10m, cellular 50-100m)
-            guard newLocation.horizontalAccuracy > 0 && newLocation.horizontalAccuracy < 50 else {
-                print("⚠️ [RunTracker] Location \(index) accuracy too low: \(newLocation.horizontalAccuracy)m - skipping")
+        for newLocation in locations {
+            // CRITICAL: Strict GPS filtering for maximum accuracy
+            // 1. Accuracy check: GPS should be < 15m (excellent GPS is 3-8m)
+            guard newLocation.horizontalAccuracy > 0 && newLocation.horizontalAccuracy < 15 else {
                 continue
             }
             
-            print("📍 [RunTracker] Processing location \(index):")
-            print("   - Lat: \(newLocation.coordinate.latitude)")
-            print("   - Lon: \(newLocation.coordinate.longitude)")
-            print("   - Accuracy: \(newLocation.horizontalAccuracy)m")
-            print("   - Speed: \(newLocation.speed * 3.6) km/h")
+            // 2. Age check: Ignore stale locations (> 3 seconds old)
+            let locationAge = abs(newLocation.timestamp.timeIntervalSinceNow)
+            guard locationAge < 3.0 else {
+                continue
+            }
             
-            // CRITICAL: Add location to workout route (for GPS tracking in HealthKit)
-            print("📍 [RunTracker] Adding location to workout route...")
+            // 3. Vertical accuracy check: Ignore if vertical accuracy is too poor (> 20m)
+            // This helps filter out bad GPS readings
+            guard newLocation.verticalAccuracy <= 0 || newLocation.verticalAccuracy < 20 else {
+                continue
+            }
+            
+            // 4. Speed validation: Use GPS speed if available and reasonable
+            let gpsSpeed = max(newLocation.speed, 0)
+            let isMoving = gpsSpeed > 0.3 // 0.3 m/s = 1.08 km/h (very slow movement threshold)
+            
+            // Add location to workout route (HealthKit uses its own filtering)
             healthManager?.addLocationToWorkout(newLocation)
             
-            // Store location
+            // Store location for pace calculation
             let locationPoint = LocationPoint(location: newLocation)
             session.locations.append(locationPoint)
-            print("✅ [RunTracker] Location \(index) processed and stored")
             
-            // Calculate distance from previous location (fallback if workout distance not available)
+            // Only calculate distance if we have a previous location
             if let lastLocation = previousLocations.last {
+                // Calculate distance using Haversine (most accurate for short distances)
                 let distance = haversineDistance(from: lastLocation.coordinate, to: newLocation.coordinate)
-                totalDistance += distance
                 
-                // Update speed tracking
-                let speed = newLocation.speed
-                if speed > 0 {
-                    maxSpeed = max(maxSpeed, speed)
-                    minSpeed = min(minSpeed, speed)
-                }
+                // Calculate time difference
+                let timeDiff = abs(newLocation.timestamp.timeIntervalSince(lastLocation.timestamp))
                 
-                // Track elevation change
-                let elevationChange = newLocation.altitude - lastLocation.altitude
-                if elevationChange > 0 {
-                    totalElevation += elevationChange
-                }
-                // Build 1km interval buffer - only create interval when 1km is complete
-                intervalBuffer.append(newLocation)
-                trimIntervalBufferIfNeeded()
+                // CRITICAL: Only add distance if movement is validated
+                // 1. Must be moving (GPS speed > 0.3 m/s), OR
+                // 2. Distance is significant (> 5m) AND time difference is reasonable
+                let isValidMovement = isMoving || (distance > 5.0 && timeDiff > 0 && timeDiff < 10.0)
                 
-                // Calculate cumulative distance from last interval end
-                let currentTotalDistance = totalDistance
-                let distanceSinceLastInterval = currentTotalDistance - lastIntervalEndDistance
-                
-                // Only create interval when we've completed 1km (1000m)
-                if distanceSinceLastInterval >= intervalDistanceMeters {
-                    createIntervalIfPossible(in: &session)
-                    lastIntervalEndDistance = currentTotalDistance // Update last interval end
-                    intervalBuffer.removeAll(keepingCapacity: true)
+                if isValidMovement && distance > 0 {
+                    // Additional validation: Check if calculated speed matches GPS speed
+                    let calculatedSpeed = timeDiff > 0 ? distance / timeDiff : 0
+                    let speedDifference = abs(calculatedSpeed - gpsSpeed)
+                    
+                    // If GPS speed is available and calculated speed differs significantly, be cautious
+                    // Allow up to 2 m/s difference (accounts for GPS inaccuracy)
+                    if gpsSpeed > 0 && speedDifference > 2.0 && distance < 10.0 {
+                        // Skip this segment if speeds don't match and distance is small (likely GPS noise)
+                        print("⚠️ [RunTracker] Speed mismatch - skipping: GPS=\(gpsSpeed)m/s, Calc=\(calculatedSpeed)m/s, Dist=\(distance)m")
+                    } else {
+                        totalDistance += distance
+                        
+                        // Update speed tracking (use GPS speed when available, otherwise calculated)
+                        let effectiveSpeed = gpsSpeed > 0 ? gpsSpeed : calculatedSpeed
+                        if effectiveSpeed > 0 {
+                            maxSpeed = max(maxSpeed, effectiveSpeed)
+                            minSpeed = min(minSpeed, effectiveSpeed)
+                        }
+                        
+                        // Track elevation change (only when moving)
+                        if isMoving {
+                            let elevationChange = newLocation.altitude - lastLocation.altitude
+                            if elevationChange > 0 && newLocation.verticalAccuracy > 0 && newLocation.verticalAccuracy < 15 {
+                                totalElevation += elevationChange
+                            }
+                        }
+                        
+                        // Build 1km interval buffer
+                        intervalBuffer.append(newLocation)
+                        trimIntervalBufferIfNeeded()
+                        
+                        // Create interval when 1km is complete
+                        let distanceSinceLastInterval = totalDistance - lastIntervalEndDistance
+                        if distanceSinceLastInterval >= intervalDistanceMeters {
+                            createIntervalIfPossible(in: &session)
+                            lastIntervalEndDistance = totalDistance
+                            intervalBuffer.removeAll(keepingCapacity: true)
+                        }
+                    }
                 }
             }
             
+            // Always add to previousLocations for pace calculation (even if not moving)
             previousLocations.append(newLocation)
+            
+            // Keep only last 5 minutes of locations for pace calculation
+            let fiveMinutesAgo = Date().addingTimeInterval(-300)
+            previousLocations = previousLocations.filter { $0.timestamp >= fiveMinutesAgo }
         }
         
         updateStats()
@@ -357,14 +426,14 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         guard var session = currentSession, isRunning else { return }
         
         // PRIORITY: Use workout distance from HealthKit (most accurate - uses GPS from watch/iPhone)
-        // FALLBACK: Use CoreLocation distance if HealthKit not available
+        // HealthKit workout distance is filtered and smoothed by Apple
         let distanceMeters: Double
         if let workoutDistance = healthManager?.workoutDistance, workoutDistance > 0 {
-            // HealthKit workout distance is most accurate - uses GPS from watch or iPhone
             distanceMeters = workoutDistance
-            totalDistance = workoutDistance // Sync for consistency
+            // Sync our calculated distance to HealthKit (for consistency)
+            totalDistance = workoutDistance
         } else {
-            // Fallback to CoreLocation distance calculation
+            // Fallback: Use our filtered CoreLocation distance
             distanceMeters = totalDistance
         }
         
@@ -373,60 +442,87 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         
         // Calculate elapsed time
         let elapsedSeconds = Date().timeIntervalSince(session.startTime)
+        
+        // Calculate average pace: total time (minutes) / total distance (km) = min/km
+        let averagePace = distanceKm > 0 ? elapsedSeconds / 60.0 / distanceKm : 0.0
+        
+        // Calculate average speed (km/h) - for reference
         let elapsedHours = elapsedSeconds / 3600.0
-        
-        // Calculate average speed (km/h)
         let avgSpeed = elapsedHours > 0 ? distanceKm / elapsedHours : 0.0
-        
-        // Calculate average pace (minutes per km)
-        let pace = distanceKm > 0 ? elapsedSeconds / 60.0 / distanceKm : 0.0
 
         // Calculate current pace from last 30 seconds of location data
+        // Uses weighted average of recent segments for smoother, more accurate pace
         let currentPace: Double = {
             guard previousLocations.count >= 2 else { return 0.0 }
             
-            // Get locations from last 30 seconds
+            // Get locations from last 30 seconds with strict filtering
             let cutoffTime = Date().addingTimeInterval(-30)
-            let recentLocations = previousLocations.filter { $0.timestamp >= cutoffTime }
-            
-            guard recentLocations.count >= 2 else {
-                // Fallback to interval buffer if not enough recent data
-                guard intervalBuffer.count >= 2 else { return 0.0 }
-                let d = computeBufferedDistance()
-                guard d >= 1 else { return 0.0 }
-                let start = intervalBuffer.first!.timestamp
-                let end = intervalBuffer.last!.timestamp
-                let dt = end.timeIntervalSince(start)
-                guard dt > 0 else { return 0.0 }
-                let metersPerSecond = d / dt
-                let kmPerMin = (metersPerSecond * 3.6) / 60.0
-                guard kmPerMin > 0 else { return 0.0 }
-                return 1.0 / kmPerMin
+            let recentLocations = previousLocations.filter { 
+                $0.timestamp >= cutoffTime && 
+                $0.horizontalAccuracy > 0 && 
+                $0.horizontalAccuracy < 15 && // Only excellent GPS readings
+                abs($0.timestamp.timeIntervalSinceNow) < 3.0 // Not stale
             }
             
-            // Calculate distance using Haversine formula for last 30s
+            guard recentLocations.count >= 3 else { return 0.0 } // Need at least 3 points
+            
+            // Calculate distance and time for each segment
+            var segmentPaces: [Double] = []
             var totalDistance30s: Double = 0.0
+            var totalTime30s: Double = 0.0
+            
             for i in 1..<recentLocations.count {
-                totalDistance30s += haversineDistance(
-                    from: recentLocations[i-1].coordinate,
-                    to: recentLocations[i].coordinate
+                let prev = recentLocations[i-1]
+                let curr = recentLocations[i]
+                
+                let segmentDistance = haversineDistance(
+                    from: prev.coordinate,
+                    to: curr.coordinate
                 )
+                
+                let segmentTime = abs(curr.timestamp.timeIntervalSince(prev.timestamp))
+                
+                // Only count valid segments: > 2m distance, reasonable time
+                if segmentDistance > 2.0 && segmentTime > 0 && segmentTime < 5.0 {
+                    totalDistance30s += segmentDistance
+                    totalTime30s += segmentTime
+                    
+                    // Calculate pace for this segment
+                    let segmentDistanceKm = segmentDistance / 1000.0
+                    if segmentDistanceKm > 0 && segmentTime > 0 {
+                        let segmentPace = segmentTime / 60.0 / segmentDistanceKm
+                        // Only include reasonable paces (2-20 min/km)
+                        if segmentPace >= 2.0 && segmentPace <= 20.0 {
+                            segmentPaces.append(segmentPace)
+                        }
+                    }
+                }
             }
             
-            guard totalDistance30s >= 1 else { return 0.0 }
+            // Need at least 15m of movement in 30s to calculate pace
+            guard totalDistance30s >= 15.0 && segmentPaces.count >= 2 else { return 0.0 }
             
-            let startTime = recentLocations.first!.timestamp
-            let endTime = recentLocations.last!.timestamp
-            let timeInterval = endTime.timeIntervalSince(startTime)
-            
-            guard timeInterval > 0 else { return 0.0 }
-            
-            // Calculate pace: min per km
-            let metersPerSecond = totalDistance30s / timeInterval
-            let kmPerMin = (metersPerSecond * 3.6) / 60.0 // Convert m/s to km/min
-            guard kmPerMin > 0 else { return 0.0 }
-            
-            return 1.0 / kmPerMin // min per km
+            // Use weighted average: give more weight to recent segments
+            // This provides smoother, more responsive pace
+            if segmentPaces.count >= 3 {
+                // Weighted average: recent segments have more weight
+                var weightedSum: Double = 0.0
+                var totalWeight: Double = 0.0
+                
+                for (index, pace) in segmentPaces.enumerated() {
+                    // More recent segments get higher weight (exponential decay)
+                    let weight = pow(1.2, Double(segmentPaces.count - index))
+                    weightedSum += pace * weight
+                    totalWeight += weight
+                }
+                
+                let weightedPace = weightedSum / totalWeight
+                return weightedPace
+            } else {
+                // Simple average if not enough segments
+                let avgPace = segmentPaces.reduce(0.0, +) / Double(segmentPaces.count)
+                return avgPace
+            }
         }()
         
         // Estimate calories burned
@@ -444,7 +540,7 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         } else {
             session.distance = totalDistance
         }
-        session.pace = pace
+        session.pace = averagePace // Average pace: total time / total distance
         session.avgSpeed = avgSpeed
         session.calories = caloriesEstimate
         session.elevation = totalElevation
@@ -453,17 +549,17 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         session.duration = elapsedSeconds
         updateShadowComparison(
             for: &session,
-            currentPace: currentPace > 0 ? currentPace : pace,
-            averagePace: pace,
+            currentPace: currentPace > 0 ? currentPace : averagePace,
+            averagePace: averagePace,
             elapsedSeconds: elapsedSeconds
         )
         
         currentSession = session
         
         // Update pace history for energy signature graph
-        let finalPace = currentPace > 0 ? currentPace : pace
-        if finalPace > 0 {
-            paceHistory.append(finalPace)
+        let displayPace = currentPace > 0 ? currentPace : averagePace
+        if displayPace > 0 {
+            paceHistory.append(displayPace)
             // Keep only last maxPaceHistorySize entries
             if paceHistory.count > maxPaceHistorySize {
                 paceHistory.removeFirst()
@@ -471,9 +567,10 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
         
         // Create stats update for UI
+        // Note: pace field shows current pace, average pace is in session.pace
         statsUpdate = RunningStatsUpdate(
-            distance: totalDistance,
-            pace: finalPace,
+            distance: distanceMeters,
+            pace: currentPace > 0 ? currentPace : averagePace, // Show current pace if available, else average
             avgSpeed: avgSpeed,
             calories: caloriesEstimate,
             elevation: totalElevation,
@@ -562,14 +659,24 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
 
 // MARK: - Helpers
 extension RunTracker {
+    /// Calculate distance using Haversine formula (most accurate for short distances)
+    /// Uses Earth's radius at current latitude for better accuracy
     private func haversineDistance(from: CLLocationCoordinate2D, to: CLLocationCoordinate2D) -> Double {
-        let R = 6371000.0 // meters
-        let lat1 = from.latitude * .pi / 180
-        let lat2 = to.latitude * .pi / 180
-        let dLat = (to.latitude - from.latitude) * .pi / 180
-        let dLon = (to.longitude - from.longitude) * .pi / 180
-        let a = sin(dLat/2) * sin(dLat/2) + cos(lat1) * cos(lat2) * sin(dLon/2) * sin(dLon/2)
-        let c = 2 * atan2(sqrt(a), sqrt(1-a))
+        // Earth's radius varies by latitude - use average radius for running distances
+        let R = 6371000.0 // meters (mean Earth radius)
+        
+        // Convert to radians
+        let lat1 = from.latitude * .pi / 180.0
+        let lat2 = to.latitude * .pi / 180.0
+        let dLat = (to.latitude - from.latitude) * .pi / 180.0
+        let dLon = (to.longitude - from.longitude) * .pi / 180.0
+        
+        // Haversine formula
+        let a = sin(dLat/2.0) * sin(dLat/2.0) +
+                cos(lat1) * cos(lat2) *
+                sin(dLon/2.0) * sin(dLon/2.0)
+        let c = 2.0 * atan2(sqrt(a), sqrt(1.0 - a))
+        
         return R * c
     }
 

@@ -60,16 +60,24 @@ final class VoiceManager: NSObject, ObservableObject {
         // Play haptic on speech start
         playHaptic(.click)
         
-        print("🎤 [Voice] Speaking (\(voiceOption.rawValue)): \(text.prefix(50))...")
+        print("🎤 [Voice] ========== SPEAK REQUEST ==========")
+        print("🎤 [Voice] Voice Option: \(voiceOption.rawValue)")
+        print("🎤 [Voice] Text preview: \(text.prefix(50))...")
+        print("🎤 [Voice] Text length: \(text.count) characters")
         
         switch voiceOption {
         case .samantha:
+            print("🎤 [Voice] ✅ Using Apple Samantha TTS")
             speakWithAppleTTS(text, rate: rate)
         case .gpt4:
+            print("🎤 [Voice] ✅✅✅ Using OpenAI GPT-4 Mini TTS ✅✅✅")
+            print("🎤 [Voice] OpenAI API Key present: \(!openAIKey.isEmpty)")
+            print("🎤 [Voice] Supabase URL present: \(!supabaseURL.isEmpty)")
             // Use OpenAI TTS - works on watch cellular or iPhone connection
             // Priority: 1) Watch Cellular, 2) iPhone Connection via Bluetooth
             // watchOS automatically uses best available connection
             if true { // Always allow - system handles connection priority
+                print("🎤 [Voice] Calling speakWithOpenAITTS()...")
                 speakWithOpenAITTS(text)
             } else {
                 print("⚠️ [Voice] Not on WiFi, falling back to Apple TTS")
@@ -128,12 +136,26 @@ final class VoiceManager: NSObject, ObservableObject {
     // MARK: - OpenAI TTS (Works on Watch Cellular or iPhone Connection)
     
     private func speakWithOpenAITTS(_ text: String) {
+        print("🎙️ [Voice] ========== OPENAI TTS CALLED ==========")
+        print("🎙️ [Voice] Text to synthesize: \(text.prefix(100))...")
+        print("🎙️ [Voice] Starting OpenAI TTS request...")
+        
         Task {
             do {
+                print("🎙️ [Voice] Requesting OpenAI TTS audio...")
                 let audioData = try await requestOpenAITTS(text)
+                print("🎙️ [Voice] ✅ OpenAI TTS audio received: \(audioData.count) bytes")
                 await playAudioData(audioData)
+                print("🎙️ [Voice] ✅✅✅ OpenAI GPT-4 Mini TTS playback started ✅✅✅")
             } catch {
-                print("❌ [Voice] OpenAI TTS error: \(error.localizedDescription)")
+                print("❌ [Voice] ========== OPENAI TTS ERROR ==========")
+                print("❌ [Voice] Error: \(error.localizedDescription)")
+                print("❌ [Voice] Error type: \(type(of: error))")
+                if let nsError = error as NSError? {
+                    print("❌ [Voice] Error domain: \(nsError.domain)")
+                    print("❌ [Voice] Error code: \(nsError.code)")
+                }
+                print("❌ [Voice] Falling back to Apple TTS...")
                 // Fall back to Apple TTS
                 await MainActor.run {
                     speakWithAppleTTS(text, rate: 0.50)
@@ -142,66 +164,110 @@ final class VoiceManager: NSObject, ObservableObject {
         }
     }
     
-    /// Request OpenAI TTS
+    /// Request OpenAI TTS via Supabase edge function (shared with iOS app)
+    /// Uses the 'openai-proxy' edge function which has OPENAI_API_KEY in Supabase secrets
     /// URLSession automatically uses best connection: watch cellular → iPhone connection
-    /// Optimized for outdoor running - no connection checking overhead
     private func requestOpenAITTS(_ text: String) async throws -> Data {
-        // Use Supabase proxy if available, otherwise direct OpenAI
-        let url: URL
-        let headers: [String: String]
+        print("🎙️ [Voice] ========== REQUESTING OPENAI TTS ==========")
         
-        if !supabaseURL.isEmpty {
-            url = URL(string: "\(supabaseURL)/functions/v1/openai-tts-proxy")!
-            headers = [
-                "Content-Type": "application/json",
-                "apikey": supabaseKey,
-                "Authorization": getAuthToken()
-            ]
-        } else if !openAIKey.isEmpty {
-            url = URL(string: "https://api.openai.com/v1/audio/speech")!
-            headers = [
-                "Content-Type": "application/json",
-                "Authorization": "Bearer \(openAIKey)"
-            ]
-        } else {
-            throw NSError(domain: "VoiceManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "No API key configured"])
+        guard !supabaseURL.isEmpty else {
+            print("❌ [Voice] Supabase URL not configured")
+            throw NSError(domain: "VoiceManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Supabase URL not configured"])
         }
+        
+        // Use Supabase edge function: openai-proxy (shared with iOS app)
+        // The edge function uses OPENAI_API_KEY from Supabase secrets, so we don't need to pass it
+        let url = URL(string: "\(supabaseURL)/functions/v1/openai-proxy")!
+        print("🎙️ [Voice] Using Supabase edge function: openai-proxy (shared with iOS)")
+        print("🎙️ [Voice] URL: \(url)")
+        print("🎙️ [Voice] Note: Edge function uses OPENAI_API_KEY from Supabase secrets")
         
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        for (key, value) in headers {
-            request.setValue(value, forHTTPHeaderField: key)
-        }
-        // Optimized timeout for outdoor running (cellular may be slower)
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue(supabaseKey, forHTTPHeaderField: "apikey")
+        request.setValue(getAuthToken(), forHTTPHeaderField: "Authorization")
         request.timeoutInterval = 20
+        print("🎙️ [Voice] Request timeout: 20 seconds")
         
+        // Request body for OpenAI TTS API
+        // Edge function expects endpoint='audio/speech' to identify TTS request
+        // Edge function defaults: model='tts-1-hd', voice='nova', response_format='mp3', speed=1.0
         let body: [String: Any] = [
-            "model": "tts-1", // Standard model for faster response
-            "input": text,
-            "voice": "nova", // Nova voice - clear and encouraging
-            "speed": 1.0
+            "endpoint": "audio/speech", // Required: tells edge function this is TTS, not chat completion
+            "input": text, // Required: text to convert to speech
+            "model": "tts-1", // Optional: defaults to 'tts-1-hd' if not provided
+            "voice": "nova", // Optional: defaults to 'nova' if not provided
+            "response_format": "mp3", // Optional: defaults to 'mp3' if not provided
+            "speed": 1.0 // Optional: defaults to 1.0 if not provided
         ]
+        print("🎙️ [Voice] Request body (matching edge function format):")
+        print("   - endpoint: audio/speech (TTS request)")
+        print("   - input: \(text.count) characters")
+        print("   - model: tts-1")
+        print("   - voice: nova")
+        print("   - response_format: mp3")
+        print("   - speed: 1.0")
+        
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        print("🎙️ [Voice] Request body size: \(request.httpBody?.count ?? 0) bytes")
+        print("🎙️ [Voice] Sending request to Supabase edge function...")
         
+        let startTime = Date()
         let (data, response) = try await URLSession.shared.data(for: request)
+        let duration = Date().timeIntervalSince(startTime)
         
-        if let http = response as? HTTPURLResponse, http.statusCode == 200 {
-            print("🎙️ [Voice] OpenAI TTS audio received")
-            return data
+        print("🎙️ [Voice] Response received in \(String(format: "%.2f", duration)) seconds")
+        print("🎙️ [Voice] Response data size: \(data.count) bytes")
+        
+        if let http = response as? HTTPURLResponse {
+            print("🎙️ [Voice] HTTP Status Code: \(http.statusCode)")
+            print("🎙️ [Voice] Content-Type: \(http.value(forHTTPHeaderField: "Content-Type") ?? "unknown")")
+            
+            if http.statusCode == 200 {
+                // Edge function returns binary audio data (arrayBuffer) with Content-Type: 'audio/mpeg'
+                let contentType = http.value(forHTTPHeaderField: "Content-Type") ?? ""
+                if contentType.contains("audio/mpeg") || contentType.contains("audio/") {
+                    print("🎙️ [Voice] ✅✅✅ Supabase edge function SUCCESS ✅✅✅")
+                    print("🎙️ [Voice] ✅✅✅ OpenAI GPT-4 Mini TTS audio received: \(data.count) bytes ✅✅✅")
+                    print("🎙️ [Voice] Content-Type: \(contentType)")
+                    return data
+                } else {
+                    // Might be JSON error even with 200 status
+                    if let errorBody = String(data: data, encoding: .utf8), errorBody.contains("error") {
+                        print("❌ [Voice] Edge function returned error in response body")
+                        print("❌ [Voice] Error: \(errorBody)")
+                        throw NSError(domain: "VoiceManager", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Edge function error: \(errorBody)"])
+                    }
+                    // Assume it's audio data even if Content-Type is missing
+                    print("🎙️ [Voice] ✅✅✅ Audio data received (Content-Type missing but assuming audio) ✅✅✅")
+                    return data
+                }
+            } else {
+                let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
+                print("❌ [Voice] Edge function error - Status: \(http.statusCode)")
+                print("❌ [Voice] Error response: \(errorBody)")
+                throw NSError(domain: "VoiceManager", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: "Edge function error: \(http.statusCode) - \(errorBody)"])
+            }
         }
         
-        throw NSError(domain: "VoiceManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "OpenAI API error"])
+        print("❌ [Voice] Invalid response type")
+        throw NSError(domain: "VoiceManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response from edge function"])
     }
     
     private func playAudioData(_ data: Data) async {
         await MainActor.run {
             do {
+                print("🎙️ [Voice] Creating AVAudioPlayer from OpenAI TTS data...")
                 audioPlayer = try AVAudioPlayer(data: data, fileTypeHint: AVFileType.mp3.rawValue)
                 audioPlayer?.delegate = self
                 audioPlayer?.volume = 1.0
+                print("🎙️ [Voice] Starting playback of OpenAI TTS audio...")
                 audioPlayer?.play()
+                print("🎙️ [Voice] ✅✅✅ OpenAI GPT-4 Mini TTS audio is now playing ✅✅✅")
             } catch {
                 print("❌ [Voice] Audio playback error: \(error.localizedDescription)")
+                print("❌ [Voice] Error type: \(type(of: error))")
                 isSpeaking = false
             }
         }
