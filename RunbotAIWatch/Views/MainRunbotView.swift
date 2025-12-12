@@ -451,12 +451,15 @@ struct MainRunbotView: View {
                         DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
                             // START-OF-RUN COACHING (personalized welcome)
                             // This also initializes RAG cache with preferences, language, Mem0 for the entire run
+                            // NOW INCLUDES RAG PERFORMANCE ANALYSIS + ADAPTIVE COACH RAG
                             aiCoach.startOfRunCoaching(
                                 for: stats,
                                 with: userPreferences.settings,
                                 voiceManager: voiceManager,
                                 runSessionId: runTracker.currentSession?.id,
-                                runnerName: userPreferences.runnerName
+                                runnerName: userPreferences.runnerName,
+                                healthManager: healthManager,
+                                runStartTime: runTracker.currentSession?.startTime
                             )
                             
                             // Note: Interval coaching is triggered by distance milestones

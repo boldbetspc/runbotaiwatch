@@ -38,16 +38,19 @@ class AICoachManager: NSObject, ObservableObject {
     
     /// Start-of-run coaching with personalization (uses cache)
     /// Also initializes RAG analyzer cache for preferences, language, Mem0 insights
+    /// NOW INCLUDES RAG PERFORMANCE ANALYSIS + ADAPTIVE COACH RAG
     func startOfRunCoaching(
         for stats: RunningStatsUpdate,
         with preferences: UserPreferences.Settings,
         voiceManager: VoiceManager,
         runSessionId: String?,
-        runnerName: String = "Runner"
+        runnerName: String = "Runner",
+        healthManager: HealthManager? = nil,
+        runStartTime: Date? = nil
     ) {
         guard !isCoaching else { return }
         currentTrigger = .runStart
-        print("🏁 [AICoach] Start-of-run coaching triggered")
+        print("🏁 [AICoach] Start-of-run coaching triggered - RAG Analysis: ENABLED")
         
         Task {
             let userId = currentUserIdFromDefaults() ?? "watch_user"
@@ -64,13 +67,32 @@ class AICoachManager: NSObject, ObservableObject {
             
             let aggregates = await SupabaseManager().fetchRunAggregates(userId: userId)
             
+            // RAG-DRIVEN PERFORMANCE ANALYSIS (includes adaptive coach RAG)
+            // Even at start, RAG can provide: similar runs context, initial strategy, adaptive microstrategy
+            var ragContext: String? = nil
+            if let startTime = runStartTime ?? Date() {
+                print("📊 [AICoach] Running RAG performance analysis for start-of-run...")
+                let ragAnalysis = await ragAnalyzer.analyzePerformance(
+                    stats: stats,
+                    preferences: preferences,
+                    healthManager: healthManager,
+                    intervals: [], // Empty at start, but RAG can still analyze initial state
+                    runStartTime: startTime,
+                    userId: userId
+                )
+                ragContext = ragAnalysis.llmContext
+                print("📊 [AICoach] RAG analysis complete - Target Status: \(ragAnalysis.targetStatus)")
+                print("📊 [AICoach] Adaptive Microstrategy: \(ragAnalysis.adaptiveMicrostrategy.prefix(100))...")
+            }
+            
             let feedback = await generateCoachingFeedback(
                 stats: stats,
                 preferences: preferences,
                 mem0Insights: insights,
                 aggregates: aggregates,
                 trigger: .runStart,
-                runnerName: name
+                runnerName: name,
+                ragAnalysisContext: ragContext // NOW INCLUDES RAG ANALYSIS + ADAPTIVE COACH RAG
             )
             
             await deliverFeedback(feedback, voiceManager: voiceManager, preferences: preferences)
@@ -507,28 +529,64 @@ class AICoachManager: NSObject, ObservableObject {
                     lastRunInfo = "This is your first tracked run - let's set a great baseline!"
                 }
                 
-                triggerContext = """
-                THIS IS THE START OF THE RUN. Give personalized, motivating, strategic feedback.
-                
-                PERSONALIZATION REQUIREMENTS:
-                1. Use runner's name "\(runnerName)" naturally
-                2. Reference last run performance: \(lastRunInfo)
-                3. Acknowledge what they did well in previous runs (from Mem0 insights)
-                4. Be target-aware: Target pace is \(targetPaceStr) min/km
-                5. Give heart zone advice: "Start in Zone 2-3, build gradually"
-                6. Provide detailed race strategy: "First km easy, then settle into target pace"
-                7. Motivate: "You've been improving, let's build on that momentum!"
-                
-                STRUCTURE (max 60 words):
-                - Greeting with name
-                - Brief reference to last run/what they did well
-                - Target pace reminder
-                - Heart zone guidance
-                - Race strategy (pacing plan)
-                - Motivation to finish strong
-                
-                Example: "Hey \(runnerName)! Your last run was solid at \(formatPace(aggregates?.avgPaceMinPerKm ?? targetPace)) pace. Today, target \(targetPaceStr). Start in Zone 2, build to Zone 3 by km 2. First km easy, then lock in. You've got this!"
-                """
+                // Enhanced start-of-run with RAG analysis if available
+                if let ragContext = ragAnalysisContext {
+                    triggerContext = """
+                    THIS IS THE START OF THE RUN with RAG-DRIVEN PERFORMANCE ANALYSIS.
+                    
+                    \(ragContext)
+                    
+                    PERSONALIZATION REQUIREMENTS:
+                    1. Use runner's name "\(runnerName)" naturally
+                    2. Reference last run performance: \(lastRunInfo)
+                    3. Acknowledge what they did well in previous runs (from Mem0 insights)
+                    4. Be target-aware: Target pace is \(targetPaceStr) min/km
+                    5. Use the RAG analysis above (similar runs, adaptive microstrategy) to inform your coaching
+                    6. Give heart zone advice based on RAG zone analysis: "Start in Zone 2-3, build gradually"
+                    7. Provide detailed race strategy based on RAG adaptive microstrategy
+                    8. Reference similar past runs if available from RAG context
+                    
+                    COACHING PRIORITY:
+                    1. Use the RAG analysis above to understand the runner's historical patterns
+                    2. Reference the ADAPTIVE MICROSTRATEGY for initial pacing plan
+                    3. Incorporate similar runs context to set expectations
+                    4. Be specific about pace adjustments needed based on target status
+                    5. Give actionable initial strategy (first km approach, zone targets)
+                    
+                    STRUCTURE (max 60 words):
+                    - Greeting with name
+                    - Brief reference to last run/what they did well
+                    - Target pace reminder
+                    - Initial strategy from RAG adaptive microstrategy
+                    - Heart zone guidance from RAG analysis
+                    - Motivation to finish strong
+                    
+                    Example: "Hey \(runnerName)! Your last run was solid at \(formatPace(aggregates?.avgPaceMinPerKm ?? targetPace)) pace. Today, target \(targetPaceStr). Based on your history, start in Zone 2, build to Zone 3 by km 2. First km easy, then lock in. You've got this!"
+                    """
+                } else {
+                    triggerContext = """
+                    THIS IS THE START OF THE RUN. Give personalized, motivating, strategic feedback.
+                    
+                    PERSONALIZATION REQUIREMENTS:
+                    1. Use runner's name "\(runnerName)" naturally
+                    2. Reference last run performance: \(lastRunInfo)
+                    3. Acknowledge what they did well in previous runs (from Mem0 insights)
+                    4. Be target-aware: Target pace is \(targetPaceStr) min/km
+                    5. Give heart zone advice: "Start in Zone 2-3, build gradually"
+                    6. Provide detailed race strategy: "First km easy, then settle into target pace"
+                    7. Motivate: "You've been improving, let's build on that momentum!"
+                    
+                    STRUCTURE (max 60 words):
+                    - Greeting with name
+                    - Brief reference to last run/what they did well
+                    - Target pace reminder
+                    - Heart zone guidance
+                    - Race strategy (pacing plan)
+                    - Motivation to finish strong
+                    
+                    Example: "Hey \(runnerName)! Your last run was solid at \(formatPace(aggregates?.avgPaceMinPerKm ?? targetPace)) pace. Today, target \(targetPaceStr). Start in Zone 2, build to Zone 3 by km 2. First km easy, then lock in. You've got this!"
+                    """
+                }
             case .interval:
                 // Enhanced interval coaching with RAG analysis if available
                 if let ragContext = ragAnalysisContext {
