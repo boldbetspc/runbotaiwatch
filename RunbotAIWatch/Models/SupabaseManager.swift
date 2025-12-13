@@ -733,19 +733,29 @@ class SupabaseManager: ObservableObject {
         let coachPersonalityStr = (dict["voice_mode"] as? String ?? "pacer").lowercased()
         let voiceStr = (dict["voice_ai_model"] as? String ?? "apple").lowercased()
         let energyStr = (dict["voice_energy"] as? String ?? "medium").lowercased()
-        let feedbackFreq = dict["feedback_frequency"] as? Int ?? 5
-        let targetPace = dict["target_pace_min_per_km"] as? Double ?? 7.0
+        let feedbackFreq = dict["feedback_frequency"] as? Int ?? 1
+        let targetPace = dict["target_pace"] as? Double ?? dict["target_pace_min_per_km"] as? Double ?? 7.0
+        let languageStr = dict["language"] as? String ?? "english"
+        let targetDistanceStr = dict["target_distance"] as? String ?? "5k"
+        let customDistanceKm = dict["custom_distance_km"] as? Double ?? 5.0
         
         let personality = CoachPersonality(rawValue: coachPersonalityStr) ?? .pacer
         let voiceOption = VoiceOption(rawValue: voiceStr) ?? .samantha
         let energy = CoachEnergy(rawValue: energyStr) ?? .medium
+        let language = SupportedLanguage(rawValue: languageStr) ?? .english
+        let targetDistance = TargetDistance(rawValue: targetDistanceStr) ?? .fiveK
+        let voiceAIModel = VoiceAIModel(rawValue: voiceStr) ?? .apple
         
         return UserPreferences.Settings(
             coachPersonality: personality,
             voiceOption: voiceOption,
             coachEnergy: energy,
             feedbackFrequency: feedbackFreq,
-            targetPaceMinPerKm: targetPace
+            targetPaceMinPerKm: targetPace,
+            voiceAIModel: voiceAIModel,
+            language: language,
+            targetDistance: targetDistance,
+            customDistanceKm: customDistanceKm
         )
     }
     

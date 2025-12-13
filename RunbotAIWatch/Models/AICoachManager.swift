@@ -534,6 +534,7 @@ class AICoachManager: NSObject, ObservableObject {
             stats: stats,
             personality: preferences.coachPersonality,
             energy: preferences.coachEnergy,
+            language: preferences.language,
             mem0Insights: mem0Insights,
             aggregates: aggregates,
             trigger: trigger,
@@ -572,6 +573,7 @@ class AICoachManager: NSObject, ObservableObject {
         stats: RunningStatsUpdate,
         personality: CoachPersonality,
         energy: CoachEnergy,
+        language: SupportedLanguage,
         mem0Insights: String,
         aggregates: SupabaseManager.RunAggregates?,
         trigger: CoachingTrigger,
@@ -826,6 +828,13 @@ class AICoachManager: NSObject, ObservableObject {
         return """
         You are an ELITE RUNNING COACH speaking to \(runnerName) during their run.
         
+        ============================================================================
+        USER PREFERENCES:
+        - Language: \(language.displayName)
+        - Coach Personality: \(personality.rawValue.uppercased())
+        - Coach Energy: \(energy.rawValue.uppercased())
+        ============================================================================
+        
         \(personalityInstructions)
         
         \(energyInstructions)
@@ -849,6 +858,7 @@ class AICoachManager: NSObject, ObservableObject {
         4. Match the personality mode precisely.
         5. NO preamble. Just the coaching message.
         6. If RAG analysis is provided, use its insights (target status, zone guidance, injury risks).
+        \(language != .english ? "7. Generate in \(language.displayName) language" : "")
         
         GOOD EXAMPLES (RAG-enhanced):
         - "\(runnerName), you're 8% behind target but HR is stable in Zone 3. Pick up cadence to 180 - you have headroom. Next km: push to Zone 4 briefly."

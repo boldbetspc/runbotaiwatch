@@ -221,12 +221,18 @@ struct SettingsView: View {
             // Use selective update method to only update changed fields
             let success = await supabaseManager.saveWatchPreferences(userPreferences.settings, userId: userId)
             
+            if success {
+                // Refresh preferences from Supabase to ensure local cache is updated
+                await userPreferences.refreshFromSupabase(supabaseManager: supabaseManager, userId: userId)
+            }
+            
             await MainActor.run {
                 isSaving = false
                 if success {
                     showSaveSuccess = true
                     print("✅ [SettingsView] Preferences saved successfully to Supabase")
                     print("✅ [SettingsView] Voice AI Model saved: \(userPreferences.settings.voiceAIModel.rawValue)")
+                    print("✅ [SettingsView] Language: \(userPreferences.settings.language.displayName)")
                     
                     // Hide success message after 2 seconds
                     DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {

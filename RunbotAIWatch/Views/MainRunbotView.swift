@@ -318,37 +318,53 @@ struct MainRunbotView: View {
         .onReceive(runTracker.$statsUpdate.compactMap { $0 }) { stats in
             // Kickoff once at run start when stats first arrive
             if isRunning && !didTriggerInitialCoaching {
-                // Train mode removed - always use run mode
-                aiCoach.startScheduledCoaching(
-                    for: stats,
-                    with: userPreferences.settings,
-                    voiceManager: voiceManager,
-                    runSessionId: runTracker.currentSession?.id,
-                    isTrainMode: false,
-                    shadowData: nil,
-                    healthManager: healthManager,
-                    intervals: runTracker.currentSession?.intervals ?? [],
-                    runStartTime: runTracker.currentSession?.startTime
-                )
-                didTriggerInitialCoaching = true
+                // Refresh preferences from Supabase to ensure latest language is used
+                let userId = authManager.currentUser?.id ?? "watch_user"
+                Task {
+                    await userPreferences.refreshFromSupabase(supabaseManager: supabaseManager, userId: userId)
+                    
+                    await MainActor.run {
+                        // Train mode removed - always use run mode
+                        aiCoach.startScheduledCoaching(
+                            for: stats,
+                            with: userPreferences.settings,
+                            voiceManager: voiceManager,
+                            runSessionId: runTracker.currentSession?.id,
+                            isTrainMode: false,
+                            shadowData: nil,
+                            healthManager: healthManager,
+                            intervals: runTracker.currentSession?.intervals ?? [],
+                            runStartTime: runTracker.currentSession?.startTime
+                        )
+                        didTriggerInitialCoaching = true
+                    }
+                }
             }
             let km = Int(stats.distance / 1000.0)
             let freq = userPreferences.settings.feedbackFrequency
             if freq > 0, km > lastCoachingKm, km % freq == 0 {
-                // Train mode removed - always use run mode
-                // RAG-enhanced interval coaching with full performance analysis
-                aiCoach.startScheduledCoaching(
-                    for: stats,
-                    with: userPreferences.settings,
-                    voiceManager: voiceManager,
-                    runSessionId: runTracker.currentSession?.id,
-                    isTrainMode: false,
-                    shadowData: nil,
-                    healthManager: healthManager,
-                    intervals: runTracker.currentSession?.intervals ?? [],
-                    runStartTime: runTracker.currentSession?.startTime
-                )
-                lastCoachingKm = km
+                // Refresh preferences from Supabase to ensure latest language is used for interval coaching
+                let userId = authManager.currentUser?.id ?? "watch_user"
+                Task {
+                    await userPreferences.refreshFromSupabase(supabaseManager: supabaseManager, userId: userId)
+                    
+                    await MainActor.run {
+                        // Train mode removed - always use run mode
+                        // RAG-enhanced interval coaching with full performance analysis
+                        aiCoach.startScheduledCoaching(
+                            for: stats,
+                            with: userPreferences.settings,
+                            voiceManager: voiceManager,
+                            runSessionId: runTracker.currentSession?.id,
+                            isTrainMode: false,
+                            shadowData: nil,
+                            healthManager: healthManager,
+                            intervals: runTracker.currentSession?.intervals ?? [],
+                            runStartTime: runTracker.currentSession?.startTime
+                        )
+                        lastCoachingKm = km
+                    }
+                }
             }
         }
     }
@@ -448,23 +464,33 @@ struct MainRunbotView: View {
                             currentLocation: nil
                         )
                         didTriggerInitialCoaching = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                            // START-OF-RUN COACHING (personalized welcome)
-                            // This also initializes RAG cache with preferences, language, Mem0 for the entire run
-                            // NOW INCLUDES RAG PERFORMANCE ANALYSIS + ADAPTIVE COACH RAG
-                            aiCoach.startOfRunCoaching(
-                                for: stats,
-                                with: userPreferences.settings,
-                                voiceManager: voiceManager,
-                                runSessionId: runTracker.currentSession?.id,
-                                runnerName: userPreferences.runnerName,
-                                healthManager: healthManager,
-                                runStartTime: runTracker.currentSession?.startTime
-                            )
+                        
+                        // Refresh preferences from Supabase before starting coaching to ensure latest language/preferences
+                        let userId = authManager.currentUser?.id ?? "watch_user"
+                        Task {
+                            await userPreferences.refreshFromSupabase(supabaseManager: supabaseManager, userId: userId)
                             
-                            // Note: Interval coaching is triggered by distance milestones
-                            // See onReceive(runTracker.$statsUpdate) below (every N km based on feedbackFrequency)
+                            await MainActor.run {
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                                    // START-OF-RUN COACHING (personalized welcome)
+                                    // This also initializes RAG cache with preferences, language, Mem0 for the entire run
+                                    // NOW INCLUDES RAG PERFORMANCE ANALYSIS + ADAPTIVE COACH RAG
+                                    // Preferences are refreshed from Supabase to ensure latest language is used
+                                    aiCoach.startOfRunCoaching(
+                                        for: stats,
+                                        with: userPreferences.settings,
+                                        voiceManager: voiceManager,
+                                        runSessionId: runTracker.currentSession?.id,
+                                        runnerName: userPreferences.runnerName,
+                                        healthManager: healthManager,
+                                        runStartTime: runTracker.currentSession?.startTime
+                                    )
+                                }
+                            }
                         }
+                        
+                        // Note: Interval coaching is triggered by distance milestones
+                        // See onReceive(runTracker.$statsUpdate) below (every N km based on feedbackFrequency)
                         
                         print("🟢🟢🟢 [MainRunbotView] ========== START RUN COMPLETE ==========")
                     }
