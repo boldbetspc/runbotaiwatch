@@ -231,6 +231,7 @@ struct MainRunbotView: View {
     @State private var didTriggerInitialCoaching = false
     @State private var showSaveSuccess = false
     @State private var saveMessage = ""
+    @State private var feedbackTextDisplayUntil: Date? = nil // Track when to show feedback text (2 min after voice finishes)
     // Train mode removed - only run mode supported
     private let runMode: RunMode = .run
     
@@ -665,8 +666,15 @@ struct MainRunbotView: View {
                     print("🎤 [AI Coach Page] Speaking state changed: \(speaking)")
                     if speaking {
                         print("▶️ [AI Coach] Starting GIF animation and voice wave")
+                        // Clear feedback text timer when speaking starts
+                        feedbackTextDisplayUntil = nil
                     } else {
                         print("⏹️ [AI Coach] Stopping GIF animation and voice wave")
+                        // When voice finishes, show text for 2 minutes
+                        if !aiCoach.currentFeedback.isEmpty {
+                            feedbackTextDisplayUntil = Date().addingTimeInterval(120.0) // 2 minutes
+                            print("📝 [AI Coach] Will show feedback text until: \(feedbackTextDisplayUntil?.description ?? "nil")")
+                        }
                     }
                 }
                 
@@ -690,17 +698,36 @@ struct MainRunbotView: View {
                         .padding(.top, 4)
                 }
                 
-                // Feedback text
-                ScrollView {
-                    Text(feedbackText.isEmpty ? (isRunning ? "Waiting for feedback..." : "Start a run for AI coaching") : feedbackText)
-                        .font(.system(size: 11, weight: feedbackText.isEmpty ? .regular : .medium))
-                        .foregroundColor(feedbackText.isEmpty ? .white.opacity(0.4) : .white.opacity(0.9))
-                        .multilineTextAlignment(.center)
-                        .lineSpacing(3)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
+                // Feedback text (show for 2 minutes after voice finishes, then show icon)
+                if let displayUntil = feedbackTextDisplayUntil, Date() < displayUntil, !feedbackText.isEmpty {
+                    // Show feedback text for 2 minutes after voice finishes
+                    ScrollView {
+                        Text(feedbackText)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.white.opacity(0.9))
+                            .multilineTextAlignment(.center)
+                            .lineSpacing(3)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                    }
+                    .frame(maxHeight: .infinity)
+                    .transition(.opacity)
+                } else if feedbackText.isEmpty {
+                    // No feedback yet
+                    ScrollView {
+                        Text(isRunning ? "Waiting for feedback..." : "Start a run for AI coaching")
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundColor(.white.opacity(0.4))
+                            .multilineTextAlignment(.center)
+                            .lineSpacing(3)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                    }
+                    .frame(maxHeight: .infinity)
+                } else {
+                    // 2 minutes passed, show icon instead of text
+                    Spacer()
                 }
-                .frame(maxHeight: .infinity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1465,15 +1492,15 @@ struct MainRunbotView: View {
         let currentDistance = runTracker.statsUpdate?.distance ?? 0.0 // Current distance in meters
         
         // Filter: only show intervals that are actually complete
-        // - Interval must have valid data (distance >= 950m, positive pace and duration)
+        // - Interval must have valid data (distance >= 900m, positive pace and duration)
         // - Interval must be within the current distance (don't show future intervals)
         // - Intervals are created when 1km is complete, so any valid interval is complete
-        // - Only show intervals that have realistic pace values (2-25 min/km)
+        // - Only show intervals that have realistic pace values (pace > 0 and <= 30 min/km)
         let completeIntervals = allIntervals.filter { interval in
             let intervalEndDistance = Double(interval.index + 1) * 1000.0 // km index + 1 = end distance in meters
-            return interval.distanceMeters >= 950.0 && // Interval is actually 1km
-                   interval.paceMinPerKm > 0 && // Valid pace
-                   interval.paceMinPerKm >= 2.0 && interval.paceMinPerKm <= 25.0 && // Realistic pace range
+            return interval.distanceMeters >= 900.0 && // Interval is actually ~1km (allow some tolerance)
+                   interval.paceMinPerKm > 0 && // Valid pace (must be positive)
+                   interval.paceMinPerKm <= 30.0 && // Reasonable max pace (30 min/km for walking/slow jog)
                    interval.durationSeconds > 0 && // Valid duration
                    intervalEndDistance <= currentDistance + 50.0 // Don't show intervals beyond current distance (50m tolerance)
         }

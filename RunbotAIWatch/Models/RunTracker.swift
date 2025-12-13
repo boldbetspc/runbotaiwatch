@@ -385,7 +385,8 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
                         // Create interval when 1km is complete
                         let distanceSinceLastInterval = totalDistance - lastIntervalEndDistance
                         if distanceSinceLastInterval >= intervalDistanceMeters {
-                            createIntervalIfPossible(in: &session)
+                            // Pass the actual distance traveled (1000m) to interval creation
+                            createIntervalIfPossible(in: &session, actualDistanceTraveled: intervalDistanceMeters)
                             lastIntervalEndDistance = totalDistance
                             intervalBuffer.removeAll(keepingCapacity: true)
                         }
@@ -696,18 +697,18 @@ extension RunTracker {
         intervalBuffer = intervalBuffer.filter { $0.timestamp >= cutoff }
     }
 
-    private func createIntervalIfPossible(in session: inout RunSession) {
-        guard intervalBuffer.count >= 2 else { return }
+    private func createIntervalIfPossible(in session: inout RunSession, actualDistanceTraveled: Double) {
+        guard intervalBuffer.count >= 2 else { 
+            print("⚠️ [RunTracker] Interval buffer has < 2 locations, skipping interval creation")
+            return 
+        }
         let start = intervalBuffer.first!
         let end = intervalBuffer.last!
         
-        // Calculate ACTUAL distance traveled in this interval buffer (not fixed 1000m)
-        // This is the real distance the runner covered, which may be slightly more or less than 1km
-        let actualDistanceMeters = computeBufferedDistance()
-        guard actualDistanceMeters > 50.0 else {
-            print("⚠️ [RunTracker] Interval buffer distance too small: \(String(format: "%.1f", actualDistanceMeters))m - skipping")
-            return
-        }
+        // Use the actual distance traveled (1000m for 1km intervals) rather than buffer distance
+        // Buffer distance can be less than actual if buffer was trimmed or filtered
+        // The actualDistanceTraveled parameter ensures we use the correct distance for pace calculation
+        let actualDistanceMeters = actualDistanceTraveled
         
         // Calculate actual time taken to cover this distance
         let dt = max(end.timestamp.timeIntervalSince(start.timestamp), 0.001)
@@ -724,23 +725,21 @@ extension RunTracker {
             let timeMinutes = dt / 60.0
             let pace = timeMinutes / distanceKm
             
-            // CRITICAL VALIDATION: Reject unrealistic paces (likely GPS errors or incomplete intervals)
-            // Normal running pace is 3-20 min/km (3:00 to 20:00 per km)
-            // If pace is outside this range, it's almost certainly wrong data
-            guard pace >= 2.0 && pace <= 25.0 else {
-                print("❌ [RunTracker] REJECTING unrealistic pace: \(String(format: "%.2f", pace)) min/km")
+            // VALIDATION: Reject only extremely unrealistic paces (likely GPS errors)
+            // Normal running pace is 2-30 min/km (very fast runners: 2:30 min/km, very slow: 30:00 min/km)
+            // Reject only clearly impossible values
+            guard pace > 0 && pace <= 30.0 else {
+                print("❌ [RunTracker] REJECTING impossible pace: \(String(format: "%.2f", pace)) min/km")
                 print("   ❌ Duration: \(String(format: "%.1f", dt))s, Distance: \(String(format: "%.1f", actualDistanceMeters))m")
-                print("   ❌ This interval will be skipped - GPS error or incomplete data")
+                print("   ❌ This interval will be skipped - GPS error")
                 return 0.0 // Return 0 to skip this interval
             }
             
-            // Additional validation: Check if duration is realistic for 1km
-            // A 1km interval should take at least 2 minutes (120 seconds) for most runners
-            // If it's less than 60 seconds, it's definitely wrong
-            if dt < 60.0 && actualDistanceMeters >= 900.0 {
-                print("⚠️ [RunTracker] WARNING: Very short duration for 1km: \(String(format: "%.1f", dt))s")
-                print("   ⚠️ Calculated pace: \(String(format: "%.2f", pace)) min/km - may be GPS error")
-                print("   ⚠️ Using calculated value but verify GPS accuracy")
+            // Log warning for unusual but not impossible paces
+            if pace < 2.0 {
+                print("⚠️ [RunTracker] Very fast pace (may be GPS error): \(String(format: "%.2f", pace)) min/km")
+            } else if pace > 20.0 {
+                print("⚠️ [RunTracker] Very slow pace (may be GPS error or walking): \(String(format: "%.2f", pace)) min/km")
             }
             
             print("✅ [RunTracker] Valid pace calculated: \(String(format: "%.2f", pace)) min/km (\(String(format: "%d:%02d", Int(pace), Int((pace - Double(Int(pace))) * 60))) min/km)")
