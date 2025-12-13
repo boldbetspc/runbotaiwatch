@@ -102,13 +102,26 @@ final class VoiceManager: NSObject, ObservableObject {
         do {
             let audioSession = AVAudioSession.sharedInstance()
             
-            // watchOS optimized configuration
-            try audioSession.setCategory(.playback, mode: .voicePrompt, options: [.duckOthers])
-            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
+            // watchOS optimized configuration for loud playback
+            // Use .playback category without .duckOthers for maximum volume
+            try audioSession.setCategory(.playback, mode: .voicePrompt, options: [])
+            try audioSession.setActive(true)
             
-            print("🔊 [Voice] ✅ Audio session configured")
+            // Set output volume to maximum (if supported)
+            try audioSession.setPreferredOutputVolume(1.0)
+            
+            print("🔊 [Voice] ✅ Audio session configured for maximum volume")
         } catch {
             print("🔊 [Voice] ❌ Audio session error: \(error.localizedDescription)")
+            // Fallback to basic configuration
+            do {
+                let audioSession = AVAudioSession.sharedInstance()
+                try audioSession.setCategory(.playback, mode: .voicePrompt)
+                try audioSession.setActive(true)
+                print("🔊 [Voice] ✅ Audio session configured (fallback)")
+            } catch {
+                print("🔊 [Voice] ❌ Audio session fallback failed: \(error.localizedDescription)")
+            }
         }
     }
     

@@ -429,13 +429,20 @@ struct MainRunbotView: View {
                         print("🟢 [MainRunbotView] HealthManager: available")
                         print("🟢 [MainRunbotView] RunTracker: available")
                         
+                        // Reset all state for new run (clear previous run data)
+                        didTriggerInitialCoaching = false
+                        lastCoachingKm = 0
+                        
                         // Start run tracker (creates session, starts location, starts HR monitoring)
+                        // This resets intervals, distance, etc. internally
                         runTracker.startRun(mode: .run, shadowData: nil)
                         
                         // Set running state
                         isRunning = true
-                        didTriggerInitialCoaching = false
-                        lastCoachingKm = 0
+                        
+                        // Clear any previous coaching feedback
+                        aiCoach.stopCoaching()
+                        voiceManager.stopSpeaking()
                         
                         print("🟢 [MainRunbotView] Run started, isRunning = true")
                         
@@ -1869,6 +1876,14 @@ struct MainRunbotView: View {
                     voiceManager: voiceManager,
                     healthManager: healthManager
                 )
+                
+                // Stop HealthKit workout after end-of-run feedback finishes (40 seconds max)
+                // Use a completion callback to detect when feedback is complete
+                DispatchQueue.main.asyncAfter(deadline: .now() + 45.0) {
+                    print("🛑 [MainRunbotView] Stopping HealthKit workout after end-of-run feedback")
+                    healthManager.stopHeartRateMonitoring()
+                    print("✅ [MainRunbotView] HealthKit workout stopped")
+                }
             }
         }
     }

@@ -618,54 +618,61 @@ class SupabaseManager: ObservableObject {
             print("⌚ [Supabase] Payload (only schema fields): \(watchPrefsPayload)")
             print("⌚ [Supabase] Note: target_pace, target_distance, custom_distance_km are NOT in user_preferences table")
             
-            // Use UPSERT: POST with resolution=merge-duplicates (updates if exists, inserts if not)
-            // This handles both cases: row exists (update) and row doesn't exist (insert)
-            let url = URL(string: "\(baseURL)/rest/v1/user_preferences")!
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue(anonKey, forHTTPHeaderField: "apikey")
-            request.setValue(getAuthHeader(), forHTTPHeaderField: "Authorization")
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("return=minimal", forHTTPHeaderField: "Prefer")
-            // UPSERT: if user_preferences with same user_id exists, update it; otherwise insert
-            request.setValue("resolution=merge-duplicates", forHTTPHeaderField: "Prefer")
-            request.httpBody = try JSONSerialization.data(withJSONObject: watchPrefsPayload)
+            // UPSERT: Try PATCH first (selective update for existing row), then POST if row doesn't exist
+            // This ensures we only update the specific fields for this user without affecting other fields
             
-            let (data, response) = try await session.data(for: request)
+            // Step 1: Try PATCH to update existing row (selective update)
+            let patchUrl = URL(string: "\(baseURL)/rest/v1/user_preferences?user_id=eq.\(userId)")!
+            var patchRequest = URLRequest(url: patchUrl)
+            patchRequest.httpMethod = "PATCH"
+            patchRequest.setValue(anonKey, forHTTPHeaderField: "apikey")
+            patchRequest.setValue(getAuthHeader(), forHTTPHeaderField: "Authorization")
+            patchRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            patchRequest.setValue("return=minimal", forHTTPHeaderField: "Prefer")
+            patchRequest.httpBody = try JSONSerialization.data(withJSONObject: watchPrefsPayload)
             
-            if let httpResponse = response as? HTTPURLResponse {
-                print("⌚ [Supabase] Response status: \(httpResponse.statusCode)")
-                if httpResponse.statusCode == 200 || httpResponse.statusCode == 201 || httpResponse.statusCode == 204 {
-                    print("✅ [Supabase] Watch preferences saved successfully")
+            let (patchData, patchResponse) = try await session.data(for: patchRequest)
+            
+            if let patchHttpResponse = patchResponse as? HTTPURLResponse {
+                print("⌚ [Supabase] PATCH response status: \(patchHttpResponse.statusCode)")
+                if patchHttpResponse.statusCode == 200 || patchHttpResponse.statusCode == 204 {
+                    print("✅ [Supabase] Watch preferences updated successfully (PATCH)")
                     return true
-                } else {
-                    let errorString = String(data: data, encoding: .utf8) ?? "Unknown error"
-                    print("❌ [Supabase] Save watch preferences failed with status \(httpResponse.statusCode): \(errorString)")
-                    if httpResponse.statusCode == 400 {
-                        // If language column doesn't exist, try again without it
-                        if errorString.contains("language") {
-                            print("⚠️ [Supabase] Language column not found, retrying without language field")
-                            var retryPayload = watchPrefsPayload
-                            retryPayload.removeValue(forKey: "language")
-                            
-                            var retryRequest = URLRequest(url: url)
-                            retryRequest.httpMethod = "POST"
-                            retryRequest.setValue(anonKey, forHTTPHeaderField: "apikey")
-                            retryRequest.setValue(getAuthHeader(), forHTTPHeaderField: "Authorization")
-                            retryRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                            retryRequest.setValue("return=minimal", forHTTPHeaderField: "Prefer")
-                            retryRequest.setValue("resolution=merge-duplicates", forHTTPHeaderField: "Prefer")
-                            retryRequest.httpBody = try JSONSerialization.data(withJSONObject: retryPayload)
-                            
-                            let (retryData, retryResponse) = try await session.data(for: retryRequest)
-                            if let retryHttpResponse = retryResponse as? HTTPURLResponse,
-                               (retryHttpResponse.statusCode == 200 || retryHttpResponse.statusCode == 201 || retryHttpResponse.statusCode == 204) {
-                                print("✅ [Supabase] Watch preferences saved successfully (without language field)")
-                                return true
-                            }
+                } else if patchHttpResponse.statusCode == 404 || patchHttpResponse.statusCode == 400 {
+                    // Row doesn't exist or PATCH failed - try INSERT with POST
+                    print("⚠️ [Supabase] PATCH failed (row may not exist), trying INSERT...")
+                    
+                    // Step 2: INSERT new row with POST (UPSERT)
+                    var insertPayload = watchPrefsPayload
+                    insertPayload["id"] = UUID().uuidString
+                    insertPayload["created_at"] = ISO8601DateFormatter().string(from: Date())
+                    
+                    let postUrl = URL(string: "\(baseURL)/rest/v1/user_preferences")!
+                    var postRequest = URLRequest(url: postUrl)
+                    postRequest.httpMethod = "POST"
+                    postRequest.setValue(anonKey, forHTTPHeaderField: "apikey")
+                    postRequest.setValue(getAuthHeader(), forHTTPHeaderField: "Authorization")
+                    postRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                    postRequest.setValue("return=minimal", forHTTPHeaderField: "Prefer")
+                    postRequest.httpBody = try JSONSerialization.data(withJSONObject: insertPayload)
+                    
+                    let (postData, postResponse) = try await session.data(for: postRequest)
+                    
+                    if let postHttpResponse = postResponse as? HTTPURLResponse {
+                        print("⌚ [Supabase] POST response status: \(postHttpResponse.statusCode)")
+                        if postHttpResponse.statusCode == 200 || postHttpResponse.statusCode == 201 {
+                            print("✅ [Supabase] Watch preferences saved successfully (POST - new row)")
+                            return true
+                        } else {
+                            let errorString = String(data: postData, encoding: .utf8) ?? "Unknown error"
+                            print("❌ [Supabase] POST failed with status \(postHttpResponse.statusCode): \(errorString)")
                         }
-                        print("❌ [Supabase] 400 Bad Request - schema mismatch. Fields in schema: voice_mode, voice_energy, voice_ai_model, feedback_frequency")
-                        print("❌ [Supabase] Note: target_pace, target_distance, custom_distance_km are NOT in user_preferences table")
+                    }
+                } else {
+                    let errorString = String(data: patchData, encoding: .utf8) ?? "Unknown error"
+                    print("❌ [Supabase] PATCH failed with status \(patchHttpResponse.statusCode): \(errorString)")
+                    if patchHttpResponse.statusCode == 400 {
+                        print("❌ [Supabase] 400 Bad Request - check if fields exist: voice_mode, voice_energy, voice_ai_model, feedback_frequency")
                     }
                 }
             }
