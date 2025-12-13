@@ -639,7 +639,7 @@ class HealthManager: NSObject, ObservableObject {
     }
     
     /// End the current workout session
-    private func endWorkoutSession(completion: @escaping ((Bool) -> Void)? = nil) {
+    private func endWorkoutSession(completion: ((Bool) -> Void)? = nil) {
         guard let session = workoutSession else {
             print("⚠️ [HealthManager] No workout session to end")
             completion?(false)

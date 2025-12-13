@@ -919,6 +919,27 @@ struct MainRunbotView: View {
         else { return .rbError }
     }
     
+    private func formatElapsed(_ seconds: TimeInterval) -> String {
+        let totalMinutes = Int(seconds / 60)
+        return String(format: "%02d:%02d", totalMinutes, Int(seconds.truncatingRemainder(dividingBy: 60)))
+    }
+    
+    private func formatElapsedMinutes(_ seconds: TimeInterval) -> String {
+        let totalMinutes = Int(seconds / 60)
+        return "\(totalMinutes) min"
+    }
+    
+    private func formatDistanceKm(_ meters: Double) -> String {
+        let km = meters / 1000.0
+        if km >= 100 {
+            return String(format: "%.1f", km)
+        } else if km >= 10 {
+            return String(format: "%.2f", km)
+        } else {
+            return String(format: "%.2f", km)
+        }
+    }
+    
     // MARK: - ❤️ Heart Zone Page
     @ViewBuilder
     private func heartZonePage() -> some View {
@@ -1391,7 +1412,7 @@ struct MainRunbotView: View {
                 if isRunning, let currentPace = runTracker.statsUpdate?.pace, currentPace > 0 {
                     HStack(spacing: 3) {
                         Circle()
-                            .fill(.rbAccent)
+                            .fill(Color.rbAccent)
                             .frame(width: 6, height: 6)
                         Text("\(formatPace(currentPace)) /km")
                             .font(.system(size: 10, weight: .semibold, design: .monospaced))
@@ -1520,21 +1541,6 @@ struct MainRunbotView: View {
         let mins = Int(paceMinutesPerKm)
         let secs = Int((paceMinutesPerKm - Double(mins)) * 60)
         return String(format: "%d:%02d", mins, secs)
-    }
-    
-    private func formatDistanceKm(_ distanceMeters: Double) -> String {
-        String(format: "%.2f", distanceMeters / 1000.0)
-    }
-    
-    private func formatElapsed(_ seconds: TimeInterval) -> String {
-        let hours = Int(seconds / 3600)
-        let minutes = Int((seconds.truncatingRemainder(dividingBy: 3600)) / 60)
-        let secs = Int(seconds.truncatingRemainder(dividingBy: 60))
-        
-        if hours > 0 {
-            return String(format: "%d:%02d:%02d", hours, minutes, secs)
-        }
-        return String(format: "%d:%02d", minutes, secs)
     }
     
     private func paceFromAvgSpeed(_ avgSpeedKmh: Double) -> Double {
@@ -1773,28 +1779,17 @@ struct MainRunbotView: View {
         isRunning = false
         
         // END-OF-RUN SUMMARY (personalized performance review)
-        // GUARDRAIL 2: End feedback has 20-second auto-timeout (in deliverFeedback)
         // CRITICAL: End feedback uses captured snapshot (latest stats preserved)
+        // GUARDRAIL: End feedback has 40-second auto-timeout (voice AI cutoff)
         if let session = sessionSnapshot, let stats = statsSnapshot {
             print("🏁 [MainRunbotView] Triggering end-of-run feedback with latest stats:")
             print("   Distance: \(String(format: "%.2f", stats.distance / 1000.0))km")
             print("   Pace: \(String(format: "%.2f", stats.pace)) min/km")
             print("   Duration: \(String(format: "%.1f", session.duration))s")
             print("   Calories: \(Int(stats.calories))")
-            print("🏁 [MainRunbotView] End feedback will auto-terminate after 20s (guardrail)")
+            print("🏁 [MainRunbotView] End feedback will auto-terminate after 40s (voice AI cutoff)")
             
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                // End-of-run RAG-powered analysis with full HealthKit data
-                aiCoach.endOfRunCoaching(
-                    for: stats,
-                    session: session,
-                    with: userPreferences.settings,
-                    voiceManager: voiceManager,
-                    healthManager: healthManager
-                )
-            }
-            
-            // Final save to Supabase - all three tables
+            // Final save to Supabase - all three tables (save first, then trigger feedback)
             let userId = authManager.currentUser?.id ?? "watch_user"
             Task {
                 print("💾 [MainRunbotView] Saving run to Supabase - run_activities, run_hr, run_intervals")
@@ -1838,6 +1833,16 @@ struct MainRunbotView: View {
                         }
                     }
                 }
+                
+                // After saving, trigger end-of-run feedback immediately
+                print("🏁 [MainRunbotView] Run data saved - starting end-of-run feedback")
+                aiCoach.endOfRunCoaching(
+                    for: stats,
+                    session: session,
+                    with: userPreferences.settings,
+                    voiceManager: voiceManager,
+                    healthManager: healthManager
+                )
             }
         }
     }
@@ -3485,27 +3490,6 @@ struct SplitIntervalBar: View {
         let mins = Int(paceMinutesPerKm)
         let secs = Int((paceMinutesPerKm - Double(mins)) * 60)
         return String(format: "%d:%02d", mins, secs)
-    }
-    
-    private func formatElapsed(_ seconds: TimeInterval) -> String {
-        let totalMinutes = Int(seconds / 60)
-        return String(format: "%02d:%02d", totalMinutes, Int(seconds.truncatingRemainder(dividingBy: 60)))
-    }
-    
-    private func formatElapsedMinutes(_ seconds: TimeInterval) -> String {
-        let totalMinutes = Int(seconds / 60)
-        return "\(totalMinutes) min"
-    }
-    
-    private func formatDistanceKm(_ meters: Double) -> String {
-        let km = meters / 1000.0
-        if km >= 100 {
-            return String(format: "%.1f", km)
-        } else if km >= 10 {
-            return String(format: "%.2f", km)
-        } else {
-            return String(format: "%.2f", km)
-        }
     }
 }
 

@@ -16,7 +16,7 @@ class AICoachManager: NSObject, ObservableObject {
     private var coachingTimer: Timer?
     private var feedbackTimer: Timer?
     private let openAIKey: String
-    private let maxCoachingDuration: TimeInterval = 60.0 // 60 seconds auto-terminate for voice TTS
+    private let maxCoachingDuration: TimeInterval = 40.0 // 40 seconds auto-terminate for voice TTS
     private var runnerName: String = "Runner"
     private var currentTrigger: CoachingTrigger = .interval
     private var lastDeliveredFeedback: String?
@@ -372,7 +372,7 @@ class AICoachManager: NSObject, ObservableObject {
             runnerName: runnerName,
             coachStrategy: coachStrategy
         )
-        return await requestAICoachingFeedback(prompt, energy: preferences.coachEnergy)
+        return await requestAICoachingFeedback(prompt, energy: preferences.coachEnergy, trigger: .runEnd)
     }
     
     /// Build comprehensive end-of-run LLM prompt with RAG analysis + Coach Strategy RAG (learning/takeaways)
@@ -544,7 +544,7 @@ class AICoachManager: NSObject, ObservableObject {
             ragAnalysisContext: ragAnalysisContext,
             coachStrategy: coachStrategy
         )
-        return await requestAICoachingFeedback(prompt, energy: preferences.coachEnergy)
+        return await requestAICoachingFeedback(prompt, energy: preferences.coachEnergy, trigger: trigger)
     }
     
     private func generateRunSummary(
@@ -565,7 +565,7 @@ class AICoachManager: NSObject, ObservableObject {
             runnerName: runnerName,
             targetPace: preferences.targetPaceMinPerKm
         )
-        return await requestAICoachingFeedback(prompt, energy: preferences.coachEnergy)
+        return await requestAICoachingFeedback(prompt, energy: preferences.coachEnergy, trigger: .runEnd)
     }
     
     private func buildCoachingPrompt(
@@ -843,7 +843,7 @@ class AICoachManager: NSObject, ObservableObject {
         - Calories: \(String(format: "%.0f", stats.calories))
         
         CRITICAL RULES:
-        1. Maximum 60 words - be concise but insightful.
+        1. Maximum 70 words - be concise but insightful.
         2. Be SPECIFIC and ACTIONABLE. Reference actual data from analysis.
         3. Use runner's name "\(runnerName)" if it feels natural.
         4. Match the personality mode precisely.
@@ -972,7 +972,7 @@ class AICoachManager: NSObject, ObservableObject {
     }
     
     // MARK: - OpenAI API
-    private func requestAICoachingFeedback(_ prompt: String, energy: CoachEnergy) async -> String {
+    private func requestAICoachingFeedback(_ prompt: String, energy: CoachEnergy, trigger: CoachingTrigger = .interval) async -> String {
         guard !openAIKey.isEmpty else {
             return "Great job, keep it up!"
         }
@@ -985,12 +985,13 @@ class AICoachManager: NSObject, ObservableObject {
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             
             let temperature: Double = energy == .high ? 0.9 : energy == .medium ? 0.7 : 0.5
+            let maxTokens = trigger == .interval ? 140 : 120 // 140 tokens (~70 words) for interval coaching, 120 tokens (~60 words) for others
             let body: [String: Any] = [
                 "model": "gpt-4o-mini",
                 "messages": [
                     [
                         "role": "system",
-                        "content": "You are an elite running coach. Give SHORT, actionable coaching. NO fluff. Maximum 60 words."
+                        "content": trigger == .interval ? "You are an elite running coach. Give SHORT, actionable coaching. NO fluff. Maximum 70 words for scheduled interval coaching." : "You are an elite running coach. Give SHORT, actionable coaching. NO fluff. Maximum 60 words."
                     ],
                     [
                         "role": "user",
@@ -998,7 +999,7 @@ class AICoachManager: NSObject, ObservableObject {
                     ]
                 ],
                 "temperature": temperature,
-                "max_tokens": 120 // ~60 words
+                "max_tokens": maxTokens
             ]
             
             request.httpBody = try JSONSerialization.data(withJSONObject: body)

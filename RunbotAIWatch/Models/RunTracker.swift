@@ -705,10 +705,13 @@ extension RunTracker {
         // This ensures each interval represents exactly 1km
         let d = 1000.0 // Fixed 1km interval distance
         let dt = max(end.timestamp.timeIntervalSince(start.timestamp), 0.001)
+        
+        // Calculate pace in min/km: duration in seconds / 60 = minutes, then divide by distance in km
+        // Example: 278 seconds for 1km = 278/60 = 4.633 min/km = 4:38 min/km
         let paceMinPerKm: Double = {
-            let mps = d / dt
-            let kmPerMin = (mps * 3.6) / 60.0
-            return kmPerMin > 0 ? 1.0 / kmPerMin : 0.0
+            let minutes = dt / 60.0  // Convert seconds to minutes
+            let distanceKm = d / 1000.0  // Convert meters to kilometers
+            return distanceKm > 0 ? minutes / distanceKm : 0.0
         }()
         
         print("📊 [RunTracker] Creating 1km interval #\(session.intervals.count + 1):")

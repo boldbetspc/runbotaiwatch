@@ -149,37 +149,116 @@ class RAGPerformanceAnalyzer: ObservableObject {
         
         /// Formatted context string for LLM prompt
         var llmContext: String {
-            return """
-            📊 RAG PERFORMANCE ANALYSIS (Real-time Closed-Loop)
+            // Expand injury risk signals with detailed breakdown
+            let injurySignalsDetailed: String
+            if injuryRiskSignals.isEmpty {
+                injurySignalsDetailed = "None detected - no unusual patterns that indicate strain or injury risk."
+            } else {
+                injurySignalsDetailed = """
+                \(injuryRiskSignals.enumerated().map { index, signal in
+                    "\(index + 1). \(signal)"
+                }.joined(separator: "\n"))
+                
+                IMPORTANT: These signals require immediate attention. Consider easing pace, reducing intensity, or stopping if severe.
+                """
+            }
             
-            🎯 TARGET STATUS: \(targetStatus.description)
+            return """
+            ============================================================================
+            📊 RAG PERFORMANCE ANALYSIS (Real-time Closed-Loop)
+            ============================================================================
+            
+            🎯 TARGET STATUS:
+            \(targetStatus.description)
+            - Urgency: \(targetStatus.coachingUrgency)
             
             📈 PERFORMANCE ANALYSIS:
             \(performanceAnalysis)
             
+            DETAILED PERFORMANCE BREAKDOWN:
+            - Current pace vs target pace deviation analysis
+            - Projected finish time and distance estimates
+            - Energy expenditure and fatigue accumulation patterns
+            - Pacing consistency and variability metrics
+            - Efficiency indicators and biomechanical insights
+            
             ❤️ HEART ZONE ANALYSIS:
             \(heartZoneAnalysis)
+            
+            DETAILED HEART ZONE BREAKDOWN:
+            - Time spent in each zone (Zone 1-5 percentages and durations)
+            - Zone transitions and how smoothly runner moves between zones
+            - Zone efficiency: optimal zone usage vs actual distribution
+            - Cardiac drift patterns: HR increasing despite constant pace (fatigue indicator)
+            - Zone-specific pace correlations: pace performance within each zone
+            - Recovery patterns: HR recovery rates between intervals
             
             📉 INTERVAL TRENDS:
             \(intervalTrends)
             
+            DETAILED INTERVAL PACE VARIABILITY:
+            - Individual interval pace breakdown (per km pace, duration, HR for each interval)
+            - Pace consistency score: standard deviation of interval paces
+            - Positive splits vs negative splits analysis
+            - Interval-to-interval pace change patterns
+            - Best vs worst interval comparison with context
+            - Fatigue progression: how pace changes as distance increases
+            - Interval efficiency: pace relative to target for each completed interval
+            
             💓 HR VARIATION ANALYSIS:
             \(hrVariationAnalysis)
+            
+            DETAILED HEART RATE VARIABILITY:
+            - HR variability metrics: consistency vs fluctuations
+            - HR stability score: how steady HR remains during run
+            - HR spikes and unusual patterns: sudden increases/decreases
+            - HR trend analysis: overall HR trajectory (rising, stable, recovering)
+            - HR recovery patterns: how quickly HR drops during slower segments
+            - Cardiac efficiency: HR response relative to pace and effort
+            - HR zones alignment: how well HR zones match intended effort zones
             
             🏃 RUNNING QUALITY:
             \(runningQualityAssessment)
             
-            ⚠️ INJURY RISK SIGNALS:
-            \(injuryRiskSignals.isEmpty ? "None detected" : injuryRiskSignals.joined(separator: "; "))
+            DETAILED RUNNING QUALITY METRICS:
+            - Biomechanical efficiency indicators
+            - Form consistency and stability
+            - Energy expenditure patterns
+            - Movement quality signals
+            
+            ⚠️ INJURY RISK SIGNALS (DETAILED):
+            \(injurySignalsDetailed)
             
             🧠 ADAPTIVE MICROSTRATEGY:
             \(adaptiveMicrostrategy)
             
+            DETAILED STRATEGY RECOMMENDATIONS:
+            - Immediate next steps based on current performance state
+            - Tactical adjustments needed for next 500m-1km
+            - Pacing strategy modifications
+            - Effort distribution recommendations
+            - Zone management guidance
+            - Energy conservation or expenditure advice
+            
             📚 SIMILAR RUNS CONTEXT (RAG):
             \(similarRunsContext)
             
+            HISTORICAL PATTERN INSIGHTS:
+            - How current run compares to similar past runs
+            - Patterns identified from historical performance data
+            - Expected outcomes based on similar runs
+            - Lessons learned from past similar performances
+            
             💡 OVERALL RECOMMENDATION:
             \(overallRecommendation)
+            
+            COMPREHENSIVE COACHING GUIDANCE:
+            - Primary focus area based on all analyses above
+            - Secondary adjustments to consider
+            - Risk factors to monitor
+            - Opportunities for improvement
+            - Expected outcomes if recommendations are followed
+            ============================================================================
             """
         }
     }
@@ -265,7 +344,7 @@ class RAGPerformanceAnalyzer: ObservableObject {
         var llmContext: String {
             return """
             ============================================================================
-            END-OF-RUN RAG ANALYSIS (Comprehensive)
+            END-OF-RUN RAG ANALYSIS (Comprehensive Performance Breakdown)
             ============================================================================
             
             🎯 TARGET ACHIEVEMENT:
@@ -275,33 +354,93 @@ class RAGPerformanceAnalyzer: ObservableObject {
             - Result: \(targetAchievement)
             - Status: \(targetMet ? "✅ TARGET MET" : "❌ TARGET MISSED")
             - Deviation: \(targetDeviation)
+            - Performance gap analysis: Detailed breakdown of where time/distance was gained or lost
             
-            📊 INTERVAL ANALYSIS:
+            📊 INTERVAL ANALYSIS (DETAILED):
             \(intervalAnalysis)
             - Pace pattern: \(paceVariation)
             - Best interval: \(bestInterval)
             - Worst interval: \(worstInterval)
             
-            ❤️ HEART ZONE ANALYSIS:
+            DETAILED INTERVAL PACE VARIABILITY:
+            - Individual interval-by-interval breakdown with pace, duration, and HR data
+            - Pace consistency metrics: standard deviation, coefficient of variation
+            - Interval trend analysis: positive splits (slowing down), negative splits (speeding up), or even pacing
+            - Fatigue progression: how pace changed throughout the run
+            - Interval efficiency: which intervals were most/least efficient relative to target
+            - Pace distribution: range of paces, average interval pace vs overall pace
+            - Recovery between intervals: HR and pace recovery patterns
+            
+            ❤️ HEART ZONE ANALYSIS (DETAILED):
             \(zoneDistribution)
-            - Dominant zone: Zone \(dominantZone)
+            - Dominant zone: Zone \(dominantZone) (primary training zone for this run)
             - Zone efficiency: \(zoneEfficiency)
             - Zone-pace correlation: \(zonePaceCorrelation)
+            
+            DETAILED HEART ZONE BREAKDOWN:
+            - Zone distribution percentages: exact time spent in each zone (Z1-Z5)
+            - Zone transitions: how smoothly runner moved between zones
+            - Zone-specific performance: pace maintained in each zone
+            - Cardiac drift analysis: HR increase patterns throughout the run
+            - Zone efficiency assessment: optimal vs actual zone usage for target
+            - HR variability: consistency, spikes, unusual patterns
+            - Recovery indicators: HR recovery rates and patterns
+            - Zone-pace alignment: how well HR zones matched intended effort zones
+            
+            💓 HEART RATE VARIABILITY ANALYSIS:
+            - HR stability: how consistent HR remained during the run
+            - HR trend: overall trajectory (rising, stable, or recovering)
+            - HR variability score: fluctuations and consistency metrics
+            - Cardiac efficiency: HR response relative to pace and distance
+            - Recovery patterns: HR drop rates during slower segments
+            - HR spikes: any unusual increases and their context
             
             🔬 PERFORMANCE INSIGHTS (Zones × Pace × Intervals):
             \(performanceInsights.map { "• \($0)" }.joined(separator: "\n"))
             
+            CROSS-ANALYSIS INSIGHTS:
+            - How heart zones correlated with pace performance
+            - Interval-by-interval zone distribution and pace relationship
+            - Efficiency patterns: where runner was most/least efficient
+            - Energy expenditure analysis: how effort was distributed
+            - Fatigue markers: signals of accumulating fatigue throughout run
+            - Performance optimization opportunities identified
+            
             ✅ WHAT WENT WELL:
             \(whatWentWell.map { "• \($0)" }.joined(separator: "\n"))
+            
+            DETAILED STRENGTHS:
+            - Specific metrics and numbers supporting each positive observation
+            - Zone management successes
+            - Pace consistency highlights
+            - Efficiency achievements
+            - Improvements from previous runs
             
             ⚠️ WHAT NEEDS WORK:
             \(whatNeedsWork.map { "• \($0)" }.joined(separator: "\n"))
             
+            DETAILED IMPROVEMENT AREAS:
+            - Specific metrics and numbers supporting each area needing improvement
+            - Zone management issues
+            - Pace consistency problems
+            - Efficiency gaps
+            - Patterns that need addressing
+            
             📈 COMPARED TO HISTORY:
             \(comparedToHistory)
             
+            HISTORICAL PATTERN ANALYSIS:
+            - Performance trends: improving, declining, or stable over time
+            - Similar runs comparison: how this run compares to past similar runs
+            - Progress indicators: areas showing improvement vs decline
+            - Pattern recognition: recurring strengths and weaknesses
+            - Context from past runs: lessons learned and applied
+            
             🏆 OVERALL ASSESSMENT:
             - Performance level: \(overallRating)
+            - Comprehensive evaluation integrating all analysis dimensions
+            - Key takeaways for future runs
+            - Strategic recommendations based on full analysis
             (Note: Do NOT mention scores or ratings in voice output - just give natural coaching feedback)
             ============================================================================
             """
