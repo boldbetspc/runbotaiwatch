@@ -231,6 +231,8 @@ struct MainRunbotView: View {
     @State private var didTriggerInitialCoaching = false
     @State private var showSaveSuccess = false
     @State private var saveMessage = ""
+    @State private var showFeedbackText = false // Show feedback text after voice finishes
+    @State private var feedbackTextTimer: Timer? // Timer to hide text after 2 minutes
     // Train mode removed - only run mode supported
     private let runMode: RunMode = .run
     
@@ -645,28 +647,63 @@ struct MainRunbotView: View {
                             .blur(radius: 8)
                     }
                     
-                    // AI Coach GIF
-                    ZStack {
-                        // Background circle
-                        Circle()
-                            .fill(Color.black)
-                            .frame(width: 90, height: 90)
-                        
-                        // GIF animation (plays ONLY when speaking)
-                        GIFImage(name: "ai_coach", isAnimating: isSpeaking)
-                            .frame(width: 90, height: 90)
-                            .clipShape(Circle())
-                            .blendMode(.screen)
+                    // AI Coach GIF (shown when not showing feedback text)
+                    if !showFeedbackText {
+                        ZStack {
+                            // Background circle
+                            Circle()
+                                .fill(Color.black)
+                                .frame(width: 90, height: 90)
+                            
+                            // GIF animation (plays ONLY when speaking)
+                            GIFImage(name: "ai_coach", isAnimating: isSpeaking)
+                                .frame(width: 90, height: 90)
+                                .clipShape(Circle())
+                                .blendMode(.screen)
+                        }
+                        .shadow(color: isSpeaking ? .rbAccent.opacity(0.4) : .clear, radius: 12)
+                        .transition(.opacity.combined(with: .scale))
                     }
-                    .shadow(color: isSpeaking ? .rbAccent.opacity(0.4) : .clear, radius: 12)
                 }
                 .padding(.top, 4)
                 .onChange(of: isSpeaking) { oldValue, speaking in
                     print("🎤 [AI Coach Page] Speaking state changed: \(speaking)")
                     if speaking {
                         print("▶️ [AI Coach] Starting GIF animation and voice wave")
-                    } else {
-                        print("⏹️ [AI Coach] Stopping GIF animation and voice wave")
+                        // Hide text while speaking (will show after voice finishes)
+                        showFeedbackText = false
+                        // Cancel any existing timer
+                        feedbackTextTimer?.invalidate()
+                    } else if oldValue == true && speaking == false {
+                        // Voice just finished - show text for 2 minutes
+                        print("✅ [AI Coach] Voice finished - showing feedback text for 2 minutes")
+                        showFeedbackText = true
+                        
+                        // Cancel any existing timer
+                        feedbackTextTimer?.invalidate()
+                        
+                        // Set timer to hide text after 2 minutes (120 seconds)
+                        feedbackTextTimer = Timer.scheduledTimer(withTimeInterval: 120.0, repeats: false) { _ in
+                            print("⏰ [AI Coach] 2 minutes elapsed - hiding feedback text, showing icon")
+                            showFeedbackText = false
+                            feedbackTextTimer = nil
+                        }
+                    }
+                }
+                .onChange(of: aiCoach.currentFeedback) { oldValue, newValue in
+                    // When new feedback arrives, reset timer and show text
+                    if !newValue.isEmpty && newValue != oldValue {
+                        print("📝 [AI Coach] New feedback received - resetting timer")
+                        feedbackTextTimer?.invalidate()
+                        // Don't show text immediately if voice is still speaking
+                        if !isSpeaking {
+                            showFeedbackText = true
+                            feedbackTextTimer = Timer.scheduledTimer(withTimeInterval: 120.0, repeats: false) { _ in
+                                print("⏰ [AI Coach] 2 minutes elapsed - hiding feedback text")
+                                showFeedbackText = false
+                                feedbackTextTimer = nil
+                            }
+                        }
                     }
                 }
                 
@@ -690,17 +727,35 @@ struct MainRunbotView: View {
                         .padding(.top, 4)
                 }
                 
-                // Feedback text
-                ScrollView {
-                    Text(feedbackText.isEmpty ? (isRunning ? "Waiting for feedback..." : "Start a run for AI coaching") : feedbackText)
-                        .font(.system(size: 11, weight: feedbackText.isEmpty ? .regular : .medium))
-                        .foregroundColor(feedbackText.isEmpty ? .white.opacity(0.4) : .white.opacity(0.9))
-                        .multilineTextAlignment(.center)
-                        .lineSpacing(3)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
+                // Feedback text (shown for 2 minutes after voice finishes)
+                if showFeedbackText && !feedbackText.isEmpty {
+                    ScrollView {
+                        Text(feedbackText)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundColor(.white.opacity(0.9))
+                            .multilineTextAlignment(.center)
+                            .lineSpacing(3)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                    }
+                    .frame(maxHeight: .infinity)
+                    .transition(.opacity.combined(with: .move(edge: .bottom)))
+                } else if feedbackText.isEmpty {
+                    ScrollView {
+                        Text(isRunning ? "Waiting for feedback..." : "Start a run for AI coaching")
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundColor(.white.opacity(0.4))
+                            .multilineTextAlignment(.center)
+                            .lineSpacing(3)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                    }
+                    .frame(maxHeight: .infinity)
+                } else {
+                    // Empty space when icon is shown (after 2 minutes)
+                    Spacer()
+                        .frame(maxHeight: .infinity)
                 }
-                .frame(maxHeight: .infinity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
