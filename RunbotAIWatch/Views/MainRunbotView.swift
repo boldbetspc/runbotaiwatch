@@ -231,8 +231,6 @@ struct MainRunbotView: View {
     @State private var didTriggerInitialCoaching = false
     @State private var showSaveSuccess = false
     @State private var saveMessage = ""
-    @State private var showFeedbackText = false // Show feedback text after voice finishes
-    @State private var feedbackTextTimer: Timer? // Timer to hide text after 2 minutes
     // Train mode removed - only run mode supported
     private let runMode: RunMode = .run
     
@@ -647,63 +645,28 @@ struct MainRunbotView: View {
                             .blur(radius: 8)
                     }
                     
-                    // AI Coach GIF (shown when not showing feedback text)
-                    if !showFeedbackText {
-                        ZStack {
-                            // Background circle
-                            Circle()
-                                .fill(Color.black)
-                                .frame(width: 90, height: 90)
-                            
-                            // GIF animation (plays ONLY when speaking)
-                            GIFImage(name: "ai_coach", isAnimating: isSpeaking)
-                                .frame(width: 90, height: 90)
-                                .clipShape(Circle())
-                                .blendMode(.screen)
-                        }
-                        .shadow(color: isSpeaking ? .rbAccent.opacity(0.4) : .clear, radius: 12)
-                        .transition(.opacity.combined(with: .scale))
+                    // AI Coach GIF
+                    ZStack {
+                        // Background circle
+                        Circle()
+                            .fill(Color.black)
+                            .frame(width: 90, height: 90)
+                        
+                        // GIF animation (plays ONLY when speaking)
+                        GIFImage(name: "ai_coach", isAnimating: isSpeaking)
+                            .frame(width: 90, height: 90)
+                            .clipShape(Circle())
+                            .blendMode(.screen)
                     }
+                    .shadow(color: isSpeaking ? .rbAccent.opacity(0.4) : .clear, radius: 12)
                 }
                 .padding(.top, 4)
                 .onChange(of: isSpeaking) { oldValue, speaking in
                     print("🎤 [AI Coach Page] Speaking state changed: \(speaking)")
                     if speaking {
                         print("▶️ [AI Coach] Starting GIF animation and voice wave")
-                        // Hide text while speaking (will show after voice finishes)
-                        showFeedbackText = false
-                        // Cancel any existing timer
-                        feedbackTextTimer?.invalidate()
-                    } else if oldValue == true && speaking == false {
-                        // Voice just finished - show text for 2 minutes
-                        print("✅ [AI Coach] Voice finished - showing feedback text for 2 minutes")
-                        showFeedbackText = true
-                        
-                        // Cancel any existing timer
-                        feedbackTextTimer?.invalidate()
-                        
-                        // Set timer to hide text after 2 minutes (120 seconds)
-                        feedbackTextTimer = Timer.scheduledTimer(withTimeInterval: 120.0, repeats: false) { _ in
-                            print("⏰ [AI Coach] 2 minutes elapsed - hiding feedback text, showing icon")
-                            showFeedbackText = false
-                            feedbackTextTimer = nil
-                        }
-                    }
-                }
-                .onChange(of: aiCoach.currentFeedback) { oldValue, newValue in
-                    // When new feedback arrives, reset timer and show text
-                    if !newValue.isEmpty && newValue != oldValue {
-                        print("📝 [AI Coach] New feedback received - resetting timer")
-                        feedbackTextTimer?.invalidate()
-                        // Don't show text immediately if voice is still speaking
-                        if !isSpeaking {
-                            showFeedbackText = true
-                            feedbackTextTimer = Timer.scheduledTimer(withTimeInterval: 120.0, repeats: false) { _ in
-                                print("⏰ [AI Coach] 2 minutes elapsed - hiding feedback text")
-                                showFeedbackText = false
-                                feedbackTextTimer = nil
-                            }
-                        }
+                    } else {
+                        print("⏹️ [AI Coach] Stopping GIF animation and voice wave")
                     }
                 }
                 
@@ -727,35 +690,17 @@ struct MainRunbotView: View {
                         .padding(.top, 4)
                 }
                 
-                // Feedback text (shown for 2 minutes after voice finishes)
-                if showFeedbackText && !feedbackText.isEmpty {
-                    ScrollView {
-                        Text(feedbackText)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.white.opacity(0.9))
-                            .multilineTextAlignment(.center)
-                            .lineSpacing(3)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                    }
-                    .frame(maxHeight: .infinity)
-                    .transition(.opacity.combined(with: .move(edge: .bottom)))
-                } else if feedbackText.isEmpty {
-                    ScrollView {
-                        Text(isRunning ? "Waiting for feedback..." : "Start a run for AI coaching")
-                            .font(.system(size: 11, weight: .regular))
-                            .foregroundColor(.white.opacity(0.4))
-                            .multilineTextAlignment(.center)
-                            .lineSpacing(3)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                    }
-                    .frame(maxHeight: .infinity)
-                } else {
-                    // Empty space when icon is shown (after 2 minutes)
-                    Spacer()
-                        .frame(maxHeight: .infinity)
+                // Feedback text
+                ScrollView {
+                    Text(feedbackText.isEmpty ? (isRunning ? "Waiting for feedback..." : "Start a run for AI coaching") : feedbackText)
+                        .font(.system(size: 11, weight: feedbackText.isEmpty ? .regular : .medium))
+                        .foregroundColor(feedbackText.isEmpty ? .white.opacity(0.4) : .white.opacity(0.9))
+                        .multilineTextAlignment(.center)
+                        .lineSpacing(3)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
                 }
+                .frame(maxHeight: .infinity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1268,7 +1213,7 @@ struct MainRunbotView: View {
             if isRunning {
                 // Show chart if we have data, or show "collecting data" message
                 if !zonePercentages.isEmpty && !angles.isEmpty && total > 0 {
-                // Beautiful Donut Chart with % on Segments
+                // Beautiful Donut Chart with % on Segments (reduced size)
                 ZStack {
                     // Outer glow ring
                     Circle()
@@ -1280,24 +1225,24 @@ struct MainRunbotView: View {
                             ),
                             lineWidth: 2
                         )
-                        .frame(width: 150, height: 150)
+                        .frame(width: 120, height: 120)
                         .blur(radius: 2)
                     
                     // Pie segments with gradient fills and percentage labels
                     ForEach(angles, id: \.zone) { angleData in
                         let percentage = zonePercentages[angleData.zone] ?? 0.0
                         let midAngle = angleData.start + (angleData.end - angleData.start) / 2.0
-                        let labelRadius: CGFloat = 40 // Position label on segment
-                        let labelX = 75 + CGFloat(cos(midAngle * .pi / 180.0)) * labelRadius
-                        let labelY = 75 + CGFloat(sin(midAngle * .pi / 180.0)) * labelRadius
+                        let labelRadius: CGFloat = 32 // Position label on segment (reduced for smaller chart)
+                        let labelX = 60 + CGFloat(cos(midAngle * .pi / 180.0)) * labelRadius
+                        let labelY = 60 + CGFloat(sin(midAngle * .pi / 180.0)) * labelRadius
                         
                         ZStack {
                             // Segment path
                             Path { path in
-                                path.move(to: CGPoint(x: 75, y: 75))
+                                path.move(to: CGPoint(x: 60, y: 60))
                                 path.addArc(
-                                    center: CGPoint(x: 75, y: 75),
-                                    radius: 65,
+                                    center: CGPoint(x: 60, y: 60),
+                                    radius: 52, // Reduced radius for smaller chart
                                     startAngle: Angle(degrees: angleData.start),
                                     endAngle: Angle(degrees: angleData.end),
                                     clockwise: false
@@ -1319,7 +1264,7 @@ struct MainRunbotView: View {
                             // Large percentage label on segment
                             if percentage >= 5.0 { // Only show if segment is large enough
                                 Text(String(format: "%.0f%%", percentage))
-                                    .font(.system(size: 22, weight: .black, design: .rounded))
+                                    .font(.system(size: 18, weight: .black, design: .rounded)) // Reduced font size
                                     .foregroundColor(.white)
                                     .shadow(color: .black.opacity(0.8), radius: 3, x: 1, y: 1)
                                     .shadow(color: HeartZoneCalculator.zoneColor(for: angleData.zone).opacity(0.5), radius: 2)
@@ -1335,27 +1280,44 @@ struct MainRunbotView: View {
                                 colors: [Color.black.opacity(0.95), Color.black],
                                 center: .center,
                                 startRadius: 5,
-                                endRadius: 35
+                                endRadius: 28 // Reduced for smaller chart
                             )
                         )
-                        .frame(width: 70, height: 70)
+                        .frame(width: 56, height: 56) // Reduced center hole
                     
                     // Center current zone indicator
                     VStack(spacing: 2) {
                         if let currentZone = healthManager.currentZone {
                             Text("Z\(currentZone)")
-                                .font(.system(size: 24, weight: .black, design: .rounded))
+                                .font(.system(size: 20, weight: .black, design: .rounded)) // Reduced font
                                 .foregroundColor(HeartZoneCalculator.zoneColor(for: currentZone))
                                 .shadow(color: HeartZoneCalculator.zoneColor(for: currentZone).opacity(0.5), radius: 4)
         } else {
                             Text("—")
-                                .font(.system(size: 20, weight: .bold))
+                                .font(.system(size: 18, weight: .bold)) // Reduced font
                                 .foregroundColor(.white.opacity(0.5))
                         }
                     }
                 }
-                .frame(width: 150, height: 150)
+                .frame(width: 120, height: 120) // Reduced chart size
                 .padding(.vertical, 8)
+                
+                // Zone Legend (small, compact)
+                HStack(spacing: 8) {
+                    ForEach([1, 2, 3, 4, 5], id: \.self) { zone in
+                        if let percentage = zonePercentages[zone], percentage > 0 {
+                            HStack(spacing: 3) {
+                                Circle()
+                                    .fill(HeartZoneCalculator.zoneColor(for: zone))
+                                    .frame(width: 6, height: 6)
+                                Text("Z\(zone)")
+                                    .font(.system(size: 8, weight: .semibold))
+                                    .foregroundColor(.white.opacity(0.7))
+                            }
+                        }
+                    }
+                }
+                .padding(.top, 4)
                 } else {
                     // Data is being collected - show loading state
                 Spacer()
@@ -1506,10 +1468,12 @@ struct MainRunbotView: View {
         // - Interval must have valid data (distance >= 950m, positive pace and duration)
         // - Interval must be within the current distance (don't show future intervals)
         // - Intervals are created when 1km is complete, so any valid interval is complete
+        // - Only show intervals that have realistic pace values (2-25 min/km)
         let completeIntervals = allIntervals.filter { interval in
             let intervalEndDistance = Double(interval.index + 1) * 1000.0 // km index + 1 = end distance in meters
             return interval.distanceMeters >= 950.0 && // Interval is actually 1km
                    interval.paceMinPerKm > 0 && // Valid pace
+                   interval.paceMinPerKm >= 2.0 && interval.paceMinPerKm <= 25.0 && // Realistic pace range
                    interval.durationSeconds > 0 && // Valid duration
                    intervalEndDistance <= currentDistance + 50.0 // Don't show intervals beyond current distance (50m tolerance)
         }
