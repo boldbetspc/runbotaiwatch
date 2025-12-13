@@ -142,9 +142,10 @@ class SupabaseManager: ObservableObject {
             // Generate run name (train mode removed - always "Run")
             let runName = "Run"
             
-            // Calculate duration_s (required, integer, NOT NULL)
-            // Use elapsedTime for current duration (works even if duration is 0 at start)
-            let currentDurationSeconds = max(0, Int(runData.elapsedTime))
+            // Calculate duration_s (required, integer, NOT NULL, must be > 0)
+            // Database constraint requires duration_s > 0, so use at least 1 second
+            // This ensures initial run record can be created even at start (elapsedTime = 0)
+            let currentDurationSeconds = max(1, Int(runData.elapsedTime))
             
             // Ensure numeric values are valid (no NaN, negative for distance)
             let distanceMeters = max(0.0, runData.distance.isFinite ? runData.distance : 0.0)
