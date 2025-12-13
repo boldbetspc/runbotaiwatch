@@ -27,10 +27,8 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
-		<string>healthkit</string>
 		<string>location</string>
 		<string>remote-notification</string>
-		<string>workout-processing</string>
 	</array>
 	<key>UIUserInterfaceStyle</key>
 	<string>Dark</string>
@@ -44,5 +42,7 @@
 	<string>com.runbotai.ioswrapper</string>
 	<key>WKRunsIndependentlyOfCompanionApp</key>
 	<true/>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
 </dict>
 </plist>
