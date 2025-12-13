@@ -701,39 +701,42 @@ extension RunTracker {
         let start = intervalBuffer.first!
         let end = intervalBuffer.last!
         
-        // Use actual 1km distance (1000m) for the interval, not buffered distance
-        // This ensures each interval represents exactly 1km
-        let d = 1000.0 // Fixed 1km interval distance
+        // Calculate ACTUAL distance traveled in this interval buffer (not fixed 1000m)
+        // This is the real distance the runner covered, which may be slightly more or less than 1km
+        let actualDistanceMeters = computeBufferedDistance()
+        guard actualDistanceMeters > 50.0 else {
+            print("⚠️ [RunTracker] Interval buffer distance too small: \(String(format: "%.1f", actualDistanceMeters))m - skipping")
+            return
+        }
+        
+        // Calculate actual time taken to cover this distance
         let dt = max(end.timestamp.timeIntervalSince(start.timestamp), 0.001)
         
-        // Calculate pace in min/km: (duration in seconds / 60) / (distance in meters / 1000)
+        // Calculate pace in min/km: (duration in seconds / 60) / (distance in km)
         // Formula: pace (min/km) = (time in seconds) / 60 / (distance in km)
-        // Example: 278 seconds for 1km = (278 / 60) / (1000 / 1000) = 4.633 / 1.0 = 4.633 min/km = 4:38 min/km
-        // Simplified: pace = dt / 60.0 (when d = 1000m, distanceKm = 1.0)
+        // Example: 278 seconds for 1.0km = (278 / 60) / 1.0 = 4.633 min/km = 4:38 min/km
         let paceMinPerKm: Double = {
-            guard d > 0 && dt > 0 else { 
-                print("⚠️ [RunTracker] Invalid interval data: d=\(d)m, dt=\(dt)s")
+            guard actualDistanceMeters > 0 && dt > 0 else { 
+                print("⚠️ [RunTracker] Invalid interval data: distance=\(actualDistanceMeters)m, dt=\(dt)s")
                 return 0.0 
             }
-            // Simple formula: pace (min/km) = (time in seconds) / 60 / (distance in km)
-            // Since d = 1000m always, distanceKm = 1.0, so: pace = dt / 60.0
-            let distanceKm = d / 1000.0
+            let distanceKm = actualDistanceMeters / 1000.0
             let timeMinutes = dt / 60.0
             let pace = timeMinutes / distanceKm
             
-            // Log warning if pace seems unrealistic (but don't change it - use actual calculated value)
+            // Log warning if pace seems unrealistic (but use actual calculated value)
             if pace < 2.0 || pace > 20.0 {
-                print("⚠️ [RunTracker] Unusual pace calculated: \(String(format: "%.2f", pace)) min/km (dt=\(String(format: "%.1f", dt))s for \(String(format: "%.0f", d))m)")
+                print("⚠️ [RunTracker] Unusual pace calculated: \(String(format: "%.2f", pace)) min/km (dt=\(String(format: "%.1f", dt))s for \(String(format: "%.1f", actualDistanceMeters))m)")
                 print("   ⚠️ This may indicate GPS tracking issues, but using calculated value anyway")
             }
             
             return pace
         }()
         
-        print("📊 [RunTracker] Creating 1km interval #\(session.intervals.count + 1):")
-        print("   - Distance: \(String(format: "%.2f", d))m")
+        print("📊 [RunTracker] Creating interval #\(session.intervals.count + 1):")
+        print("   - Actual distance: \(String(format: "%.1f", actualDistanceMeters))m")
         print("   - Duration: \(String(format: "%.1f", dt))s")
-        print("   - Pace: \(String(format: "%.2f", paceMinPerKm)) min/km")
+        print("   - Calculated pace: \(String(format: "%.2f", paceMinPerKm)) min/km")
         
         var intervals = session.intervals
         let idx = intervals.count
@@ -743,7 +746,7 @@ extension RunTracker {
             index: idx,
             startTime: start.timestamp,
             endTime: end.timestamp,
-            distanceMeters: d,
+            distanceMeters: actualDistanceMeters, // Use actual distance, not fixed 1000m
             durationSeconds: dt,
             paceMinPerKm: paceMinPerKm
         )

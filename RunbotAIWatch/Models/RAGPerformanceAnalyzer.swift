@@ -1261,27 +1261,53 @@ class RAGPerformanceAnalyzer: ObservableObject {
             request.timeoutInterval = 15
             
             // Edge function expects endpoint='embeddings' to identify embedding request
+            // The edge function should route this to OpenAI embeddings API
+            // Format: {"endpoint": "embeddings", "model": "...", "input": "..."}
             let body: [String: Any] = [
                 "endpoint": "embeddings",
                 "model": "text-embedding-3-small",
                 "input": runDescription
             ]
             
+            print("🔍 [RAG] Requesting embedding via edge function:")
+            print("   - Endpoint: embeddings")
+            print("   - Model: text-embedding-3-small")
+            print("   - Input length: \(runDescription.count) characters")
+            
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             
             let (data, response) = try await URLSession.shared.data(for: request)
             
             if let httpResponse = response as? HTTPURLResponse {
-                if httpResponse.statusCode == 200,
-                   let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let dataArray = json["data"] as? [[String: Any]],
-                   let first = dataArray.first,
-                   let embedding = first["embedding"] as? [Double] {
-                    print("✅ [RAG] Generated embedding via edge function with \(embedding.count) dimensions")
-                    return embedding
+                print("🔍 [RAG] Edge function response status: \(httpResponse.statusCode)")
+                
+                if httpResponse.statusCode == 200 {
+                    // Try to parse as OpenAI embeddings response format
+                    if let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        // Check if it's wrapped in a response object
+                        if let dataArray = json["data"] as? [[String: Any]],
+                           let first = dataArray.first,
+                           let embedding = first["embedding"] as? [Double] {
+                            print("✅ [RAG] Generated embedding via edge function with \(embedding.count) dimensions")
+                            return embedding
+                        } else if let embedding = json["embedding"] as? [Double] {
+                            // Direct embedding array
+                            print("✅ [RAG] Generated embedding (direct format) with \(embedding.count) dimensions")
+                            return embedding
+                        } else {
+                            let errorString = String(data: data, encoding: .utf8) ?? "Unknown error"
+                            print("❌ [RAG] Unexpected response format: \(errorString)")
+                        }
+                    }
                 } else {
                     let errorString = String(data: data, encoding: .utf8) ?? "Unknown error"
                     print("❌ [RAG] Embedding generation failed - Status: \(httpResponse.statusCode), Error: \(errorString)")
+                    
+                    // If edge function doesn't support embeddings, log helpful message
+                    if errorString.contains("messages array is required") || errorString.contains("endpoint=audio/speech") {
+                        print("⚠️ [RAG] Edge function may not support embeddings endpoint yet")
+                        print("⚠️ [RAG] Please ensure openai-proxy edge function handles endpoint='embeddings'")
+                    }
                 }
             }
         } catch {
