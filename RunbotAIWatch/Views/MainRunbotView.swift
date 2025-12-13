@@ -759,14 +759,14 @@ struct MainRunbotView: View {
                         )
                         .frame(width: 86, height: 86)
                     
-                    // Inner background circle with subtle gradient
+                    // Inner background circle with color-coded gradient based on target pace deviation
                     Circle()
                         .fill(
                             RadialGradient(
                                 colors: [
-                                    Color.black.opacity(0.7),
-                                    Color.black.opacity(0.5),
-                                    Color.black.opacity(0.3)
+                                    paceCircleBackgroundColor(currentPace, target: targetPace),
+                                    paceCircleBackgroundColor(currentPace, target: targetPace).opacity(0.6),
+                                    paceCircleBackgroundColor(currentPace, target: targetPace).opacity(0.3)
                                 ],
                                 center: .center,
                                 startRadius: 0,
@@ -829,14 +829,14 @@ struct MainRunbotView: View {
                         )
                         .frame(width: 86, height: 86)
                     
-                    // Inner background circle with subtle gradient
+                    // Inner background circle with color-coded gradient based on target pace deviation
                     Circle()
                         .fill(
                             RadialGradient(
                                 colors: [
-                                    Color.black.opacity(0.7),
-                                    Color.black.opacity(0.5),
-                                    Color.black.opacity(0.3)
+                                    paceCircleBackgroundColor(avgPace, target: targetPace),
+                                    paceCircleBackgroundColor(avgPace, target: targetPace).opacity(0.6),
+                                    paceCircleBackgroundColor(avgPace, target: targetPace).opacity(0.3)
                                 ],
                                 center: .center,
                                 startRadius: 0,
@@ -952,6 +952,34 @@ struct MainRunbotView: View {
         else { return .rbError }
     }
     
+    // Calculate background color for pace circle based on % deviation from target
+    private func paceCircleBackgroundColor(_ pace: Double, target: Double) -> Color {
+        guard pace > 0, target > 0 else { return Color.green.opacity(0.2) }
+        
+        // Calculate % deviation: negative means faster, positive means slower
+        let deviation = ((pace - target) / target) * 100
+        
+        if deviation <= 0 {
+            // Faster than or equal to target pace
+            if deviation <= -20 {
+                // Faster by >20% = brighter green
+                return Color.green.opacity(0.35)
+            } else {
+                // Faster or equal = green
+                return Color.green.opacity(0.25)
+            }
+        } else {
+            // Slower than target pace
+            if deviation > 10 {
+                // Slower by >10% = red
+                return Color.red.opacity(0.25)
+            } else {
+                // Slower by <=10% = yellow
+                return Color.yellow.opacity(0.25)
+            }
+        }
+    }
+    
     private func formatElapsed(_ seconds: TimeInterval) -> String {
         let totalMinutes = Int(seconds / 60)
         return String(format: "%02d:%02d", totalMinutes, Int(seconds.truncatingRemainder(dividingBy: 60)))
@@ -1007,21 +1035,21 @@ struct MainRunbotView: View {
                         .scaleEffect(1.0 + sin(wavePhase * 0.2) * 0.15)
                         .shadow(color: (currentZone != nil ? HeartZoneCalculator.zoneColor(for: currentZone!) : .rbError).opacity(0.6), radius: 8)
                         
-                    // Large HR value
+                    // Large HR value (reduced size for more space for heart zone)
                         if let hr = currentHR {
                             Text("\(Int(hr))")
-                            .font(.system(size: 56, weight: .black, design: .rounded))
+                            .font(.system(size: 42, weight: .black, design: .rounded))
                             .foregroundColor(.white)
                             .shadow(color: .white.opacity(0.3), radius: 4)
                     } else {
                         Text("--")
-                            .font(.system(size: 56, weight: .black, design: .rounded))
+                            .font(.system(size: 42, weight: .black, design: .rounded))
                                 .foregroundColor(.white.opacity(0.5))
                         }
                         
-                    // BPM label
+                    // BPM label (reduced size)
                         Text("BPM")
-                        .font(.system(size: 20, weight: .bold, design: .rounded))
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
                         .foregroundColor(.white.opacity(0.6))
                     }
                 .padding(.vertical, 12)
