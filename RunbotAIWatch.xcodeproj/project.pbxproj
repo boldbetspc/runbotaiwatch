@@ -73,6 +73,7 @@
 			membershipExceptions = (
 				Models/AICoachManager.swift,
 				Models/AuthenticationManager.swift,
+				Models/CoachStrategyRAGManager.swift,
 				Models/HealthManager.swift,
 				Models/HeartZoneCalculator.swift,
 				Models/KeychainManager.swift,

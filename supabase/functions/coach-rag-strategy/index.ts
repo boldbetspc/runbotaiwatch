@@ -77,7 +77,30 @@ serve(async (req) => {
 
     // Get secrets from environment (set in Supabase Dashboard)
     // Secrets are accessible to all Edge Functions
-    const OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY')
+    // Use robust approach to find OPENAI_API_KEY (handle variations, trailing spaces, etc.)
+    let OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY')
+    
+    // If not found, try with trailing space (common issue)
+    if (!OPENAI_API_KEY) {
+      OPENAI_API_KEY = Deno.env.get('OPENAI_API_KEY ')
+    }
+    
+    // If still not found, try accessing all environment variables and find the right one
+    if (!OPENAI_API_KEY) {
+      const allEnvVars = Object.keys(Deno.env.toObject())
+      console.log('📋 Available environment variables:', allEnvVars)
+      
+      // Look for any key containing 'openai'
+      const openaiKey = allEnvVars.find(key => 
+        key.toLowerCase().includes('openai')
+      )
+      
+      if (openaiKey) {
+        console.log('🔑 Found OpenAI key:', openaiKey)
+        OPENAI_API_KEY = Deno.env.get(openaiKey)
+      }
+    }
+    
     const MEM0_API_KEY = Deno.env.get('MEM0_API_KEY')
     const MEM0_BASE_URL = Deno.env.get('MEM0_BASE_URL') || 'https://api.mem0.ai/v1'
 
@@ -89,11 +112,13 @@ serve(async (req) => {
     })
 
     if (!OPENAI_API_KEY) {
-      console.error('OPENAI_API_KEY not found in environment')
+      console.error('❌ OPENAI_API_KEY not found in environment variables')
+      const allEnvVars = Object.keys(Deno.env.toObject())
       return new Response(
         JSON.stringify({ 
           error: 'OPENAI_API_KEY not configured in Edge Function secrets',
-          hint: 'Check Supabase Dashboard → Edge Functions → Secrets. Secret name must be exactly: OPENAI_API_KEY'
+          hint: 'Check Supabase Dashboard → Edge Functions → Secrets. Secret name must be exactly: OPENAI_API_KEY',
+          debug: 'Available env vars: ' + allEnvVars.join(', ')
         }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       )
@@ -238,8 +263,8 @@ Output JSON:
         expected_outcome: 'Improved performance'
       }
       
-      // Record execution
-      await supabase.rpc('record_strategy_execution_kb', {
+      // Record execution (fire and forget, don't wait for completion)
+      supabase.rpc('record_strategy_execution_kb', {
         p_user_id: user_id,
         p_run_id: run_id || null,
         p_strategy_id: fallbackResult.strategy_id,
@@ -255,7 +280,11 @@ Output JSON:
         p_strategy_delivered: fallbackResult.strategy_text,
         p_strategy_title: fallbackResult.strategy_name,
         p_condition_match_score: fallbackResult.confidence_score
-      }).catch(err => console.error('Execution recording error:', err))
+      }).then(({ error }) => {
+        if (error) console.error('Execution recording error:', error)
+      }, (err) => {
+        console.error('Execution recording promise rejection:', err)
+      })
 
       return new Response(
         JSON.stringify({
@@ -315,7 +344,11 @@ Output JSON:
       p_strategy_delivered: strategyResult.strategy_text,
       p_strategy_title: strategyResult.strategy_name,
       p_condition_match_score: strategyResult.confidence_score
-    }).catch(err => console.error('Execution recording error:', err))
+    }).then(({ error }) => {
+      if (error) console.error('Execution recording error:', error)
+    }, (err) => {
+      console.error('Execution recording promise rejection:', err)
+    })
 
     // 7. Return final strategy (secrets never exposed)
     return new Response(

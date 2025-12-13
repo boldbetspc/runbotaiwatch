@@ -690,86 +690,150 @@ struct MainRunbotView: View {
         let isSlower = paceDiff > 0.1
         
         VStack(spacing: 4) {
-            // Elegant Dual Pace Visualization - Optimized for Small Watches
-            HStack(spacing: 6) {
-                // Current Pace - Left (Elegant & Readable)
+            // Beautiful Dual Pace Visualization with Enhanced Circles
+            HStack(spacing: 8) {
+                // Current Pace - Left (Beautiful Circle with min/km label)
                 ZStack {
-                    // Subtle background glow
-                                Circle()
+                    // Outer glow ring with animated pulse
+                    Circle()
+                        .stroke(
+                            LinearGradient(
+                                colors: [
+                                    currentPaceClr.opacity(0.6),
+                                    currentPaceClr.opacity(0.3),
+                                    currentPaceClr.opacity(0.6)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 3
+                        )
+                        .frame(width: 92, height: 92)
+                        .shadow(color: currentPaceClr.opacity(0.5), radius: 6)
+                    
+                    // Middle ring with gradient
+                    Circle()
+                        .stroke(
+                            LinearGradient(
+                                colors: [
+                                    currentPaceClr.opacity(0.4),
+                                    currentPaceClr.opacity(0.2)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ),
+                            lineWidth: 2
+                        )
+                        .frame(width: 86, height: 86)
+                    
+                    // Inner background circle with subtle gradient
+                    Circle()
                         .fill(
                             RadialGradient(
                                 colors: [
-                                    currentPaceClr.opacity(0.25),
-                                    currentPaceClr.opacity(0.1),
-                                    Color.clear
+                                    Color.black.opacity(0.7),
+                                    Color.black.opacity(0.5),
+                                    Color.black.opacity(0.3)
                                 ],
                                 center: .center,
-                                startRadius: 25,
-                                endRadius: 45
+                                startRadius: 0,
+                                endRadius: 43
                             )
                         )
-                        .frame(width: 85, height: 85)
-                    
-                    // Clean ring border
-                    Circle()
-                        .stroke(currentPaceClr.opacity(0.5), lineWidth: 2.5)
                         .frame(width: 80, height: 80)
                     
-                    VStack(spacing: 2) {
+                    // Content
+                    VStack(spacing: 1) {
                         Text(formatPace(currentPace))
-                            .font(.system(size: 32, weight: .black, design: .rounded))
+                            .font(.system(size: 28, weight: .black, design: .rounded))
                             .foregroundColor(.white)
-                            .shadow(color: .black.opacity(0.5), radius: 2, x: 1, y: 1)
-                            .shadow(color: currentPaceClr.opacity(0.4), radius: 4)
+                            .shadow(color: .black.opacity(0.8), radius: 3, x: 0, y: 1)
                         
-                        Text("PACE RT")
-                            .font(.system(size: 17, weight: .bold, design: .rounded))
-                            .foregroundColor(.white.opacity(0.85))
+                        Text("min/km")
+                            .font(.system(size: 9, weight: .semibold, design: .rounded))
+                            .foregroundColor(currentPaceClr.opacity(0.9))
+                            .tracking(0.3)
+                        
+                        Text("RT")
+                            .font(.system(size: 8, weight: .bold, design: .rounded))
+                            .foregroundColor(.white.opacity(0.7))
                             .tracking(0.5)
                     }
                 }
-                .frame(width: 85, height: 85)
+                .frame(width: 92, height: 92)
                 
-                // Average Pace - Right (Elegant & Readable)
+                // Average Pace - Right (Beautiful Circle with min/km label)
                 ZStack {
-                    // Subtle background glow
+                    // Outer glow ring with animated pulse
+                    Circle()
+                        .stroke(
+                            LinearGradient(
+                                colors: [
+                                    avgPaceClr.opacity(0.6),
+                                    avgPaceClr.opacity(0.3),
+                                    avgPaceClr.opacity(0.6)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 3
+                        )
+                        .frame(width: 92, height: 92)
+                        .shadow(color: avgPaceClr.opacity(0.5), radius: 6)
+                    
+                    // Middle ring with gradient
+                    Circle()
+                        .stroke(
+                            LinearGradient(
+                                colors: [
+                                    avgPaceClr.opacity(0.4),
+                                    avgPaceClr.opacity(0.2)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            ),
+                            lineWidth: 2
+                        )
+                        .frame(width: 86, height: 86)
+                    
+                    // Inner background circle with subtle gradient
                     Circle()
                         .fill(
                             RadialGradient(
                                 colors: [
-                                    avgPaceClr.opacity(0.25),
-                                    avgPaceClr.opacity(0.1),
-                                    Color.clear
+                                    Color.black.opacity(0.7),
+                                    Color.black.opacity(0.5),
+                                    Color.black.opacity(0.3)
                                 ],
                                 center: .center,
-                                startRadius: 25,
-                                endRadius: 45
+                                startRadius: 0,
+                                endRadius: 43
                             )
                         )
-                        .frame(width: 85, height: 85)
-                    
-                    // Clean ring border
-                    Circle()
-                        .stroke(avgPaceClr.opacity(0.5), lineWidth: 2.5)
                         .frame(width: 80, height: 80)
                     
-                    VStack(spacing: 2) {
+                    // Content
+                    VStack(spacing: 1) {
                         Text(formatPace(avgPace))
-                            .font(.system(size: 32, weight: .black, design: .rounded))
+                            .font(.system(size: 28, weight: .black, design: .rounded))
                             .foregroundColor(.white)
-                            .shadow(color: .black.opacity(0.5), radius: 2, x: 1, y: 1)
-                            .shadow(color: avgPaceClr.opacity(0.4), radius: 4)
+                            .shadow(color: .black.opacity(0.8), radius: 3, x: 0, y: 1)
                         
-                        Text("PACE AV")
-                            .font(.system(size: 17, weight: .bold, design: .rounded))
-                            .foregroundColor(.white.opacity(0.85))
+                        Text("min/km")
+                            .font(.system(size: 9, weight: .semibold, design: .rounded))
+                            .foregroundColor(avgPaceClr.opacity(0.9))
+                            .tracking(0.3)
+                        
+                        Text("AVG")
+                            .font(.system(size: 8, weight: .bold, design: .rounded))
+                            .foregroundColor(.white.opacity(0.7))
                             .tracking(0.5)
                     }
                 }
-                .frame(width: 85, height: 85)
+                .frame(width: 92, height: 92)
             }
-            .padding(.top, 8)
-            .padding(.horizontal, 6)
+            .padding(.top, 6)
+            .padding(.horizontal, 4)
             
             // Pace Comparison Indicator
             if currentPace > 0 && avgPace > 0 {
@@ -817,10 +881,10 @@ struct MainRunbotView: View {
                     .frame(width: 1, height: 24)
                 
                 VStack(spacing: 1) {
-                    Text(formatElapsed(duration))
+                    Text(formatElapsedMinutes(duration))
                         .font(.system(size: 26, weight: .bold, design: .rounded))
                         .foregroundColor(.white)
-                    Text("TIME")
+                    Text("MIN")
                         .font(.system(size: 18, weight: .bold))
                         .foregroundColor(.rbSecondary)
                 }
@@ -1296,41 +1360,57 @@ struct MainRunbotView: View {
     // MARK: - Split Intervals Page
     @ViewBuilder
     private func splitIntervalsPage() -> some View {
-        // Only show complete 1km intervals
+        // Only show intervals that have been completed (i.e., intervals that exist in the array)
+        // Intervals are only added to the array when a full 1km is completed
         let allIntervals = runTracker.currentSession?.intervals ?? []
-        let completeIntervals = allIntervals.filter { $0.distanceMeters >= 950.0 } // Allow 50m tolerance
+        let currentDistance = runTracker.statsUpdate?.distance ?? 0.0 // Current distance in meters
+        
+        // Filter: only show intervals that are actually complete
+        // - Interval must have valid data (distance >= 950m, positive pace and duration)
+        // - Interval must be within the current distance (don't show future intervals)
+        // - Intervals are created when 1km is complete, so any valid interval is complete
+        let completeIntervals = allIntervals.filter { interval in
+            let intervalEndDistance = Double(interval.index + 1) * 1000.0 // km index + 1 = end distance in meters
+            return interval.distanceMeters >= 950.0 && // Interval is actually 1km
+                   interval.paceMinPerKm > 0 && // Valid pace
+                   interval.durationSeconds > 0 && // Valid duration
+                   intervalEndDistance <= currentDistance + 50.0 // Don't show intervals beyond current distance (50m tolerance)
+        }
         let targetPace = userPreferences.settings.targetPaceMinPerKm
         
         VStack(spacing: 6) {
-            Text("SPLIT INTERVALS")
-                .font(.system(size: 14, weight: .black, design: .rounded))
-                .tracking(1.5)
-                .foregroundStyle(LinearGradient(colors: [.rbAccent, .rbSecondary], startPoint: .leading, endPoint: .trailing))
-                .padding(.top, 6)
-            
-            // Target pace text
-            HStack(spacing: 4) {
-                Text("Target:")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.5))
-                Text(formatPace(targetPace))
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundColor(.rbWarning)
+            // Header with title and live pace (matching iOS)
+            HStack {
+                Text("Split Timeline")
+                    .font(.system(size: 13, weight: .bold, design: .rounded))
+                    .foregroundColor(.white)
+                
+                Spacer()
+                
+                // Live pace indicator
+                if isRunning, let currentPace = runTracker.statsUpdate?.pace, currentPace > 0 {
+                    HStack(spacing: 3) {
+                        Circle()
+                            .fill(.rbAccent)
+                            .frame(width: 6, height: 6)
+                        Text("\(formatPace(currentPace)) /km")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundColor(.rbAccent)
+                    }
+                }
             }
-            .padding(.top, 2)
+            .padding(.horizontal, 8)
+            .padding(.top, 6)
             
             if isRunning && !completeIntervals.isEmpty {
                 ScrollView {
                     VStack(spacing: 8) {
-                        // Show last 3 complete km intervals
-                        let last3Intervals = Array(completeIntervals.suffix(3))
-                        let reversedIntervals = Array(last3Intervals.reversed())
-                        
-                        ForEach(reversedIntervals, id: \.id) { interval in
+                        // Show all complete intervals in chronological order (KM 1, KM 2, KM 3...)
+                        ForEach(completeIntervals, id: \.id) { interval in
                             SplitIntervalBar(
                                 interval: interval,
                                 targetPace: targetPace,
-                                isLast: interval.id == last3Intervals.last?.id
+                                isLast: interval.id == completeIntervals.last?.id
                             )
                         }
                         
@@ -1733,7 +1813,7 @@ struct MainRunbotView: View {
                 
                 // 3. Save run_intervals (batch UPSERT)
                 if !session.intervals.isEmpty {
-                    let intervalsSuccess = await supabaseManager.saveRunIntervals(session.intervals, userId: userId)
+                    let intervalsSuccess = await supabaseManager.saveRunIntervals(session.intervals, userId: userId, healthManager: healthManager)
                     print(intervalsSuccess ? "✅ [MainRunbotView] run_intervals saved (\(session.intervals.count) intervals)" : "❌ [MainRunbotView] run_intervals save failed")
                 } else {
                     print("⚠️ [MainRunbotView] No intervals to save")
@@ -3288,7 +3368,7 @@ struct CurvedRaceArc: View {
     }
 }
 
-// MARK: - Split Interval Bar Component
+// MARK: - Split Interval Bar Component (iOS-style)
 struct SplitIntervalBar: View {
     let interval: RunInterval
     let targetPace: Double
@@ -3299,106 +3379,103 @@ struct SplitIntervalBar: View {
         let pace = interval.paceMinPerKm
         let deviation = targetPace > 0 ? ((pace - targetPace) / targetPace) * 100 : 0
         
-        // Color coding based on % deviation
-        let barColor: Color = {
+        // Color coding matching iOS: Green (faster), Yellow (steady), Red (slower)
+        let (barColor, statusText, statusIcon): (Color, String, String) = {
             if abs(deviation) <= 5 {
-                return .rbSuccess // On track (within 5%)
-            } else if deviation < -10 {
-                return .rbAccent // Fast (more than 10% faster)
+                return (.rbWarning, "Steady", "equal.circle.fill") // Yellow for steady (iOS uses yellow)
             } else if deviation < -5 {
-                return Color(red: 0.0, green: 0.7, blue: 1.0) // Slightly fast (5-10% faster)
-            } else if deviation <= 10 {
-                return .rbWarning // Slightly slow (5-10% slower)
+                return (.rbSuccess, "Faster", "arrow.up.circle.fill") // Green for faster
             } else {
-                return .rbError // Very slow (more than 10% slower)
+                return (.rbError, "Slower", "arrow.down.circle.fill") // Red for slower
             }
         }()
         
-        VStack(spacing: 4) {
-            HStack(spacing: 6) {
-                // Interval label
-                Text(isAverage ? "AVG" : "KM \(interval.index + 1)")
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .foregroundColor(.white.opacity(0.7))
-                    .frame(width: 35, alignment: .leading)
+        // Format duration as MM:SS
+        let durationMinutes = Int(interval.durationSeconds) / 60
+        let durationSeconds = Int(interval.durationSeconds) % 60
+        let durationString = String(format: "%d:%02d", durationMinutes, durationSeconds)
+        
+        VStack(alignment: .leading, spacing: 3) {
+            // Interval label at top
+            Text(isAverage ? "AVG" : "KM \(interval.index + 1)")
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundColor(.white.opacity(0.8))
+            
+            // Main content area
+            VStack(alignment: .leading, spacing: 3) {
+                // Horizontal bar with pace displayed inside
+                // Bar length directly represents pace in min/km: faster pace (lower min/km) = shorter bar, slower pace (higher min/km) = longer bar
+                GeometryReader { geometry in
+                    let barWidth = geometry.size.width
+                    
+                    // Pace range for visualization: 3-12 min/km maps to bar width
+                    // Example: 5:00 min/km (fast) = shorter bar, 8:00 min/km (slow) = longer bar
+                    let minPaceRange: Double = 3.0  // Fastest expected pace (3:00 min/km)
+                    let maxPaceRange: Double = 12.0 // Slowest expected pace (12:00 min/km)
+                    
+                    // Clamp pace to valid range and normalize to 0-1
+                    // This ensures bar length is proportional to pace value in min/km
+                    let clampedPace = min(max(pace, minPaceRange), maxPaceRange)
+                    let normalizedPace = (clampedPace - minPaceRange) / (maxPaceRange - minPaceRange)
+                    let barLength = max(barWidth * CGFloat(normalizedPace), 70) // Minimum 70pt to fit pace text comfortably
+                    
+                    ZStack(alignment: .leading) {
+                        // Background bar (full width, subtle)
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(Color.white.opacity(0.08))
+                            .frame(width: barWidth, height: 24)
+                        
+                        // Colored pace bar
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(barColor)
+                            .frame(width: barLength, height: 24)
+                        
+                        // Pace text inside bar (white text)
+                        HStack {
+                            Text("\(formatPace(pace)) /km")
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                .foregroundColor(.white)
+                                .padding(.leading, 8)
+                            Spacer()
+                        }
+                        .frame(width: barLength, height: 24)
+                    }
+                }
+                .frame(height: 24)
                 
-                // Pace value
-                Text(formatPace(pace))
-                    .font(.system(size: 13, weight: .bold, design: .monospaced))
-                    .foregroundColor(barColor)
-                    .frame(width: 50, alignment: .leading)
-                
-                // Deviation indicator
-                HStack(spacing: 2) {
-                    if abs(deviation) <= 5 {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.rbSuccess)
-                    } else if deviation < -10 {
-                        Image(systemName: "bolt.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.rbAccent)
-                    } else if deviation < -5 {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(Color(red: 0.0, green: 0.7, blue: 1.0))
-                    } else if deviation <= 10 {
-                        Image(systemName: "arrow.down.circle.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.rbWarning)
-                    } else {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.rbError)
+                // Duration with clock icon and status on same row
+                HStack {
+                    HStack(spacing: 3) {
+                        Image(systemName: "clock")
+                            .font(.system(size: 8))
+                            .foregroundColor(.white.opacity(0.6))
+                        Text(durationString)
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .foregroundColor(.white.opacity(0.7))
                     }
                     
-                    Text(String(format: "%.1f%%", abs(deviation)))
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundColor(barColor.opacity(0.8))
-                }
-                .frame(maxWidth: .infinity, alignment: .trailing)
-            }
-            
-            // Horizontal bar visualization - length represents pace (faster = shorter, slower = longer)
-            GeometryReader { geometry in
-                let barWidth = geometry.size.width
-                
-                // Normalize pace to bar length: pace range 3-12 min/km maps to bar width
-                // Faster pace (lower min/km) = shorter bar, slower pace (higher min/km) = longer bar
-                let minPaceRange: Double = 3.0  // Fastest expected pace
-                let maxPaceRange: Double = 12.0 // Slowest expected pace
-                let normalizedPace = min(max((pace - minPaceRange) / (maxPaceRange - minPaceRange), 0), 1.0)
-                let barLength = barWidth * CGFloat(normalizedPace)
-                
-                ZStack(alignment: .leading) {
-                    // Background bar (full width)
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(Color.white.opacity(0.1))
-                        .frame(width: barWidth, height: 10)
+                    Spacer()
                     
-                    // Colored pace bar (length = pace value)
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(
-                            LinearGradient(
-                                colors: [barColor, barColor.opacity(0.7)],
-                                startPoint: .leading,
-                                endPoint: .trailing
-                            )
-                        )
-                        .frame(width: max(barLength, 4), height: 10) // Minimum 4pt width for visibility
-                        .shadow(color: barColor.opacity(0.5), radius: 4)
+                    // Status indicator on right
+                    HStack(spacing: 3) {
+                        Image(systemName: statusIcon)
+                            .font(.system(size: 10))
+                            .foregroundColor(barColor)
+                        Text(statusText)
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(barColor)
+                    }
                 }
             }
-            .frame(height: 10)
         }
-        .padding(.horizontal, 4)
-        .padding(.vertical, 6)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 8)
         .background(
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: 10)
                 .fill(Color.white.opacity(0.05))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(barColor.opacity(0.3), lineWidth: isLast ? 1.5 : 0.5)
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(barColor.opacity(0.2), lineWidth: 1)
                 )
         )
     }
@@ -3408,6 +3485,27 @@ struct SplitIntervalBar: View {
         let mins = Int(paceMinutesPerKm)
         let secs = Int((paceMinutesPerKm - Double(mins)) * 60)
         return String(format: "%d:%02d", mins, secs)
+    }
+    
+    private func formatElapsed(_ seconds: TimeInterval) -> String {
+        let totalMinutes = Int(seconds / 60)
+        return String(format: "%02d:%02d", totalMinutes, Int(seconds.truncatingRemainder(dividingBy: 60)))
+    }
+    
+    private func formatElapsedMinutes(_ seconds: TimeInterval) -> String {
+        let totalMinutes = Int(seconds / 60)
+        return "\(totalMinutes) min"
+    }
+    
+    private func formatDistanceKm(_ meters: Double) -> String {
+        let km = meters / 1000.0
+        if km >= 100 {
+            return String(format: "%.1f", km)
+        } else if km >= 10 {
+            return String(format: "%.2f", km)
+        } else {
+            return String(format: "%.2f", km)
+        }
     }
 }
 

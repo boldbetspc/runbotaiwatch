@@ -73,7 +73,7 @@ class AICoachManager: NSObject, ObservableObject {
             // Step 1: RAG-DRIVEN PERFORMANCE ANALYSIS (historic context)
             var ragContext: String? = nil
             var ragAnalysis: RAGPerformanceAnalyzer.RAGAnalysisResult? = nil
-            if let startTime = runStartTime ?? Date() {
+            let startTime = runStartTime ?? Date()
                 print("📊 [AICoach] Step 1: Running RAG performance analysis for start-of-run (historic context)...")
                 ragAnalysis = await ragAnalyzer.analyzePerformance(
                     stats: stats,
@@ -85,7 +85,6 @@ class AICoachManager: NSObject, ObservableObject {
                 )
                 ragContext = ragAnalysis!.llmContext
                 print("📊 [AICoach] Performance RAG complete - Target Status: \(ragAnalysis!.targetStatus)")
-            }
             
             // Step 2: COACH STRATEGY RAG (race strategy from KB)
             var coachStrategy: CoachStrategyRAGManager.StrategyResponse.Strategy? = nil
@@ -183,9 +182,9 @@ class AICoachManager: NSObject, ObservableObject {
             
             // Step 2: COACH STRATEGY RAG (tactical/adaptive microstrategy + monitoring)
             var coachStrategy: CoachStrategyRAGManager.StrategyResponse.Strategy? = nil
-            if let analysis = ragAnalysis {
+            if let analysis = ragAnalysis, let startTime = runStartTime {
                 print("📚 [AICoach] Step 2: Calling Coach Strategy RAG for tactical microstrategy...")
-                let elapsedTime = Date().timeIntervalSince(runStartTime)
+                let elapsedTime = Date().timeIntervalSince(startTime)
                 let perfAnalysis = CoachStrategyRAGManager.shared.createPerformanceAnalysis(
                     from: analysis,
                     stats: stats,

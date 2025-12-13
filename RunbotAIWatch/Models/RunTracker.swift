@@ -734,7 +734,7 @@ extension RunTracker {
         if let sb = supabaseManager, sb.isInitialized {
             let userId = getUserId()
             Task {
-                _ = await sb.saveRunIntervals([interval], userId: userId)
+                _ = await sb.saveRunIntervals([interval], userId: userId, healthManager: healthManager)
             }
         }
     }

@@ -142,18 +142,27 @@ class SupabaseManager: ObservableObject {
             // Generate run name (train mode removed - always "Run")
             let runName = "Run"
             
+            // Calculate duration_s (required, integer, NOT NULL)
+            // Use elapsedTime for current duration (works even if duration is 0 at start)
+            let currentDurationSeconds = max(0, Int(runData.elapsedTime))
+            
+            // Ensure numeric values are valid (no NaN, negative for distance)
+            let distanceMeters = max(0.0, runData.distance.isFinite ? runData.distance : 0.0)
+            let elevationMeters = runData.elevation.isFinite ? max(0.0, runData.elevation) : 0.0
+            let caloriesValue = runData.calories.isFinite ? max(0, Int(runData.calories)) : 0
+            
             // NOTE: average_pace_minutes_per_km is a GENERATED COLUMN - don't send it
             var runPayload: [String: Any] = [
                 "id": runData.id,
                 "user_id": userId,
                 "name": runName,
-                "duration_s": Int(runData.duration),
-                "distance_meters": runData.distance,
-                "calories": Int(runData.calories),
-                "elevation_gain_meters": runData.elevation,
+                "duration_s": currentDurationSeconds, // Required: integer, NOT NULL
+                "activity_date": formatter.string(from: runData.startTime), // Required: timestamp, NOT NULL
+                "distance_meters": distanceMeters, // Required: numeric, NOT NULL (ensure >= 0)
+                "calories": caloriesValue,
+                "elevation_gain_meters": elevationMeters,
                 "start_time": formatter.string(from: runData.startTime),
                 "mode": runData.mode.rawValue,
-                "activity_date": formatter.string(from: runData.startTime),
                 "device_connected": "Apple Watch",
                 "is_pr_shadow": false, // Train mode removed
                 "created_at": formatter.string(from: runData.startTime),
@@ -204,12 +213,16 @@ class SupabaseManager: ObservableObject {
                 if httpResponse.statusCode == 200 || httpResponse.statusCode == 201 {
                     print("✅ [Supabase] Run activity saved/updated in Supabase")
                     return true
-                } else if handleAPIResponse(httpResponse, data: data) {
-                    // Handled by helper (token expiration, etc.)
-                    return false
                 } else {
                     let errorString = String(data: data, encoding: .utf8) ?? "Unknown error"
-                    print("❌ [Supabase] Save failed with status \(httpResponse.statusCode): \(errorString)")
+                    print("❌ [Supabase] Save failed with status \(httpResponse.statusCode)")
+                    print("❌ [Supabase] Error details: \(errorString)")
+                    print("❌ [Supabase] Payload sent: \(runPayload)")
+                    
+                    // Still check for token expiration
+                    if handleAPIResponse(httpResponse, data: data) {
+                        return false
+                    }
                 }
             }
         } catch {
@@ -234,11 +247,14 @@ class SupabaseManager: ObservableObject {
             let avgHR = healthManager?.averageHeartRate.map { Int($0) }
             let maxHR = healthManager?.maxHeartRate.map { Int($0) }
             
+            // Calculate duration_s for update (required: integer, NOT NULL)
+            let updateDurationSeconds = max(0, Int(runData.elapsedTime))
+            
             // NOTE: average_pace_minutes_per_km is a GENERATED COLUMN - don't send it
             var runPayload: [String: Any] = [
                 "user_id": userId,
-                "duration_s": Int(runData.duration),
-                "distance_meters": runData.distance,
+                "duration_s": updateDurationSeconds, // Required: integer, NOT NULL
+                "distance_meters": runData.distance, // Required: numeric, NOT NULL
                 "calories": Int(runData.calories),
                 "elevation_gain_meters": runData.elevation,
                 "end_time": endTimeString,
@@ -289,22 +305,42 @@ class SupabaseManager: ObservableObject {
     }
     
     // MARK: - Run Intervals (batch save)
-    func saveRunIntervals(_ intervals: [RunInterval], userId: String) async -> Bool {
+    func saveRunIntervals(_ intervals: [RunInterval], userId: String, healthManager: HealthManager? = nil) async -> Bool {
         guard isInitialized, !intervals.isEmpty else { return false }
         
         do {
+            let formatter = ISO8601DateFormatter()
             var payloads: [[String: Any]] = []
+            
             for interval in intervals {
+                // Get heart rate data if available (use average/max from health manager)
+                // Note: For per-interval HR, we'd need HR data per interval, but we use overall avg/max
+                let avgHR = healthManager?.averageHeartRate
+                let maxHR = healthManager?.maxHeartRate
+                
                 // NOTE: pace_per_km is a GENERATED COLUMN - don't send it
-                let payload: [String: Any] = [
+                var payload: [String: Any] = [
                     "id": interval.id,
                     "run_id": interval.runId,
                     "user_id": userId,
                     "kilometer": interval.index,
-                    "duration_s": interval.durationSeconds,
-                    "time_recorded": ISO8601DateFormatter().string(from: interval.endTime),
-                    "created_at": ISO8601DateFormatter().string(from: Date())
+                    "duration_s": interval.durationSeconds, // Required: numeric, NOT NULL
+                    "time_recorded": formatter.string(from: interval.endTime),
+                    "created_at": formatter.string(from: Date())
                 ]
+                
+                // Add optional HR fields if available
+                if let avgHR = avgHR, avgHR.isFinite && avgHR > 0 {
+                    payload["average_heart_rate"] = avgHR
+                }
+                if let maxHR = maxHR, maxHR.isFinite && maxHR > 0 {
+                    payload["max_heart_rate"] = maxHR
+                }
+                
+                // Note: latitude/longitude would need to be stored per interval
+                // For now, we'll leave them out as they're optional
+                // To add them, we'd need to store location data per interval in RunInterval model
+                
                 payloads.append(payload)
             }
             
@@ -579,22 +615,32 @@ class SupabaseManager: ObservableObject {
             print("⌚ [Supabase] Saving watch preferences for user: \(userId)")
             print("⌚ [Supabase] Payload: \(watchPrefsPayload)")
             
-            let patchUrl = URL(string: "\(baseURL)/rest/v1/user_preferences?user_id=eq.\(userId)")!
-            var request = URLRequest(url: patchUrl)
-            request.httpMethod = "PATCH"
+            // Use UPSERT: POST with resolution=merge-duplicates (updates if exists, inserts if not)
+            // This handles both cases: row exists (update) and row doesn't exist (insert)
+            let url = URL(string: "\(baseURL)/rest/v1/user_preferences")!
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
             request.setValue(anonKey, forHTTPHeaderField: "apikey")
             request.setValue(getAuthHeader(), forHTTPHeaderField: "Authorization")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.setValue("return=minimal", forHTTPHeaderField: "Prefer")
+            // UPSERT: if user_preferences with same user_id exists, update it; otherwise insert
+            request.setValue("resolution=merge-duplicates", forHTTPHeaderField: "Prefer")
             request.httpBody = try JSONSerialization.data(withJSONObject: watchPrefsPayload)
             
-            let (_, response) = try await session.data(for: request)
+            let (data, response) = try await session.data(for: request)
             
             if let httpResponse = response as? HTTPURLResponse {
                 print("⌚ [Supabase] Response status: \(httpResponse.statusCode)")
-                if httpResponse.statusCode == 200 || httpResponse.statusCode == 204 {
+                if httpResponse.statusCode == 200 || httpResponse.statusCode == 201 || httpResponse.statusCode == 204 {
                     print("✅ [Supabase] Watch preferences saved successfully")
                     return true
+                } else {
+                    let errorString = String(data: data, encoding: .utf8) ?? "Unknown error"
+                    print("❌ [Supabase] Save watch preferences failed with status \(httpResponse.statusCode): \(errorString)")
+                    if httpResponse.statusCode == 400 {
+                        print("❌ [Supabase] 400 Bad Request - likely schema mismatch. Check if columns exist: target_pace, target_distance, language")
+                    }
                 }
             }
         } catch {

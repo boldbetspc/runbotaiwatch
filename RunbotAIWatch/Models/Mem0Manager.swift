@@ -314,12 +314,43 @@ final class Mem0Manager: ObservableObject {
             
             if let http = response as? HTTPURLResponse {
                 print("📦 [Mem0] HTTP Status Code: \(http.statusCode)")
-                if http.statusCode == 200,
-                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let results = json["results"] as? [[String: Any]] {
-                    let memories = results.compactMap { $0["memory"] as? String }
-                    print("📦 [Mem0] ✅✅✅ Mem0 search SUCCESS - found \(memories.count) memories ✅✅✅")
-                    return memories
+                if http.statusCode == 200 {
+                    // Edge function may return either format:
+                    // 1. Array directly: [{...}, {...}]
+                    // 2. Object with results: {"results": [{...}, {...}]}
+                    
+                    // First try to parse as JSON
+                    do {
+                        let jsonObject = try JSONSerialization.jsonObject(with: data)
+                        
+                        // Try direct array format first
+                        if let jsonArray = jsonObject as? [[String: Any]] {
+                            let memories = jsonArray.compactMap { $0["memory"] as? String }
+                            print("📦 [Mem0] ✅✅✅ Mem0 search SUCCESS - found \(memories.count) memories ✅✅✅")
+                            return memories
+                        }
+                        
+                        // Try wrapped in results object
+                        if let json = jsonObject as? [String: Any],
+                           let results = json["results"] as? [[String: Any]] {
+                            let memories = results.compactMap { $0["memory"] as? String }
+                            print("📦 [Mem0] ✅✅✅ Mem0 search SUCCESS - found \(memories.count) memories ✅✅✅")
+                            return memories
+                        }
+                        
+                        // If we got here, format is unexpected
+                        print("❌ [Mem0] Unexpected response format. JSON type: \(type(of: jsonObject))")
+                        if let jsonDict = jsonObject as? [String: Any] {
+                            print("❌ [Mem0] Response keys: \(Array(jsonDict.keys))")
+                        }
+                    } catch {
+                        print("❌ [Mem0] JSON parsing error: \(error.localizedDescription)")
+                    }
+                    
+                    // If we reach here, parsing failed
+                    let errorBody = String(data: data, encoding: .utf8) ?? "Unknown"
+                    print("❌ [Mem0] Search failed - Status: \(http.statusCode)")
+                    print("❌ [Mem0] Response preview: \(errorBody.prefix(200))")
                 } else {
                     let errorBody = String(data: data, encoding: .utf8) ?? "Unknown"
                     print("❌ [Mem0] Search failed - Status: \(http.statusCode), Error: \(errorBody)")

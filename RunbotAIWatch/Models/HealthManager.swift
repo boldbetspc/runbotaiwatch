@@ -577,26 +577,31 @@ class HealthManager: NSObject, ObservableObject {
         }
         print("✅ [HealthManager] CHECK 2 PASSED: Workout authorization OK")
         
-        // ✅ CHECK 3: Check if another workout is already running
-        // Only one workout can be active at a time on watchOS
-        if workoutSession != nil && workoutSession?.state == .running {
-            print("⚠️ [HealthManager] CHECK 3: Workout session already running")
+        // ✅ CHECK 3: Check if our own workout session is already running
+        if let existingSession = workoutSession, existingSession.state == .running {
+            print("⚠️ [HealthManager] CHECK 3: Our workout session already running - stopping it first...")
+            endWorkoutSession { [weak self] _ in
+                guard let self = self else { return }
+                // Wait a moment for cleanup, then proceed
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    print("✅ [HealthManager] CHECK 3 PASSED: Previous workout stopped, proceeding with new workout")
+                    self.createWorkoutSession()
+                }
+            }
             return
         }
         
-        // Check for other active workouts by querying recent workouts
-        checkForActiveWorkouts { [weak self] hasActiveWorkout in
+        // Check for other active workouts (from other apps or previous sessions)
+        checkForActiveWorkouts { [weak self] hasActiveWorkout, activeWorkoutUUID in
             guard let self = self else { return }
             
             if hasActiveWorkout {
-                print("❌ [HealthManager] CHECK 3 FAILED: Another workout is already active")
-                print("💡 [HealthManager] Please stop the other workout first")
-                DispatchQueue.main.async {
-                    self.workoutStatus = .error("Another workout is active - stop it first")
-                }
-                return
+                print("⚠️ [HealthManager] CHECK 3: Found active workout from another source: \(activeWorkoutUUID?.uuidString ?? "unknown")")
+                print("💡 [HealthManager] HealthKit will automatically handle the transition - proceeding...")
+                // HealthKit will automatically end the previous workout when we start a new one
+                // We'll proceed and let HealthKit manage the session transition
             }
-            print("✅ [HealthManager] CHECK 3 PASSED: No other active workouts")
+            print("✅ [HealthManager] CHECK 3 PASSED: Proceeding with new workout session")
             
             // Continue with workout session creation
             self.createWorkoutSession()
@@ -604,7 +609,7 @@ class HealthManager: NSObject, ObservableObject {
     }
     
     /// Check if another workout is currently active
-    private func checkForActiveWorkouts(completion: @escaping (Bool) -> Void) {
+    private func checkForActiveWorkouts(completion: @escaping (Bool, UUID?) -> Void) {
         let workoutType = HKObjectType.workoutType()
         let predicate = HKQuery.predicateForWorkouts(with: .running)
         let sortDescriptor = NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)
@@ -618,18 +623,43 @@ class HealthManager: NSObject, ObservableObject {
             if let error = error {
                 print("⚠️ [HealthManager] Error checking for active workouts: \(error.localizedDescription)")
                 // Assume no active workout if query fails
-                completion(false)
+                completion(false, nil)
                 return
             }
             
             let hasActiveWorkout = (samples?.count ?? 0) > 0
+            let workoutUUID = samples?.first?.uuid
             if hasActiveWorkout {
-                print("⚠️ [HealthManager] Found active workout: \(samples?.first?.uuid.uuidString ?? "unknown")")
+                print("⚠️ [HealthManager] Found active workout: \(workoutUUID?.uuidString ?? "unknown")")
             }
-            completion(hasActiveWorkout)
+            completion(hasActiveWorkout, workoutUUID)
         }
         
         healthStore.execute(query)
+    }
+    
+    /// End the current workout session
+    private func endWorkoutSession(completion: @escaping ((Bool) -> Void)? = nil) {
+        guard let session = workoutSession else {
+            print("⚠️ [HealthManager] No workout session to end")
+            completion?(false)
+            return
+        }
+        
+        print("🏃 [HealthManager] Ending workout session...")
+        
+        // End the session (this will trigger the delegate method)
+        session.end()
+        
+        // Clean up after a brief delay to allow HealthKit to process
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            self?.workoutSession = nil
+            self?.workoutBuilder = nil
+            self?.workoutRouteBuilder = nil
+            self?.workoutConfiguration = nil
+            print("✅ [HealthManager] Workout session cleaned up")
+            completion?(true)
+        }
     }
     
     /// Create and start the workout session (called after all checks pass)
