@@ -918,76 +918,104 @@ struct MainRunbotView: View {
                 }
                 .padding(.vertical, 8)
                     
-                // Enhanced Color-Coded Zone Badge (Larger and more prominent)
+                // Beautiful Compact Zone Badge
                 if let zone = currentZone {
                     let zoneColor = HeartZoneCalculator.zoneColor(for: zone)
+                    let zoneName = HeartZoneCalculator.zoneName(for: zone)
                     
-                    VStack(spacing: 8) {
-                        HStack(spacing: 10) {
-                            // Larger zone color indicator bar
-                            RoundedRectangle(cornerRadius: 6)
+                    HStack(spacing: 8) {
+                        // Compact glowing zone indicator
+                        ZStack {
+                            // Glowing background circle
+                            Circle()
+                                .fill(
+                                    RadialGradient(
+                                        colors: [
+                                            zoneColor.opacity(0.4),
+                                            zoneColor.opacity(0.1),
+                                            Color.clear
+                                        ],
+                                        center: .center,
+                                        startRadius: 8,
+                                        endRadius: 18
+                                    )
+                                )
+                                .frame(width: 36, height: 36)
+                            
+                            // Zone number badge
+                            Circle()
                                 .fill(
                                     LinearGradient(
                                         colors: [
                                             zoneColor,
                                             zoneColor.opacity(0.8)
                                         ],
-                                        startPoint: .top,
-                                        endPoint: .bottom
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
                                     )
                                 )
-                                .frame(width: 8, height: 50)
+                                .frame(width: 32, height: 32)
+                                .overlay(
+                                    Text("\(zone)")
+                                        .font(.system(size: 16, weight: .black, design: .rounded))
+                                        .foregroundColor(.white)
+                                )
                                 .shadow(color: zoneColor.opacity(0.6), radius: 6)
-                            
-                            VStack(alignment: .leading, spacing: 4) {
-                                // ZONE label (larger)
-                                Text("ZONE \(zone)")
-                                    .font(.system(size: 16, weight: .black, design: .rounded))
-                                    .foregroundColor(zoneColor)
-                                    .tracking(1.0)
-                                
-                                // Zone name (much larger)
-                                Text(HeartZoneCalculator.zoneName(for: zone))
-                                    .font(.system(size: 24, weight: .bold, design: .rounded))
-                                    .foregroundColor(.white)
-                                    .shadow(color: zoneColor.opacity(0.4), radius: 4)
-                            }
-                            
-                            Spacer()
                         }
+                        
+                        // Zone info - compact and elegant
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(zoneName)
+                                .font(.system(size: 18, weight: .bold, design: .rounded))
+                                .foregroundColor(.white)
+                                .shadow(color: zoneColor.opacity(0.3), radius: 3)
+                            
+                            HStack(spacing: 4) {
+                                Circle()
+                                    .fill(zoneColor)
+                                    .frame(width: 4, height: 4)
+                                Text("ZONE \(zone)")
+                                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                                    .foregroundColor(zoneColor.opacity(0.9))
+                                    .tracking(0.5)
+                            }
+                        }
+                        
+                        Spacer()
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 14)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 10)
                     .background(
-                        RoundedRectangle(cornerRadius: 14)
+                        RoundedRectangle(cornerRadius: 12)
                             .fill(
                                 LinearGradient(
                                     colors: [
-                                        zoneColor.opacity(0.2),
-                                        zoneColor.opacity(0.1)
+                                        zoneColor.opacity(0.15),
+                                        zoneColor.opacity(0.08),
+                                        Color.white.opacity(0.02)
                                     ],
-                                    startPoint: .topLeading,
-                                    endPoint: .bottomTrailing
+                                    startPoint: .leading,
+                                    endPoint: .trailing
                                 )
                             )
                             .overlay(
-                                RoundedRectangle(cornerRadius: 14)
+                                RoundedRectangle(cornerRadius: 12)
                                     .stroke(
                                         LinearGradient(
                                             colors: [
-                                                zoneColor.opacity(0.6),
-                                                zoneColor.opacity(0.3)
+                                                zoneColor.opacity(0.5),
+                                                zoneColor.opacity(0.2)
                                             ],
                                             startPoint: .topLeading,
                                             endPoint: .bottomTrailing
                                         ),
-                                        lineWidth: 2
+                                        lineWidth: 1.5
                                     )
                             )
                     )
-                    .shadow(color: zoneColor.opacity(0.3), radius: 8)
-                    .padding(.horizontal, 6)
-                    .padding(.top, 4)
+                    .shadow(color: zoneColor.opacity(0.25), radius: 6, x: 0, y: 2)
+                    .padding(.horizontal, 8)
+                    .padding(.top, 6)
                 }
                 
                 // Adaptive Guidance (KEY FEATURE!)
