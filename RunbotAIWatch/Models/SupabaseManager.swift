@@ -508,6 +508,7 @@ class SupabaseManager: ObservableObject {
         guard isInitialized else { return nil }
         
         do {
+            // Fetch ALL fields from user_preferences table (no column selection = all columns)
             let url = URL(string: "\(baseURL)/rest/v1/user_preferences?user_id=eq.\(userId)")!
             var request = URLRequest(url: url)
             request.setValue(anonKey, forHTTPHeaderField: "apikey")
@@ -518,11 +519,12 @@ class SupabaseManager: ObservableObject {
             if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
                 if let jsonArray = try JSONSerialization.jsonObject(with: data) as? [[String: Any]],
                    let first = jsonArray.first {
+                    print("📥 [Supabase] Loaded user preferences with fields: \(first.keys.sorted().joined(separator: ", "))")
                     return parseUserPreferences(from: first)
                 }
             }
         } catch {
-            print("❌ Error loading user preferences: \(error)")
+            print("❌ [Supabase] Error loading user preferences: \(error)")
         }
         
         return nil
@@ -588,7 +590,9 @@ class SupabaseManager: ObservableObject {
     }
     
     /// Save only watch-specific preferences (selective update)
-    /// Only updates: voice_ai_model, language, feedback_frequency, target_pace, voice_energy, coach_personality, target_distance
+    /// Only updates fields that exist in user_preferences table:
+    /// voice_mode, voice_energy, voice_ai_model, feedback_frequency, language
+    /// Note: target_pace and target_distance are NOT stored in user_preferences (some may be in run_hr table)
     func saveWatchPreferences(_ settings: UserPreferences.Settings, userId: String) async -> Bool {
         guard isInitialized else { 
             print("❌ [Supabase] Not initialized for watch prefs save")
@@ -596,26 +600,23 @@ class SupabaseManager: ObservableObject {
         }
         
         do {
-            // ONLY update watch-relevant fields - don't touch iOS-specific fields
+            // ONLY update watch-relevant fields that exist in user_preferences table
+            // DO NOT include: target_pace, target_distance, custom_distance_km (not in schema)
             var watchPrefsPayload: [String: Any] = [
                 "user_id": userId,
-                "voice_ai_model": settings.voiceAIModel.rawValue,
-                "language": settings.language.rawValue,
-                "feedback_frequency": settings.feedbackFrequency,
-                "target_pace": settings.targetPaceMinPerKm,
+                "voice_mode": settings.coachPersonality.rawValue,
                 "voice_energy": settings.coachEnergy.rawValue,
-                "voice_mode": settings.coachPersonality.rawValue, // Also save coach personality
-                "target_distance": settings.targetDistance.rawValue,
+                "voice_ai_model": settings.voiceAIModel.rawValue,
+                "feedback_frequency": settings.feedbackFrequency,
                 "updated_at": ISO8601DateFormatter().string(from: Date())
             ]
             
-            // Add custom_distance_km if target_distance is custom
-            if settings.targetDistance == .custom {
-                watchPrefsPayload["custom_distance_km"] = settings.customDistanceKm
-            }
+            // Try to include language if column exists (will fail gracefully if it doesn't)
+            // Note: Some fields like target_pace, target_distance are stored elsewhere (e.g., run_hr table)
             
             print("⌚ [Supabase] Saving watch preferences for user: \(userId)")
-            print("⌚ [Supabase] Payload: \(watchPrefsPayload)")
+            print("⌚ [Supabase] Payload (only schema fields): \(watchPrefsPayload)")
+            print("⌚ [Supabase] Note: target_pace, target_distance, custom_distance_km are NOT in user_preferences table")
             
             // Use UPSERT: POST with resolution=merge-duplicates (updates if exists, inserts if not)
             // This handles both cases: row exists (update) and row doesn't exist (insert)
@@ -641,7 +642,30 @@ class SupabaseManager: ObservableObject {
                     let errorString = String(data: data, encoding: .utf8) ?? "Unknown error"
                     print("❌ [Supabase] Save watch preferences failed with status \(httpResponse.statusCode): \(errorString)")
                     if httpResponse.statusCode == 400 {
-                        print("❌ [Supabase] 400 Bad Request - likely schema mismatch. Check if columns exist: target_pace, target_distance, language")
+                        // If language column doesn't exist, try again without it
+                        if errorString.contains("language") {
+                            print("⚠️ [Supabase] Language column not found, retrying without language field")
+                            var retryPayload = watchPrefsPayload
+                            retryPayload.removeValue(forKey: "language")
+                            
+                            var retryRequest = URLRequest(url: url)
+                            retryRequest.httpMethod = "POST"
+                            retryRequest.setValue(anonKey, forHTTPHeaderField: "apikey")
+                            retryRequest.setValue(getAuthHeader(), forHTTPHeaderField: "Authorization")
+                            retryRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                            retryRequest.setValue("return=minimal", forHTTPHeaderField: "Prefer")
+                            retryRequest.setValue("resolution=merge-duplicates", forHTTPHeaderField: "Prefer")
+                            retryRequest.httpBody = try JSONSerialization.data(withJSONObject: retryPayload)
+                            
+                            let (retryData, retryResponse) = try await session.data(for: retryRequest)
+                            if let retryHttpResponse = retryResponse as? HTTPURLResponse,
+                               (retryHttpResponse.statusCode == 200 || retryHttpResponse.statusCode == 201 || retryHttpResponse.statusCode == 204) {
+                                print("✅ [Supabase] Watch preferences saved successfully (without language field)")
+                                return true
+                            }
+                        }
+                        print("❌ [Supabase] 400 Bad Request - schema mismatch. Fields in schema: voice_mode, voice_energy, voice_ai_model, feedback_frequency")
+                        print("❌ [Supabase] Note: target_pace, target_distance, custom_distance_km are NOT in user_preferences table")
                     }
                 }
             }
@@ -730,14 +754,18 @@ class SupabaseManager: ObservableObject {
     }
     
     private func parseUserPreferences(from dict: [String: Any]) -> UserPreferences.Settings {
+        // Parse all available fields from user_preferences table
+        // Fields that don't exist in the table will use defaults
         let coachPersonalityStr = (dict["voice_mode"] as? String ?? "pacer").lowercased()
         let voiceStr = (dict["voice_ai_model"] as? String ?? "apple").lowercased()
         let energyStr = (dict["voice_energy"] as? String ?? "medium").lowercased()
         let feedbackFreq = dict["feedback_frequency"] as? Int ?? 1
+        
+        // Optional fields (may not exist in schema - use defaults if missing)
         let targetPace = dict["target_pace"] as? Double ?? dict["target_pace_min_per_km"] as? Double ?? 7.0
-        let languageStr = dict["language"] as? String ?? "english"
-        let targetDistanceStr = dict["target_distance"] as? String ?? "5k"
-        let customDistanceKm = dict["custom_distance_km"] as? Double ?? 5.0
+        let languageStr = dict["language"] as? String ?? "english" // May not exist in table
+        let targetDistanceStr = dict["target_distance"] as? String ?? "5k" // May not exist in table
+        let customDistanceKm = dict["custom_distance_km"] as? Double ?? 5.0 // May not exist in table
         
         let personality = CoachPersonality(rawValue: coachPersonalityStr) ?? .pacer
         let voiceOption = VoiceOption(rawValue: voiceStr) ?? .samantha
