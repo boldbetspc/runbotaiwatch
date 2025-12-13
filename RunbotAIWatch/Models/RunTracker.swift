@@ -724,19 +724,45 @@ extension RunTracker {
             let timeMinutes = dt / 60.0
             let pace = timeMinutes / distanceKm
             
-            // Log warning if pace seems unrealistic (but use actual calculated value)
-            if pace < 2.0 || pace > 20.0 {
-                print("⚠️ [RunTracker] Unusual pace calculated: \(String(format: "%.2f", pace)) min/km (dt=\(String(format: "%.1f", dt))s for \(String(format: "%.1f", actualDistanceMeters))m)")
-                print("   ⚠️ This may indicate GPS tracking issues, but using calculated value anyway")
+            // CRITICAL VALIDATION: Reject unrealistic paces (likely GPS errors or incomplete intervals)
+            // Normal running pace is 3-20 min/km (3:00 to 20:00 per km)
+            // If pace is outside this range, it's almost certainly wrong data
+            guard pace >= 2.0 && pace <= 25.0 else {
+                print("❌ [RunTracker] REJECTING unrealistic pace: \(String(format: "%.2f", pace)) min/km")
+                print("   ❌ Duration: \(String(format: "%.1f", dt))s, Distance: \(String(format: "%.1f", actualDistanceMeters))m")
+                print("   ❌ This interval will be skipped - GPS error or incomplete data")
+                return 0.0 // Return 0 to skip this interval
             }
+            
+            // Additional validation: Check if duration is realistic for 1km
+            // A 1km interval should take at least 2 minutes (120 seconds) for most runners
+            // If it's less than 60 seconds, it's definitely wrong
+            if dt < 60.0 && actualDistanceMeters >= 900.0 {
+                print("⚠️ [RunTracker] WARNING: Very short duration for 1km: \(String(format: "%.1f", dt))s")
+                print("   ⚠️ Calculated pace: \(String(format: "%.2f", pace)) min/km - may be GPS error")
+                print("   ⚠️ Using calculated value but verify GPS accuracy")
+            }
+            
+            print("✅ [RunTracker] Valid pace calculated: \(String(format: "%.2f", pace)) min/km (\(String(format: "%d:%02d", Int(pace), Int((pace - Double(Int(pace))) * 60))) min/km)")
             
             return pace
         }()
         
+        // Skip interval if pace is invalid (0.0)
+        guard paceMinPerKm > 0 else {
+            print("⚠️ [RunTracker] Skipping interval creation due to invalid pace")
+            return
+        }
+        
+        // Format pace for logging: convert to MM:SS format
+        let paceMins = Int(paceMinPerKm)
+        let paceSecs = Int((paceMinPerKm - Double(paceMins)) * 60)
+        let paceFormatted = String(format: "%d:%02d", paceMins, paceSecs)
+        
         print("📊 [RunTracker] Creating interval #\(session.intervals.count + 1):")
         print("   - Actual distance: \(String(format: "%.1f", actualDistanceMeters))m")
-        print("   - Duration: \(String(format: "%.1f", dt))s")
-        print("   - Calculated pace: \(String(format: "%.2f", paceMinPerKm)) min/km")
+        print("   - Duration: \(String(format: "%.1f", dt))s (\(String(format: "%d:%02d", Int(dt)/60, Int(dt)%60)))")
+        print("   - Calculated pace: \(String(format: "%.3f", paceMinPerKm)) min/km = \(paceFormatted) min/km")
         
         var intervals = session.intervals
         let idx = intervals.count
