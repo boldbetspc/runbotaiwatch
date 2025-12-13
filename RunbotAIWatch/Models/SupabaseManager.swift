@@ -142,29 +142,18 @@ class SupabaseManager: ObservableObject {
             // Generate run name (train mode removed - always "Run")
             let runName = "Run"
             
-            // Calculate duration_s (required, integer, NOT NULL, must be > 0)
-            // Database constraint requires duration_s > 0, so use at least 1 second
-            // This ensures initial run record can be created even at start (elapsedTime = 0)
-            let currentDurationSeconds = max(1, Int(runData.elapsedTime))
-            
-            // Ensure numeric values are valid (no NaN, negative for distance)
-            let distanceMeters = max(0.0, runData.distance.isFinite ? runData.distance : 0.0)
-            let elevationMeters = runData.elevation.isFinite ? max(0.0, runData.elevation) : 0.0
-            let caloriesValue = runData.calories.isFinite ? max(0, Int(runData.calories)) : 0
-            
             // NOTE: average_pace_minutes_per_km is a GENERATED COLUMN - don't send it
-            // NOTE: duration_minutes column does NOT exist in run_activities table - only duration_s
             var runPayload: [String: Any] = [
                 "id": runData.id,
                 "user_id": userId,
                 "name": runName,
-                "duration_s": currentDurationSeconds, // Required: integer, NOT NULL
-                "activity_date": formatter.string(from: runData.startTime), // Required: timestamp, NOT NULL
-                "distance_meters": distanceMeters, // Required: numeric, NOT NULL (ensure >= 0)
-                "calories": caloriesValue,
-                "elevation_gain_meters": elevationMeters,
+                "duration_s": Int(runData.duration),
+                "distance_meters": runData.distance,
+                "calories": Int(runData.calories),
+                "elevation_gain_meters": runData.elevation,
                 "start_time": formatter.string(from: runData.startTime),
                 "mode": runData.mode.rawValue,
+                "activity_date": formatter.string(from: runData.startTime),
                 "device_connected": "Apple Watch",
                 "is_pr_shadow": false, // Train mode removed
                 "created_at": formatter.string(from: runData.startTime),
@@ -215,16 +204,12 @@ class SupabaseManager: ObservableObject {
                 if httpResponse.statusCode == 200 || httpResponse.statusCode == 201 {
                     print("✅ [Supabase] Run activity saved/updated in Supabase")
                     return true
+                } else if handleAPIResponse(httpResponse, data: data) {
+                    // Handled by helper (token expiration, etc.)
+                    return false
                 } else {
                     let errorString = String(data: data, encoding: .utf8) ?? "Unknown error"
-                    print("❌ [Supabase] Save failed with status \(httpResponse.statusCode)")
-                    print("❌ [Supabase] Error details: \(errorString)")
-                    print("❌ [Supabase] Payload sent: \(runPayload)")
-                    
-                    // Still check for token expiration
-                    if handleAPIResponse(httpResponse, data: data) {
-                        return false
-                    }
+                    print("❌ [Supabase] Save failed with status \(httpResponse.statusCode): \(errorString)")
                 }
             }
         } catch {
@@ -249,15 +234,11 @@ class SupabaseManager: ObservableObject {
             let avgHR = healthManager?.averageHeartRate.map { Int($0) }
             let maxHR = healthManager?.maxHeartRate.map { Int($0) }
             
-            // Calculate duration_s for update (required: integer, NOT NULL)
-            let updateDurationSeconds = max(0, Int(runData.elapsedTime))
-            
             // NOTE: average_pace_minutes_per_km is a GENERATED COLUMN - don't send it
-            // NOTE: duration_minutes column does NOT exist in run_activities table - only duration_s
             var runPayload: [String: Any] = [
                 "user_id": userId,
-                "duration_s": updateDurationSeconds, // Required: integer, NOT NULL
-                "distance_meters": runData.distance, // Required: numeric, NOT NULL
+                "duration_s": Int(runData.duration),
+                "distance_meters": runData.distance,
                 "calories": Int(runData.calories),
                 "elevation_gain_meters": runData.elevation,
                 "end_time": endTimeString,
@@ -308,42 +289,22 @@ class SupabaseManager: ObservableObject {
     }
     
     // MARK: - Run Intervals (batch save)
-    func saveRunIntervals(_ intervals: [RunInterval], userId: String, healthManager: HealthManager? = nil) async -> Bool {
+    func saveRunIntervals(_ intervals: [RunInterval], userId: String) async -> Bool {
         guard isInitialized, !intervals.isEmpty else { return false }
         
         do {
-            let formatter = ISO8601DateFormatter()
             var payloads: [[String: Any]] = []
-            
             for interval in intervals {
-                // Get heart rate data if available (use average/max from health manager)
-                // Note: For per-interval HR, we'd need HR data per interval, but we use overall avg/max
-                let avgHR = healthManager?.averageHeartRate
-                let maxHR = healthManager?.maxHeartRate
-                
                 // NOTE: pace_per_km is a GENERATED COLUMN - don't send it
-                var payload: [String: Any] = [
+                let payload: [String: Any] = [
                     "id": interval.id,
                     "run_id": interval.runId,
                     "user_id": userId,
                     "kilometer": interval.index,
-                    "duration_s": interval.durationSeconds, // Required: numeric, NOT NULL
-                    "time_recorded": formatter.string(from: interval.endTime),
-                    "created_at": formatter.string(from: Date())
+                    "duration_s": interval.durationSeconds,
+                    "time_recorded": ISO8601DateFormatter().string(from: interval.endTime),
+                    "created_at": ISO8601DateFormatter().string(from: Date())
                 ]
-                
-                // Add optional HR fields if available
-                if let avgHR = avgHR, avgHR.isFinite && avgHR > 0 {
-                    payload["average_heart_rate"] = avgHR
-                }
-                if let maxHR = maxHR, maxHR.isFinite && maxHR > 0 {
-                    payload["max_heart_rate"] = maxHR
-                }
-                
-                // Note: latitude/longitude would need to be stored per interval
-                // For now, we'll leave them out as they're optional
-                // To add them, we'd need to store location data per interval in RunInterval model
-                
                 payloads.append(payload)
             }
             
@@ -458,43 +419,53 @@ class SupabaseManager: ObservableObject {
             patchRequest.setValue(anonKey, forHTTPHeaderField: "apikey")
             patchRequest.setValue(getAuthHeader(), forHTTPHeaderField: "Authorization")
             patchRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            patchRequest.setValue("return=minimal", forHTTPHeaderField: "Prefer")
+            patchRequest.setValue("return=representation", forHTTPHeaderField: "Prefer") // Get updated rows to verify
             patchRequest.httpBody = try JSONSerialization.data(withJSONObject: hrPayload)
             
-            let (_, patchResponse) = try await session.data(for: patchRequest)
+            let (patchData, patchResponse) = try await session.data(for: patchRequest)
             
-            if let httpResponse = patchResponse as? HTTPURLResponse,
-               (httpResponse.statusCode == 200 || httpResponse.statusCode == 204) {
-                print("✅ [Supabase] Run HR data updated")
-                return true
+            if let httpResponse = patchResponse as? HTTPURLResponse {
+                print("💓 [Supabase] PATCH response status: \(httpResponse.statusCode)")
+                if httpResponse.statusCode == 200 || httpResponse.statusCode == 204 {
+                    // Verify rows were actually updated (not empty array)
+                    if let responseStr = String(data: patchData, encoding: .utf8),
+                       responseStr != "[]" && !responseStr.isEmpty {
+                        print("✅ [Supabase] Run HR data updated successfully")
+                        return true
+                    } else {
+                        print("⚠️ [Supabase] PATCH returned empty - no existing record, trying INSERT...")
+                    }
+                }
             }
             
-            // If PATCH fails (no existing record), INSERT new one
+            // PATCH didn't update anything (no existing record), so INSERT new one
             var insertPayload = hrPayload
             insertPayload["id"] = UUID().uuidString
             insertPayload["created_at"] = formatter.string(from: Date())
             
-            let url = URL(string: "\(baseURL)/rest/v1/run_hr")!
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"
-            request.setValue(anonKey, forHTTPHeaderField: "apikey")
-            request.setValue(getAuthHeader(), forHTTPHeaderField: "Authorization")
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("return=minimal", forHTTPHeaderField: "Prefer")
-            request.httpBody = try JSONSerialization.data(withJSONObject: insertPayload)
+            let insertUrl = URL(string: "\(baseURL)/rest/v1/run_hr")!
+            var insertRequest = URLRequest(url: insertUrl)
+            insertRequest.httpMethod = "POST"
+            insertRequest.setValue(anonKey, forHTTPHeaderField: "apikey")
+            insertRequest.setValue(getAuthHeader(), forHTTPHeaderField: "Authorization")
+            insertRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            insertRequest.setValue("return=minimal", forHTTPHeaderField: "Prefer")
+            insertRequest.httpBody = try JSONSerialization.data(withJSONObject: insertPayload)
             
-            let (data, response) = try await session.data(for: request)
+            let (insertData, insertResponse) = try await session.data(for: insertRequest)
             
-            if let httpResponse = response as? HTTPURLResponse {
-                print("📤 [Supabase] run_hr insert response: \(httpResponse.statusCode)")
+            if let httpResponse = insertResponse as? HTTPURLResponse {
+                print("💓 [Supabase] INSERT response status: \(httpResponse.statusCode)")
                 if httpResponse.statusCode == 200 || httpResponse.statusCode == 201 {
-                    print("✅ [Supabase] Run HR data inserted")
+                    print("✅ [Supabase] Run HR data inserted successfully")
                     return true
-                } else if handleAPIResponse(httpResponse, data: data) {
-                    return false
                 } else {
-                    let errorString = String(data: data, encoding: .utf8) ?? "Unknown error"
-                    print("❌ [Supabase] run_hr save failed: \(errorString)")
+                    if handleAPIResponse(httpResponse, data: insertData) {
+                        return false
+                    } else {
+                        let errorString = String(data: insertData, encoding: .utf8) ?? "Unknown error"
+                        print("❌ [Supabase] run_hr save failed: \(errorString)")
+                    }
                 }
             }
         } catch {
@@ -509,7 +480,6 @@ class SupabaseManager: ObservableObject {
         guard isInitialized else { return nil }
         
         do {
-            // Fetch ALL fields from user_preferences table (no column selection = all columns)
             let url = URL(string: "\(baseURL)/rest/v1/user_preferences?user_id=eq.\(userId)")!
             var request = URLRequest(url: url)
             request.setValue(anonKey, forHTTPHeaderField: "apikey")
@@ -520,12 +490,11 @@ class SupabaseManager: ObservableObject {
             if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
                 if let jsonArray = try JSONSerialization.jsonObject(with: data) as? [[String: Any]],
                    let first = jsonArray.first {
-                    print("📥 [Supabase] Loaded user preferences with fields: \(first.keys.sorted().joined(separator: ", "))")
                     return parseUserPreferences(from: first)
                 }
             }
         } catch {
-            print("❌ [Supabase] Error loading user preferences: \(error)")
+            print("❌ Error loading user preferences: \(error)")
         }
         
         return nil
@@ -591,9 +560,7 @@ class SupabaseManager: ObservableObject {
     }
     
     /// Save only watch-specific preferences (selective update)
-    /// Only updates fields that exist in user_preferences table:
-    /// voice_mode, voice_energy, voice_ai_model, feedback_frequency, language
-    /// Note: target_pace and target_distance are NOT stored in user_preferences (some may be in run_hr table)
+    /// Only updates: voice_ai_model, language, feedback_frequency, target_pace, voice_energy, coach_personality, target_distance
     func saveWatchPreferences(_ settings: UserPreferences.Settings, userId: String) async -> Bool {
         guard isInitialized else { 
             print("❌ [Supabase] Not initialized for watch prefs save")
@@ -601,79 +568,92 @@ class SupabaseManager: ObservableObject {
         }
         
         do {
-            // ONLY update watch-relevant fields that exist in user_preferences table
-            // DO NOT include: target_pace, target_distance, custom_distance_km (not in schema)
+            // ONLY update watch-relevant fields that exist in the table
+            // Table structure: id, user_id, voice_mode (required), race_type (required), 
+            // voice_ai_model, language, feedback_frequency, target_pace, voice_energy, 
+            // feedback_mode, user_name, heart_rate_source, milestone_alerts, feedback_frequency_custom
+            // NOTE: target_distance and custom_distance_km do NOT exist in the table - removed
             var watchPrefsPayload: [String: Any] = [
                 "user_id": userId,
-                "voice_mode": settings.coachPersonality.rawValue,
-                "voice_energy": settings.coachEnergy.rawValue,
+                "voice_mode": settings.coachPersonality.rawValue, // Required field: voice_mode
                 "voice_ai_model": settings.voiceAIModel.rawValue,
+                "language": settings.language.rawValue,
                 "feedback_frequency": settings.feedbackFrequency,
+                "target_pace": settings.targetPaceMinPerKm,
+                "voice_energy": settings.coachEnergy.rawValue,
                 "updated_at": ISO8601DateFormatter().string(from: Date())
             ]
             
-            // Try to include language if column exists (will fail gracefully if it doesn't)
-            // Note: Some fields like target_pace, target_distance are stored elsewhere (e.g., run_hr table)
-            
             print("⌚ [Supabase] Saving watch preferences for user: \(userId)")
-            print("⌚ [Supabase] Payload (only schema fields): \(watchPrefsPayload)")
-            print("⌚ [Supabase] Note: target_pace, target_distance, custom_distance_km are NOT in user_preferences table")
+            print("⌚ [Supabase] Payload: \(watchPrefsPayload)")
             
-            // UPSERT: Try PATCH first (selective update for existing row), then POST if row doesn't exist
-            // This ensures we only update the specific fields for this user without affecting other fields
-            
-            // Step 1: Try PATCH to update existing row (selective update)
+            // Try PATCH first (update existing record)
             let patchUrl = URL(string: "\(baseURL)/rest/v1/user_preferences?user_id=eq.\(userId)")!
             var patchRequest = URLRequest(url: patchUrl)
             patchRequest.httpMethod = "PATCH"
             patchRequest.setValue(anonKey, forHTTPHeaderField: "apikey")
             patchRequest.setValue(getAuthHeader(), forHTTPHeaderField: "Authorization")
             patchRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            patchRequest.setValue("return=minimal", forHTTPHeaderField: "Prefer")
+            patchRequest.setValue("return=representation", forHTTPHeaderField: "Prefer") // Get updated rows to verify
             patchRequest.httpBody = try JSONSerialization.data(withJSONObject: watchPrefsPayload)
             
             let (patchData, patchResponse) = try await session.data(for: patchRequest)
             
-            if let patchHttpResponse = patchResponse as? HTTPURLResponse {
-                print("⌚ [Supabase] PATCH response status: \(patchHttpResponse.statusCode)")
-                if patchHttpResponse.statusCode == 200 || patchHttpResponse.statusCode == 204 {
-                    print("✅ [Supabase] Watch preferences updated successfully (PATCH)")
-                    return true
-                } else if patchHttpResponse.statusCode == 404 || patchHttpResponse.statusCode == 400 {
-                    // Row doesn't exist or PATCH failed - try INSERT with POST
-                    print("⚠️ [Supabase] PATCH failed (row may not exist), trying INSERT...")
-                    
-                    // Step 2: INSERT new row with POST (UPSERT)
-                    var insertPayload = watchPrefsPayload
-                    insertPayload["id"] = UUID().uuidString
-                    insertPayload["created_at"] = ISO8601DateFormatter().string(from: Date())
-                    
-                    let postUrl = URL(string: "\(baseURL)/rest/v1/user_preferences")!
-                    var postRequest = URLRequest(url: postUrl)
-                    postRequest.httpMethod = "POST"
-                    postRequest.setValue(anonKey, forHTTPHeaderField: "apikey")
-                    postRequest.setValue(getAuthHeader(), forHTTPHeaderField: "Authorization")
-                    postRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
-                    postRequest.setValue("return=minimal", forHTTPHeaderField: "Prefer")
-                    postRequest.httpBody = try JSONSerialization.data(withJSONObject: insertPayload)
-                    
-                    let (postData, postResponse) = try await session.data(for: postRequest)
-                    
-                    if let postHttpResponse = postResponse as? HTTPURLResponse {
-                        print("⌚ [Supabase] POST response status: \(postHttpResponse.statusCode)")
-                        if postHttpResponse.statusCode == 200 || postHttpResponse.statusCode == 201 {
-                            print("✅ [Supabase] Watch preferences saved successfully (POST - new row)")
-                            return true
-                        } else {
-                            let errorString = String(data: postData, encoding: .utf8) ?? "Unknown error"
-                            print("❌ [Supabase] POST failed with status \(postHttpResponse.statusCode): \(errorString)")
-                        }
+            if let httpResponse = patchResponse as? HTTPURLResponse {
+                print("⌚ [Supabase] PATCH response status: \(httpResponse.statusCode)")
+                if httpResponse.statusCode == 200 || httpResponse.statusCode == 204 {
+                    // Verify rows were actually updated (not empty array)
+                    if let responseStr = String(data: patchData, encoding: .utf8),
+                       responseStr != "[]" && !responseStr.isEmpty {
+                        print("✅ [Supabase] Watch preferences updated successfully")
+                        return true
+                    } else {
+                        print("⚠️ [Supabase] PATCH returned empty - no existing record, trying INSERT...")
                     }
+                }
+            }
+            
+            // PATCH didn't update anything (no existing record), so INSERT new one
+            // Map targetDistance to race_type for required field
+            let raceType: String = {
+                let distance = settings.targetDistance
+                switch distance {
+                case .casual: return "5K" // Default casual to 5K
+                case .fiveK: return "5K"
+                case .tenK: return "10K"
+                case .halfMarathon: return "Half Marathon"
+                case .marathon: return "Marathon"
+                case .custom: return "5K" // Default for custom
+                }
+            }()
+            
+            var insertPayload = watchPrefsPayload
+            insertPayload["id"] = UUID().uuidString
+            insertPayload["race_type"] = raceType // Required field: race_type
+            insertPayload["created_at"] = ISO8601DateFormatter().string(from: Date())
+            
+            let insertUrl = URL(string: "\(baseURL)/rest/v1/user_preferences")!
+            var insertRequest = URLRequest(url: insertUrl)
+            insertRequest.httpMethod = "POST"
+            insertRequest.setValue(anonKey, forHTTPHeaderField: "apikey")
+            insertRequest.setValue(getAuthHeader(), forHTTPHeaderField: "Authorization")
+            insertRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            insertRequest.setValue("return=minimal", forHTTPHeaderField: "Prefer")
+            insertRequest.httpBody = try JSONSerialization.data(withJSONObject: insertPayload)
+            
+            let (insertData, insertResponse) = try await session.data(for: insertRequest)
+            
+            if let httpResponse = insertResponse as? HTTPURLResponse {
+                print("⌚ [Supabase] INSERT response status: \(httpResponse.statusCode)")
+                if httpResponse.statusCode == 200 || httpResponse.statusCode == 201 {
+                    print("✅ [Supabase] Watch preferences inserted successfully")
+                    return true
                 } else {
-                    let errorString = String(data: patchData, encoding: .utf8) ?? "Unknown error"
-                    print("❌ [Supabase] PATCH failed with status \(patchHttpResponse.statusCode): \(errorString)")
-                    if patchHttpResponse.statusCode == 400 {
-                        print("❌ [Supabase] 400 Bad Request - check if fields exist: voice_mode, voice_energy, voice_ai_model, feedback_frequency")
+                    if handleAPIResponse(httpResponse, data: insertData) {
+                        return false
+                    } else {
+                        let errorString = String(data: insertData, encoding: .utf8) ?? "Unknown error"
+                        print("❌ [Supabase] Watch preferences save failed: \(errorString)")
                     }
                 }
             }
@@ -762,36 +742,22 @@ class SupabaseManager: ObservableObject {
     }
     
     private func parseUserPreferences(from dict: [String: Any]) -> UserPreferences.Settings {
-        // Parse all available fields from user_preferences table
-        // Fields that don't exist in the table will use defaults
         let coachPersonalityStr = (dict["voice_mode"] as? String ?? "pacer").lowercased()
         let voiceStr = (dict["voice_ai_model"] as? String ?? "apple").lowercased()
         let energyStr = (dict["voice_energy"] as? String ?? "medium").lowercased()
-        let feedbackFreq = dict["feedback_frequency"] as? Int ?? 1
-        
-        // Optional fields (may not exist in schema - use defaults if missing)
-        let targetPace = dict["target_pace"] as? Double ?? dict["target_pace_min_per_km"] as? Double ?? 7.0
-        let languageStr = dict["language"] as? String ?? "english" // May not exist in table
-        let targetDistanceStr = dict["target_distance"] as? String ?? "5k" // May not exist in table
-        let customDistanceKm = dict["custom_distance_km"] as? Double ?? 5.0 // May not exist in table
+        let feedbackFreq = dict["feedback_frequency"] as? Int ?? 5
+        let targetPace = dict["target_pace_min_per_km"] as? Double ?? 7.0
         
         let personality = CoachPersonality(rawValue: coachPersonalityStr) ?? .pacer
         let voiceOption = VoiceOption(rawValue: voiceStr) ?? .samantha
         let energy = CoachEnergy(rawValue: energyStr) ?? .medium
-        let language = SupportedLanguage(rawValue: languageStr) ?? .english
-        let targetDistance = TargetDistance(rawValue: targetDistanceStr) ?? .fiveK
-        let voiceAIModel = VoiceAIModel(rawValue: voiceStr) ?? .apple
         
         return UserPreferences.Settings(
             coachPersonality: personality,
             voiceOption: voiceOption,
             coachEnergy: energy,
             feedbackFrequency: feedbackFreq,
-            targetPaceMinPerKm: targetPace,
-            voiceAIModel: voiceAIModel,
-            language: language,
-            targetDistance: targetDistance,
-            customDistanceKm: customDistanceKm
+            targetPaceMinPerKm: targetPace
         )
     }
     

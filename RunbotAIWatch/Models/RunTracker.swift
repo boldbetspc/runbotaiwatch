@@ -385,8 +385,7 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
                         // Create interval when 1km is complete
                         let distanceSinceLastInterval = totalDistance - lastIntervalEndDistance
                         if distanceSinceLastInterval >= intervalDistanceMeters {
-                            // Pass the actual distance traveled (1000m) to interval creation
-                            createIntervalIfPossible(in: &session, actualDistanceTraveled: intervalDistanceMeters)
+                            createIntervalIfPossible(in: &session)
                             lastIntervalEndDistance = totalDistance
                             intervalBuffer.removeAll(keepingCapacity: true)
                         }
@@ -697,71 +696,25 @@ extension RunTracker {
         intervalBuffer = intervalBuffer.filter { $0.timestamp >= cutoff }
     }
 
-    private func createIntervalIfPossible(in session: inout RunSession, actualDistanceTraveled: Double) {
-        guard intervalBuffer.count >= 2 else { 
-            print("⚠️ [RunTracker] Interval buffer has < 2 locations, skipping interval creation")
-            return 
-        }
+    private func createIntervalIfPossible(in session: inout RunSession) {
+        guard intervalBuffer.count >= 2 else { return }
         let start = intervalBuffer.first!
         let end = intervalBuffer.last!
         
-        // Use the actual distance traveled (1000m for 1km intervals) rather than buffer distance
-        // Buffer distance can be less than actual if buffer was trimmed or filtered
-        // The actualDistanceTraveled parameter ensures we use the correct distance for pace calculation
-        let actualDistanceMeters = actualDistanceTraveled
-        
-        // Calculate actual time taken to cover this distance
+        // Use actual 1km distance (1000m) for the interval, not buffered distance
+        // This ensures each interval represents exactly 1km
+        let d = 1000.0 // Fixed 1km interval distance
         let dt = max(end.timestamp.timeIntervalSince(start.timestamp), 0.001)
-        
-        // Calculate pace in min/km: (duration in seconds / 60) / (distance in km)
-        // Formula: pace (min/km) = (time in seconds) / 60 / (distance in km)
-        // Example: 278 seconds for 1.0km = (278 / 60) / 1.0 = 4.633 min/km = 4:38 min/km
         let paceMinPerKm: Double = {
-            guard actualDistanceMeters > 0 && dt > 0 else { 
-                print("⚠️ [RunTracker] Invalid interval data: distance=\(actualDistanceMeters)m, dt=\(dt)s")
-                return 0.0 
-            }
-            let distanceKm = actualDistanceMeters / 1000.0
-            let timeMinutes = dt / 60.0
-            let pace = timeMinutes / distanceKm
-            
-            // VALIDATION: Reject only extremely unrealistic paces (likely GPS errors)
-            // Normal running pace is 2-30 min/km (very fast runners: 2:30 min/km, very slow: 30:00 min/km)
-            // Reject only clearly impossible values
-            guard pace > 0 && pace <= 30.0 else {
-                print("❌ [RunTracker] REJECTING impossible pace: \(String(format: "%.2f", pace)) min/km")
-                print("   ❌ Duration: \(String(format: "%.1f", dt))s, Distance: \(String(format: "%.1f", actualDistanceMeters))m")
-                print("   ❌ This interval will be skipped - GPS error")
-                return 0.0 // Return 0 to skip this interval
-            }
-            
-            // Log warning for unusual but not impossible paces
-            if pace < 2.0 {
-                print("⚠️ [RunTracker] Very fast pace (may be GPS error): \(String(format: "%.2f", pace)) min/km")
-            } else if pace > 20.0 {
-                print("⚠️ [RunTracker] Very slow pace (may be GPS error or walking): \(String(format: "%.2f", pace)) min/km")
-            }
-            
-            print("✅ [RunTracker] Valid pace calculated: \(String(format: "%.2f", pace)) min/km (\(String(format: "%d:%02d", Int(pace), Int((pace - Double(Int(pace))) * 60))) min/km)")
-            
-            return pace
+            let mps = d / dt
+            let kmPerMin = (mps * 3.6) / 60.0
+            return kmPerMin > 0 ? 1.0 / kmPerMin : 0.0
         }()
         
-        // Skip interval if pace is invalid (0.0)
-        guard paceMinPerKm > 0 else {
-            print("⚠️ [RunTracker] Skipping interval creation due to invalid pace")
-            return
-        }
-        
-        // Format pace for logging: convert to MM:SS format
-        let paceMins = Int(paceMinPerKm)
-        let paceSecs = Int((paceMinPerKm - Double(paceMins)) * 60)
-        let paceFormatted = String(format: "%d:%02d", paceMins, paceSecs)
-        
-        print("📊 [RunTracker] Creating interval #\(session.intervals.count + 1):")
-        print("   - Actual distance: \(String(format: "%.1f", actualDistanceMeters))m")
-        print("   - Duration: \(String(format: "%.1f", dt))s (\(String(format: "%d:%02d", Int(dt)/60, Int(dt)%60)))")
-        print("   - Calculated pace: \(String(format: "%.3f", paceMinPerKm)) min/km = \(paceFormatted) min/km")
+        print("📊 [RunTracker] Creating 1km interval #\(session.intervals.count + 1):")
+        print("   - Distance: \(String(format: "%.2f", d))m")
+        print("   - Duration: \(String(format: "%.1f", dt))s")
+        print("   - Pace: \(String(format: "%.2f", paceMinPerKm)) min/km")
         
         var intervals = session.intervals
         let idx = intervals.count
@@ -771,7 +724,7 @@ extension RunTracker {
             index: idx,
             startTime: start.timestamp,
             endTime: end.timestamp,
-            distanceMeters: actualDistanceMeters, // Use actual distance, not fixed 1000m
+            distanceMeters: d,
             durationSeconds: dt,
             paceMinPerKm: paceMinPerKm
         )
@@ -781,7 +734,7 @@ extension RunTracker {
         if let sb = supabaseManager, sb.isInitialized {
             let userId = getUserId()
             Task {
-                _ = await sb.saveRunIntervals([interval], userId: userId, healthManager: healthManager)
+                _ = await sb.saveRunIntervals([interval], userId: userId)
             }
         }
     }

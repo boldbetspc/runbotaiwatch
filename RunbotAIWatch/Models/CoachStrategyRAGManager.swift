@@ -163,30 +163,6 @@ class CoachStrategyRAGManager {
                     let errorBody = String(data: data, encoding: .utf8) ?? "Unknown error"
                     print("❌ [CoachStrategyRAG] Edge function error - Status: \(httpResponse.statusCode)")
                     print("❌ [CoachStrategyRAG] Error response: \(errorBody)")
-                    
-                    // Provide helpful error messages for common issues
-                    if httpResponse.statusCode == 500 && errorBody.contains("OPENAI_API_KEY") {
-                        print("⚠️ [CoachStrategyRAG] ========== SECRET CONFIGURATION ISSUE ==========")
-                        print("⚠️ [CoachStrategyRAG] The edge function cannot access OPENAI_API_KEY.")
-                        print("⚠️ [CoachStrategyRAG]")
-                        print("⚠️ [CoachStrategyRAG] CRITICAL: Check Supabase Dashboard → Edge Functions → coach-rag-strategy → Logs")
-                        print("⚠️ [CoachStrategyRAG] Look for 'Environment check' log which shows:")
-                        print("⚠️ [CoachStrategyRAG]   - hasOpenAIKey: true/false")
-                        print("⚠️ [CoachStrategyRAG]   - envKeys: [list of available env vars]")
-                        print("⚠️ [CoachStrategyRAG]")
-                        print("⚠️ [CoachStrategyRAG] To fix:")
-                        print("⚠️ [CoachStrategyRAG] 1. Supabase Dashboard → Edge Functions → coach-rag-strategy → Settings → Secrets")
-                        print("⚠️ [CoachStrategyRAG] 2. Click 'Add Secret' and add:")
-                        print("⚠️ [CoachStrategyRAG]    Name: OPENAI_API_KEY (exact case, no spaces)")
-                        print("⚠️ [CoachStrategyRAG]    Value: <your-openai-api-key>")
-                        print("⚠️ [CoachStrategyRAG] 3. Redeploy: supabase functions deploy coach-rag-strategy")
-                        print("⚠️ [CoachStrategyRAG] 4. Note: Function-specific secrets may be required even if project-wide exists")
-                        print("⚠️ [CoachStrategyRAG] ==========================================")
-                    } else if httpResponse.statusCode == 404 {
-                        print("⚠️ [CoachStrategyRAG] Edge function not found. Ensure 'coach-rag-strategy' is deployed.")
-                    } else if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
-                        print("⚠️ [CoachStrategyRAG] Authentication error. Check Supabase credentials.")
-                    }
                 }
             }
         } catch {

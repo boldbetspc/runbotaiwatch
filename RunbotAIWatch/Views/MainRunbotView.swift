@@ -231,7 +231,6 @@ struct MainRunbotView: View {
     @State private var didTriggerInitialCoaching = false
     @State private var showSaveSuccess = false
     @State private var saveMessage = ""
-    @State private var feedbackTextDisplayUntil: Date? = nil // Track when to show feedback text (2 min after voice finishes)
     // Train mode removed - only run mode supported
     private let runMode: RunMode = .run
     
@@ -305,6 +304,16 @@ struct MainRunbotView: View {
                 print("🔵 User authenticated, initializing Supabase session")
                 supabaseManager.initializeSession(for: userId)
             }
+            
+            // Request HealthKit authorization when view appears
+            healthManager.checkAuthorizationStatus()
+            if !healthManager.isAuthorized {
+                print("💓 [MainRunbotView] Not authorized - requesting HealthKit access...")
+                healthManager.requestHealthDataAccess()
+            } else {
+                print("✅ [MainRunbotView] HealthKit already authorized")
+            }
+            
             // Train mode and PR model loading removed
         }
         .onChange(of: authManager.isAuthenticated) { oldValue, isAuth in
@@ -319,53 +328,37 @@ struct MainRunbotView: View {
         .onReceive(runTracker.$statsUpdate.compactMap { $0 }) { stats in
             // Kickoff once at run start when stats first arrive
             if isRunning && !didTriggerInitialCoaching {
-                // Refresh preferences from Supabase to ensure latest language is used
-                let userId = authManager.currentUser?.id ?? "watch_user"
-                Task {
-                    await userPreferences.refreshFromSupabase(supabaseManager: supabaseManager, userId: userId)
-                    
-                    await MainActor.run {
-                        // Train mode removed - always use run mode
-                        aiCoach.startScheduledCoaching(
-                            for: stats,
-                            with: userPreferences.settings,
-                            voiceManager: voiceManager,
-                            runSessionId: runTracker.currentSession?.id,
-                            isTrainMode: false,
-                            shadowData: nil,
-                            healthManager: healthManager,
-                            intervals: runTracker.currentSession?.intervals ?? [],
-                            runStartTime: runTracker.currentSession?.startTime
-                        )
-                        didTriggerInitialCoaching = true
-                    }
-                }
+                // Train mode removed - always use run mode
+                aiCoach.startScheduledCoaching(
+                    for: stats,
+                    with: userPreferences.settings,
+                    voiceManager: voiceManager,
+                    runSessionId: runTracker.currentSession?.id,
+                    isTrainMode: false,
+                    shadowData: nil,
+                    healthManager: healthManager,
+                    intervals: runTracker.currentSession?.intervals ?? [],
+                    runStartTime: runTracker.currentSession?.startTime
+                )
+                didTriggerInitialCoaching = true
             }
             let km = Int(stats.distance / 1000.0)
             let freq = userPreferences.settings.feedbackFrequency
             if freq > 0, km > lastCoachingKm, km % freq == 0 {
-                // Refresh preferences from Supabase to ensure latest language is used for interval coaching
-                let userId = authManager.currentUser?.id ?? "watch_user"
-                Task {
-                    await userPreferences.refreshFromSupabase(supabaseManager: supabaseManager, userId: userId)
-                    
-                    await MainActor.run {
-                        // Train mode removed - always use run mode
-                        // RAG-enhanced interval coaching with full performance analysis
-                        aiCoach.startScheduledCoaching(
-                            for: stats,
-                            with: userPreferences.settings,
-                            voiceManager: voiceManager,
-                            runSessionId: runTracker.currentSession?.id,
-                            isTrainMode: false,
-                            shadowData: nil,
-                            healthManager: healthManager,
-                            intervals: runTracker.currentSession?.intervals ?? [],
-                            runStartTime: runTracker.currentSession?.startTime
-                        )
-                        lastCoachingKm = km
-                    }
-                }
+                // Train mode removed - always use run mode
+                // RAG-enhanced interval coaching with full performance analysis
+                aiCoach.startScheduledCoaching(
+                    for: stats,
+                    with: userPreferences.settings,
+                    voiceManager: voiceManager,
+                    runSessionId: runTracker.currentSession?.id,
+                    isTrainMode: false,
+                    shadowData: nil,
+                    healthManager: healthManager,
+                    intervals: runTracker.currentSession?.intervals ?? [],
+                    runStartTime: runTracker.currentSession?.startTime
+                )
+                lastCoachingKm = km
             }
         }
     }
@@ -430,20 +423,13 @@ struct MainRunbotView: View {
                         print("🟢 [MainRunbotView] HealthManager: available")
                         print("🟢 [MainRunbotView] RunTracker: available")
                         
-                        // Reset all state for new run (clear previous run data)
-                        didTriggerInitialCoaching = false
-                        lastCoachingKm = 0
-                        
                         // Start run tracker (creates session, starts location, starts HR monitoring)
-                        // This resets intervals, distance, etc. internally
                         runTracker.startRun(mode: .run, shadowData: nil)
                         
                         // Set running state
                         isRunning = true
-                        
-                        // Clear any previous coaching feedback
-                        aiCoach.stopCoaching()
-                        voiceManager.stopSpeaking()
+                        didTriggerInitialCoaching = false
+                        lastCoachingKm = 0
                         
                         print("🟢 [MainRunbotView] Run started, isRunning = true")
                         
@@ -472,33 +458,23 @@ struct MainRunbotView: View {
                             currentLocation: nil
                         )
                         didTriggerInitialCoaching = true
-                        
-                        // Refresh preferences from Supabase before starting coaching to ensure latest language/preferences
-                        let userId = authManager.currentUser?.id ?? "watch_user"
-                        Task {
-                            await userPreferences.refreshFromSupabase(supabaseManager: supabaseManager, userId: userId)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                            // START-OF-RUN COACHING (personalized welcome)
+                            // This also initializes RAG cache with preferences, language, Mem0 for the entire run
+                            // NOW INCLUDES RAG PERFORMANCE ANALYSIS + ADAPTIVE COACH RAG
+                            aiCoach.startOfRunCoaching(
+                                for: stats,
+                                with: userPreferences.settings,
+                                voiceManager: voiceManager,
+                                runSessionId: runTracker.currentSession?.id,
+                                runnerName: userPreferences.runnerName,
+                                healthManager: healthManager,
+                                runStartTime: runTracker.currentSession?.startTime
+                            )
                             
-                            await MainActor.run {
-                                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                                    // START-OF-RUN COACHING (personalized welcome)
-                                    // This also initializes RAG cache with preferences, language, Mem0 for the entire run
-                                    // NOW INCLUDES RAG PERFORMANCE ANALYSIS + ADAPTIVE COACH RAG
-                                    // Preferences are refreshed from Supabase to ensure latest language is used
-                                    aiCoach.startOfRunCoaching(
-                                        for: stats,
-                                        with: userPreferences.settings,
-                                        voiceManager: voiceManager,
-                                        runSessionId: runTracker.currentSession?.id,
-                                        runnerName: userPreferences.runnerName,
-                                        healthManager: healthManager,
-                                        runStartTime: runTracker.currentSession?.startTime
-                                    )
-                                }
-                            }
+                            // Note: Interval coaching is triggered by distance milestones
+                            // See onReceive(runTracker.$statsUpdate) below (every N km based on feedbackFrequency)
                         }
-                        
-                        // Note: Interval coaching is triggered by distance milestones
-                        // See onReceive(runTracker.$statsUpdate) below (every N km based on feedbackFrequency)
                         
                         print("🟢🟢🟢 [MainRunbotView] ========== START RUN COMPLETE ==========")
                     }
@@ -666,15 +642,8 @@ struct MainRunbotView: View {
                     print("🎤 [AI Coach Page] Speaking state changed: \(speaking)")
                     if speaking {
                         print("▶️ [AI Coach] Starting GIF animation and voice wave")
-                        // Clear feedback text timer when speaking starts
-                        feedbackTextDisplayUntil = nil
                     } else {
                         print("⏹️ [AI Coach] Stopping GIF animation and voice wave")
-                        // When voice finishes, show text for 2 minutes
-                        if !aiCoach.currentFeedback.isEmpty {
-                            feedbackTextDisplayUntil = Date().addingTimeInterval(120.0) // 2 minutes
-                            print("📝 [AI Coach] Will show feedback text until: \(feedbackTextDisplayUntil?.description ?? "nil")")
-                        }
                     }
                 }
                 
@@ -698,36 +667,17 @@ struct MainRunbotView: View {
                         .padding(.top, 4)
                 }
                 
-                // Feedback text (show for 2 minutes after voice finishes, then show icon)
-                if let displayUntil = feedbackTextDisplayUntil, Date() < displayUntil, !feedbackText.isEmpty {
-                    // Show feedback text for 2 minutes after voice finishes
-                    ScrollView {
-                        Text(feedbackText)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.white.opacity(0.9))
-                            .multilineTextAlignment(.center)
-                            .lineSpacing(3)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                    }
-                    .frame(maxHeight: .infinity)
-                    .transition(.opacity)
-                } else if feedbackText.isEmpty {
-                    // No feedback yet
-                    ScrollView {
-                        Text(isRunning ? "Waiting for feedback..." : "Start a run for AI coaching")
-                            .font(.system(size: 11, weight: .regular))
-                            .foregroundColor(.white.opacity(0.4))
-                            .multilineTextAlignment(.center)
-                            .lineSpacing(3)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 6)
-                    }
-                    .frame(maxHeight: .infinity)
-                } else {
-                    // 2 minutes passed, show icon instead of text
-                    Spacer()
+                // Feedback text
+                ScrollView {
+                    Text(feedbackText.isEmpty ? (isRunning ? "Waiting for feedback..." : "Start a run for AI coaching") : feedbackText)
+                        .font(.system(size: 11, weight: feedbackText.isEmpty ? .regular : .medium))
+                        .foregroundColor(feedbackText.isEmpty ? .white.opacity(0.4) : .white.opacity(0.9))
+                        .multilineTextAlignment(.center)
+                        .lineSpacing(3)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
                 }
+                .frame(maxHeight: .infinity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -750,150 +700,86 @@ struct MainRunbotView: View {
         let isSlower = paceDiff > 0.1
         
         VStack(spacing: 4) {
-            // Beautiful Dual Pace Visualization with Enhanced Circles
-            HStack(spacing: 8) {
-                // Current Pace - Left (Beautiful Circle with min/km label)
+            // Elegant Dual Pace Visualization - Optimized for Small Watches
+            HStack(spacing: 6) {
+                // Current Pace - Left (Elegant & Readable)
                 ZStack {
-                    // Outer glow ring with animated pulse
-                    Circle()
-                        .stroke(
-                            LinearGradient(
-                                colors: [
-                                    currentPaceClr.opacity(0.6),
-                                    currentPaceClr.opacity(0.3),
-                                    currentPaceClr.opacity(0.6)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 3
-                        )
-                        .frame(width: 92, height: 92)
-                        .shadow(color: currentPaceClr.opacity(0.5), radius: 6)
-                    
-                    // Middle ring with gradient
-                    Circle()
-                        .stroke(
-                            LinearGradient(
-                                colors: [
-                                    currentPaceClr.opacity(0.4),
-                                    currentPaceClr.opacity(0.2)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            ),
-                            lineWidth: 2
-                        )
-                        .frame(width: 86, height: 86)
-                    
-                    // Inner background circle with color-coded gradient based on target pace deviation
-                    Circle()
+                    // Subtle background glow
+                                Circle()
                         .fill(
                             RadialGradient(
                                 colors: [
-                                    paceCircleBackgroundColor(currentPace, target: targetPace),
-                                    paceCircleBackgroundColor(currentPace, target: targetPace).opacity(0.6),
-                                    paceCircleBackgroundColor(currentPace, target: targetPace).opacity(0.3)
+                                    currentPaceClr.opacity(0.25),
+                                    currentPaceClr.opacity(0.1),
+                                    Color.clear
                                 ],
                                 center: .center,
-                                startRadius: 0,
-                                endRadius: 43
+                                startRadius: 25,
+                                endRadius: 45
                             )
                         )
+                        .frame(width: 85, height: 85)
+                    
+                    // Clean ring border
+                    Circle()
+                        .stroke(currentPaceClr.opacity(0.5), lineWidth: 2.5)
                         .frame(width: 80, height: 80)
                     
-                    // Content
-                    VStack(spacing: 1) {
+                    VStack(spacing: 2) {
                         Text(formatPace(currentPace))
-                            .font(.system(size: 28, weight: .black, design: .rounded))
+                            .font(.system(size: 32, weight: .black, design: .rounded))
                             .foregroundColor(.white)
-                            .shadow(color: .black.opacity(0.8), radius: 3, x: 0, y: 1)
+                            .shadow(color: .black.opacity(0.5), radius: 2, x: 1, y: 1)
+                            .shadow(color: currentPaceClr.opacity(0.4), radius: 4)
                         
-                        Text("min/km")
-                            .font(.system(size: 9, weight: .semibold, design: .rounded))
-                            .foregroundColor(currentPaceClr.opacity(0.9))
-                            .tracking(0.3)
-                        
-                        Text("RT")
-                            .font(.system(size: 8, weight: .bold, design: .rounded))
-                            .foregroundColor(.white.opacity(0.7))
+                        Text("PACE RT")
+                            .font(.system(size: 17, weight: .bold, design: .rounded))
+                            .foregroundColor(.white.opacity(0.85))
                             .tracking(0.5)
                     }
                 }
-                .frame(width: 92, height: 92)
+                .frame(width: 85, height: 85)
                 
-                // Average Pace - Right (Beautiful Circle with min/km label)
+                // Average Pace - Right (Elegant & Readable)
                 ZStack {
-                    // Outer glow ring with animated pulse
-                    Circle()
-                        .stroke(
-                            LinearGradient(
-                                colors: [
-                                    avgPaceClr.opacity(0.6),
-                                    avgPaceClr.opacity(0.3),
-                                    avgPaceClr.opacity(0.6)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: 3
-                        )
-                        .frame(width: 92, height: 92)
-                        .shadow(color: avgPaceClr.opacity(0.5), radius: 6)
-                    
-                    // Middle ring with gradient
-                    Circle()
-                        .stroke(
-                            LinearGradient(
-                                colors: [
-                                    avgPaceClr.opacity(0.4),
-                                    avgPaceClr.opacity(0.2)
-                                ],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            ),
-                            lineWidth: 2
-                        )
-                        .frame(width: 86, height: 86)
-                    
-                    // Inner background circle with color-coded gradient based on target pace deviation
+                    // Subtle background glow
                     Circle()
                         .fill(
                             RadialGradient(
                                 colors: [
-                                    paceCircleBackgroundColor(avgPace, target: targetPace),
-                                    paceCircleBackgroundColor(avgPace, target: targetPace).opacity(0.6),
-                                    paceCircleBackgroundColor(avgPace, target: targetPace).opacity(0.3)
+                                    avgPaceClr.opacity(0.25),
+                                    avgPaceClr.opacity(0.1),
+                                    Color.clear
                                 ],
                                 center: .center,
-                                startRadius: 0,
-                                endRadius: 43
+                                startRadius: 25,
+                                endRadius: 45
                             )
                         )
+                        .frame(width: 85, height: 85)
+                    
+                    // Clean ring border
+                    Circle()
+                        .stroke(avgPaceClr.opacity(0.5), lineWidth: 2.5)
                         .frame(width: 80, height: 80)
                     
-                    // Content
-                    VStack(spacing: 1) {
+                    VStack(spacing: 2) {
                         Text(formatPace(avgPace))
-                            .font(.system(size: 28, weight: .black, design: .rounded))
+                            .font(.system(size: 32, weight: .black, design: .rounded))
                             .foregroundColor(.white)
-                            .shadow(color: .black.opacity(0.8), radius: 3, x: 0, y: 1)
+                            .shadow(color: .black.opacity(0.5), radius: 2, x: 1, y: 1)
+                            .shadow(color: avgPaceClr.opacity(0.4), radius: 4)
                         
-                        Text("min/km")
-                            .font(.system(size: 9, weight: .semibold, design: .rounded))
-                            .foregroundColor(avgPaceClr.opacity(0.9))
-                            .tracking(0.3)
-                        
-                        Text("AVG")
-                            .font(.system(size: 8, weight: .bold, design: .rounded))
-                            .foregroundColor(.white.opacity(0.7))
+                        Text("PACE AV")
+                            .font(.system(size: 17, weight: .bold, design: .rounded))
+                            .foregroundColor(.white.opacity(0.85))
                             .tracking(0.5)
                     }
                 }
-                .frame(width: 92, height: 92)
+                .frame(width: 85, height: 85)
             }
-            .padding(.top, 6)
-            .padding(.horizontal, 4)
+            .padding(.top, 8)
+            .padding(.horizontal, 6)
             
             // Pace Comparison Indicator
             if currentPace > 0 && avgPace > 0 {
@@ -941,10 +827,10 @@ struct MainRunbotView: View {
                     .frame(width: 1, height: 24)
                 
                 VStack(spacing: 1) {
-                    Text(formatElapsedMinutes(duration))
+                    Text(formatElapsed(duration))
                         .font(.system(size: 26, weight: .bold, design: .rounded))
                         .foregroundColor(.white)
-                    Text("MIN")
+                    Text("TIME")
                         .font(.system(size: 18, weight: .bold))
                         .foregroundColor(.rbSecondary)
                 }
@@ -977,55 +863,6 @@ struct MainRunbotView: View {
         else if deviation < -5 { return .rbAccent }
         else if deviation <= 10 { return .rbWarning }
         else { return .rbError }
-    }
-    
-    // Calculate background color for pace circle based on % deviation from target
-    private func paceCircleBackgroundColor(_ pace: Double, target: Double) -> Color {
-        guard pace > 0, target > 0 else { return Color.green.opacity(0.2) }
-        
-        // Calculate % deviation: negative means faster, positive means slower
-        let deviation = ((pace - target) / target) * 100
-        
-        if deviation <= 0 {
-            // Faster than or equal to target pace
-            if deviation <= -20 {
-                // Faster by >20% = brighter green
-                return Color.green.opacity(0.35)
-            } else {
-                // Faster or equal = green
-                return Color.green.opacity(0.25)
-            }
-        } else {
-            // Slower than target pace
-            if deviation > 10 {
-                // Slower by >10% = red
-                return Color.red.opacity(0.25)
-            } else {
-                // Slower by <=10% = yellow
-                return Color.yellow.opacity(0.25)
-            }
-        }
-    }
-    
-    private func formatElapsed(_ seconds: TimeInterval) -> String {
-        let totalMinutes = Int(seconds / 60)
-        return String(format: "%02d:%02d", totalMinutes, Int(seconds.truncatingRemainder(dividingBy: 60)))
-    }
-    
-    private func formatElapsedMinutes(_ seconds: TimeInterval) -> String {
-        let totalMinutes = Int(seconds / 60)
-        return "\(totalMinutes) min"
-    }
-    
-    private func formatDistanceKm(_ meters: Double) -> String {
-        let km = meters / 1000.0
-        if km >= 100 {
-            return String(format: "%.1f", km)
-        } else if km >= 10 {
-            return String(format: "%.2f", km)
-        } else {
-            return String(format: "%.2f", km)
-        }
     }
     
     // MARK: - ❤️ Heart Zone Page
@@ -1062,21 +899,21 @@ struct MainRunbotView: View {
                         .scaleEffect(1.0 + sin(wavePhase * 0.2) * 0.15)
                         .shadow(color: (currentZone != nil ? HeartZoneCalculator.zoneColor(for: currentZone!) : .rbError).opacity(0.6), radius: 8)
                         
-                    // Large HR value (reduced size for more space for heart zone)
+                    // Large HR value
                         if let hr = currentHR {
                             Text("\(Int(hr))")
-                            .font(.system(size: 42, weight: .black, design: .rounded))
+                            .font(.system(size: 56, weight: .black, design: .rounded))
                             .foregroundColor(.white)
                             .shadow(color: .white.opacity(0.3), radius: 4)
                     } else {
                         Text("--")
-                            .font(.system(size: 42, weight: .black, design: .rounded))
+                            .font(.system(size: 56, weight: .black, design: .rounded))
                                 .foregroundColor(.white.opacity(0.5))
                         }
                         
-                    // BPM label (reduced size)
+                    // BPM label
                         Text("BPM")
-                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .font(.system(size: 20, weight: .bold, design: .rounded))
                         .foregroundColor(.white.opacity(0.6))
                     }
                 .padding(.vertical, 12)
@@ -1240,7 +1077,7 @@ struct MainRunbotView: View {
             if isRunning {
                 // Show chart if we have data, or show "collecting data" message
                 if !zonePercentages.isEmpty && !angles.isEmpty && total > 0 {
-                // Beautiful Donut Chart with % on Segments (reduced size)
+                // Beautiful Donut Chart with % on Segments
                 ZStack {
                     // Outer glow ring
                     Circle()
@@ -1252,24 +1089,24 @@ struct MainRunbotView: View {
                             ),
                             lineWidth: 2
                         )
-                        .frame(width: 120, height: 120)
+                        .frame(width: 150, height: 150)
                         .blur(radius: 2)
                     
                     // Pie segments with gradient fills and percentage labels
                     ForEach(angles, id: \.zone) { angleData in
                         let percentage = zonePercentages[angleData.zone] ?? 0.0
                         let midAngle = angleData.start + (angleData.end - angleData.start) / 2.0
-                        let labelRadius: CGFloat = 32 // Position label on segment (reduced for smaller chart)
-                        let labelX = 60 + CGFloat(cos(midAngle * .pi / 180.0)) * labelRadius
-                        let labelY = 60 + CGFloat(sin(midAngle * .pi / 180.0)) * labelRadius
+                        let labelRadius: CGFloat = 40 // Position label on segment
+                        let labelX = 75 + CGFloat(cos(midAngle * .pi / 180.0)) * labelRadius
+                        let labelY = 75 + CGFloat(sin(midAngle * .pi / 180.0)) * labelRadius
                         
                         ZStack {
                             // Segment path
                             Path { path in
-                                path.move(to: CGPoint(x: 60, y: 60))
+                                path.move(to: CGPoint(x: 75, y: 75))
                                 path.addArc(
-                                    center: CGPoint(x: 60, y: 60),
-                                    radius: 52, // Reduced radius for smaller chart
+                                    center: CGPoint(x: 75, y: 75),
+                                    radius: 65,
                                     startAngle: Angle(degrees: angleData.start),
                                     endAngle: Angle(degrees: angleData.end),
                                     clockwise: false
@@ -1291,7 +1128,7 @@ struct MainRunbotView: View {
                             // Large percentage label on segment
                             if percentage >= 5.0 { // Only show if segment is large enough
                                 Text(String(format: "%.0f%%", percentage))
-                                    .font(.system(size: 18, weight: .black, design: .rounded)) // Reduced font size
+                                    .font(.system(size: 22, weight: .black, design: .rounded))
                                     .foregroundColor(.white)
                                     .shadow(color: .black.opacity(0.8), radius: 3, x: 1, y: 1)
                                     .shadow(color: HeartZoneCalculator.zoneColor(for: angleData.zone).opacity(0.5), radius: 2)
@@ -1307,44 +1144,27 @@ struct MainRunbotView: View {
                                 colors: [Color.black.opacity(0.95), Color.black],
                                 center: .center,
                                 startRadius: 5,
-                                endRadius: 28 // Reduced for smaller chart
+                                endRadius: 35
                             )
                         )
-                        .frame(width: 56, height: 56) // Reduced center hole
+                        .frame(width: 70, height: 70)
                     
                     // Center current zone indicator
                     VStack(spacing: 2) {
                         if let currentZone = healthManager.currentZone {
                             Text("Z\(currentZone)")
-                                .font(.system(size: 20, weight: .black, design: .rounded)) // Reduced font
+                                .font(.system(size: 24, weight: .black, design: .rounded))
                                 .foregroundColor(HeartZoneCalculator.zoneColor(for: currentZone))
                                 .shadow(color: HeartZoneCalculator.zoneColor(for: currentZone).opacity(0.5), radius: 4)
         } else {
                             Text("—")
-                                .font(.system(size: 18, weight: .bold)) // Reduced font
+                                .font(.system(size: 20, weight: .bold))
                                 .foregroundColor(.white.opacity(0.5))
                         }
                     }
                 }
-                .frame(width: 120, height: 120) // Reduced chart size
+                .frame(width: 150, height: 150)
                 .padding(.vertical, 8)
-                
-                // Zone Legend (small, compact)
-                HStack(spacing: 8) {
-                    ForEach([1, 2, 3, 4, 5], id: \.self) { zone in
-                        if let percentage = zonePercentages[zone], percentage > 0 {
-                            HStack(spacing: 3) {
-                                Circle()
-                                    .fill(HeartZoneCalculator.zoneColor(for: zone))
-                                    .frame(width: 6, height: 6)
-                                Text("Z\(zone)")
-                                    .font(.system(size: 8, weight: .semibold))
-                                    .foregroundColor(.white.opacity(0.7))
-                            }
-                        }
-                    }
-                }
-                .padding(.top, 4)
                 } else {
                     // Data is being collected - show loading state
                 Spacer()
@@ -1486,59 +1306,41 @@ struct MainRunbotView: View {
     // MARK: - Split Intervals Page
     @ViewBuilder
     private func splitIntervalsPage() -> some View {
-        // Only show intervals that have been completed (i.e., intervals that exist in the array)
-        // Intervals are only added to the array when a full 1km is completed
+        // Only show complete 1km intervals
         let allIntervals = runTracker.currentSession?.intervals ?? []
-        let currentDistance = runTracker.statsUpdate?.distance ?? 0.0 // Current distance in meters
-        
-        // Filter: only show intervals that are actually complete
-        // - Interval must have valid data (distance >= 900m, positive pace and duration)
-        // - Interval must be within the current distance (don't show future intervals)
-        // - Intervals are created when 1km is complete, so any valid interval is complete
-        // - Only show intervals that have realistic pace values (pace > 0 and <= 30 min/km)
-        let completeIntervals = allIntervals.filter { interval in
-            let intervalEndDistance = Double(interval.index + 1) * 1000.0 // km index + 1 = end distance in meters
-            return interval.distanceMeters >= 900.0 && // Interval is actually ~1km (allow some tolerance)
-                   interval.paceMinPerKm > 0 && // Valid pace (must be positive)
-                   interval.paceMinPerKm <= 30.0 && // Reasonable max pace (30 min/km for walking/slow jog)
-                   interval.durationSeconds > 0 && // Valid duration
-                   intervalEndDistance <= currentDistance + 50.0 // Don't show intervals beyond current distance (50m tolerance)
-        }
+        let completeIntervals = allIntervals.filter { $0.distanceMeters >= 950.0 } // Allow 50m tolerance
         let targetPace = userPreferences.settings.targetPaceMinPerKm
         
         VStack(spacing: 6) {
-            // Header with title and live pace (matching iOS)
-            HStack {
-                Text("Split Timeline")
-                    .font(.system(size: 13, weight: .bold, design: .rounded))
-                    .foregroundColor(.white)
-                
-                Spacer()
-                
-                // Live pace indicator
-                if isRunning, let currentPace = runTracker.statsUpdate?.pace, currentPace > 0 {
-                    HStack(spacing: 3) {
-                        Circle()
-                            .fill(Color.rbAccent)
-                            .frame(width: 6, height: 6)
-                        Text("\(formatPace(currentPace)) /km")
-                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                            .foregroundColor(.rbAccent)
-                    }
-                }
+            Text("SPLIT INTERVALS")
+                .font(.system(size: 14, weight: .black, design: .rounded))
+                .tracking(1.5)
+                .foregroundStyle(LinearGradient(colors: [.rbAccent, .rbSecondary], startPoint: .leading, endPoint: .trailing))
+                .padding(.top, 6)
+            
+            // Target pace text
+            HStack(spacing: 4) {
+                Text("Target:")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.5))
+                Text(formatPace(targetPace))
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundColor(.rbWarning)
             }
-            .padding(.horizontal, 8)
-            .padding(.top, 6)
+            .padding(.top, 2)
             
             if isRunning && !completeIntervals.isEmpty {
                 ScrollView {
                     VStack(spacing: 8) {
-                        // Show all complete intervals in chronological order (KM 1, KM 2, KM 3...)
-                        ForEach(completeIntervals, id: \.id) { interval in
+                        // Show last 3 complete km intervals
+                        let last3Intervals = Array(completeIntervals.suffix(3))
+                        let reversedIntervals = Array(last3Intervals.reversed())
+                        
+                        ForEach(reversedIntervals, id: \.id) { interval in
                             SplitIntervalBar(
                                 interval: interval,
                                 targetPace: targetPace,
-                                isLast: interval.id == completeIntervals.last?.id
+                                isLast: interval.id == last3Intervals.last?.id
                             )
                         }
                         
@@ -1648,6 +1450,21 @@ struct MainRunbotView: View {
         let mins = Int(paceMinutesPerKm)
         let secs = Int((paceMinutesPerKm - Double(mins)) * 60)
         return String(format: "%d:%02d", mins, secs)
+    }
+    
+    private func formatDistanceKm(_ distanceMeters: Double) -> String {
+        String(format: "%.2f", distanceMeters / 1000.0)
+    }
+    
+    private func formatElapsed(_ seconds: TimeInterval) -> String {
+        let hours = Int(seconds / 3600)
+        let minutes = Int((seconds.truncatingRemainder(dividingBy: 3600)) / 60)
+        let secs = Int(seconds.truncatingRemainder(dividingBy: 60))
+        
+        if hours > 0 {
+            return String(format: "%d:%02d:%02d", hours, minutes, secs)
+        }
+        return String(format: "%d:%02d", minutes, secs)
     }
     
     private func paceFromAvgSpeed(_ avgSpeedKmh: Double) -> Double {
@@ -1886,17 +1703,28 @@ struct MainRunbotView: View {
         isRunning = false
         
         // END-OF-RUN SUMMARY (personalized performance review)
+        // GUARDRAIL 2: End feedback has 20-second auto-timeout (in deliverFeedback)
         // CRITICAL: End feedback uses captured snapshot (latest stats preserved)
-        // GUARDRAIL: End feedback has 40-second auto-timeout (voice AI cutoff)
         if let session = sessionSnapshot, let stats = statsSnapshot {
             print("🏁 [MainRunbotView] Triggering end-of-run feedback with latest stats:")
             print("   Distance: \(String(format: "%.2f", stats.distance / 1000.0))km")
             print("   Pace: \(String(format: "%.2f", stats.pace)) min/km")
             print("   Duration: \(String(format: "%.1f", session.duration))s")
             print("   Calories: \(Int(stats.calories))")
-            print("🏁 [MainRunbotView] End feedback will auto-terminate after 40s (voice AI cutoff)")
+            print("🏁 [MainRunbotView] End feedback will auto-terminate after 20s (guardrail)")
             
-            // Final save to Supabase - all three tables (save first, then trigger feedback)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                // End-of-run RAG-powered analysis with full HealthKit data
+                aiCoach.endOfRunCoaching(
+                    for: stats,
+                    session: session,
+                    with: userPreferences.settings,
+                    voiceManager: voiceManager,
+                    healthManager: healthManager
+                )
+            }
+            
+            // Final save to Supabase - all three tables
             let userId = authManager.currentUser?.id ?? "watch_user"
             Task {
                 print("💾 [MainRunbotView] Saving run to Supabase - run_activities, run_hr, run_intervals")
@@ -1915,7 +1743,7 @@ struct MainRunbotView: View {
                 
                 // 3. Save run_intervals (batch UPSERT)
                 if !session.intervals.isEmpty {
-                    let intervalsSuccess = await supabaseManager.saveRunIntervals(session.intervals, userId: userId, healthManager: healthManager)
+                    let intervalsSuccess = await supabaseManager.saveRunIntervals(session.intervals, userId: userId)
                     print(intervalsSuccess ? "✅ [MainRunbotView] run_intervals saved (\(session.intervals.count) intervals)" : "❌ [MainRunbotView] run_intervals save failed")
                 } else {
                     print("⚠️ [MainRunbotView] No intervals to save")
@@ -1939,24 +1767,6 @@ struct MainRunbotView: View {
                             }
                         }
                     }
-                }
-                
-                // After saving, trigger end-of-run feedback immediately
-                print("🏁 [MainRunbotView] Run data saved - starting end-of-run feedback")
-                aiCoach.endOfRunCoaching(
-                    for: stats,
-                    session: session,
-                    with: userPreferences.settings,
-                    voiceManager: voiceManager,
-                    healthManager: healthManager
-                )
-                
-                // Stop HealthKit workout after end-of-run feedback finishes (40 seconds max)
-                // Use a completion callback to detect when feedback is complete
-                DispatchQueue.main.asyncAfter(deadline: .now() + 45.0) {
-                    print("🛑 [MainRunbotView] Stopping HealthKit workout after end-of-run feedback")
-                    healthManager.stopHeartRateMonitoring()
-                    print("✅ [MainRunbotView] HealthKit workout stopped")
                 }
             }
         }
@@ -3488,7 +3298,7 @@ struct CurvedRaceArc: View {
     }
 }
 
-// MARK: - Split Interval Bar Component (iOS-style)
+// MARK: - Split Interval Bar Component
 struct SplitIntervalBar: View {
     let interval: RunInterval
     let targetPace: Double
@@ -3496,106 +3306,119 @@ struct SplitIntervalBar: View {
     var isAverage: Bool = false
     
     var body: some View {
-        let pace = interval.paceMinPerKm
+        // Fix: If pace is < 1.0, it's likely stored as km/min (speed) instead of min/km (pace)
+        // Convert it: pace = 1 / speed (e.g., 0.29 km/min = 3.45 min/km)
+        let rawPace = interval.paceMinPerKm
+        let pace: Double = {
+            if rawPace > 0 && rawPace < 1.0 {
+                // Value is too small to be min/km, likely stored as km/min (speed)
+                // Convert: pace (min/km) = 1 / speed (km/min)
+                return 1.0 / rawPace
+            }
+            return rawPace
+        }()
         let deviation = targetPace > 0 ? ((pace - targetPace) / targetPace) * 100 : 0
         
-        // Color coding matching iOS: Green (faster), Yellow (steady), Red (slower)
-        let (barColor, statusText, statusIcon): (Color, String, String) = {
+        // Color coding based on % deviation
+        let barColor: Color = {
             if abs(deviation) <= 5 {
-                return (.rbWarning, "Steady", "equal.circle.fill") // Yellow for steady (iOS uses yellow)
+                return .rbSuccess // On track (within 5%)
+            } else if deviation < -10 {
+                return .rbAccent // Fast (more than 10% faster)
             } else if deviation < -5 {
-                return (.rbSuccess, "Faster", "arrow.up.circle.fill") // Green for faster
+                return Color(red: 0.0, green: 0.7, blue: 1.0) // Slightly fast (5-10% faster)
+            } else if deviation <= 10 {
+                return .rbWarning // Slightly slow (5-10% slower)
             } else {
-                return (.rbError, "Slower", "arrow.down.circle.fill") // Red for slower
+                return .rbError // Very slow (more than 10% slower)
             }
         }()
         
-        // Format duration as MM:SS
-        let durationMinutes = Int(interval.durationSeconds) / 60
-        let durationSeconds = Int(interval.durationSeconds) % 60
-        let durationString = String(format: "%d:%02d", durationMinutes, durationSeconds)
-        
-        VStack(alignment: .leading, spacing: 3) {
-            // Interval label at top
-            Text(isAverage ? "AVG" : "KM \(interval.index + 1)")
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                .foregroundColor(.white.opacity(0.8))
-            
-            // Main content area
-            VStack(alignment: .leading, spacing: 3) {
-                // Horizontal bar with pace displayed inside
-                // Bar length directly represents pace in min/km: faster pace (lower min/km) = shorter bar, slower pace (higher min/km) = longer bar
-                GeometryReader { geometry in
-                    let barWidth = geometry.size.width
-                    
-                    // Pace range for visualization: 3-12 min/km maps to bar width
-                    // Example: 5:00 min/km (fast) = shorter bar, 8:00 min/km (slow) = longer bar
-                    let minPaceRange: Double = 3.0  // Fastest expected pace (3:00 min/km)
-                    let maxPaceRange: Double = 12.0 // Slowest expected pace (12:00 min/km)
-                    
-                    // Clamp pace to valid range and normalize to 0-1
-                    // This ensures bar length is proportional to pace value in min/km
-                    let clampedPace = min(max(pace, minPaceRange), maxPaceRange)
-                    let normalizedPace = (clampedPace - minPaceRange) / (maxPaceRange - minPaceRange)
-                    let barLength = max(barWidth * CGFloat(normalizedPace), 70) // Minimum 70pt to fit pace text comfortably
-                    
-                    ZStack(alignment: .leading) {
-                        // Background bar (full width, subtle)
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(Color.white.opacity(0.08))
-                            .frame(width: barWidth, height: 24)
-                        
-                        // Colored pace bar
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(barColor)
-                            .frame(width: barLength, height: 24)
-                        
-                        // Pace text inside bar (white text)
-                        HStack {
-                            Text("\(formatPace(pace)) /km")
-                                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                                .foregroundColor(.white)
-                                .padding(.leading, 8)
-                            Spacer()
-                        }
-                        .frame(width: barLength, height: 24)
-                    }
-                }
-                .frame(height: 24)
+        VStack(spacing: 4) {
+            HStack(spacing: 6) {
+                // Interval label
+                Text(isAverage ? "AVG" : "KM \(interval.index + 1)")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(.white.opacity(0.7))
+                    .frame(width: 35, alignment: .leading)
                 
-                // Duration with clock icon and status on same row
-                HStack {
-                    HStack(spacing: 3) {
-                        Image(systemName: "clock")
-                            .font(.system(size: 8))
-                            .foregroundColor(.white.opacity(0.6))
-                        Text(durationString)
-                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                            .foregroundColor(.white.opacity(0.7))
-                    }
-                    
-                    Spacer()
-                    
-                    // Status indicator on right
-                    HStack(spacing: 3) {
-                        Image(systemName: statusIcon)
+                // Pace value
+                Text(formatPace(pace))
+                    .font(.system(size: 13, weight: .bold, design: .monospaced))
+                    .foregroundColor(barColor)
+                    .frame(width: 50, alignment: .leading)
+                
+                // Deviation indicator
+                HStack(spacing: 2) {
+                    if abs(deviation) <= 5 {
+                        Image(systemName: "checkmark.circle.fill")
                             .font(.system(size: 10))
-                            .foregroundColor(barColor)
-                        Text(statusText)
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(barColor)
+                            .foregroundColor(.rbSuccess)
+                    } else if deviation < -10 {
+                        Image(systemName: "bolt.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(.rbAccent)
+                    } else if deviation < -5 {
+                        Image(systemName: "arrow.up.circle.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(Color(red: 0.0, green: 0.7, blue: 1.0))
+                    } else if deviation <= 10 {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(.rbWarning)
+                    } else {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 10))
+                            .foregroundColor(.rbError)
                     }
+                    
+                    Text(String(format: "%.1f%%", abs(deviation)))
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(barColor.opacity(0.8))
+                }
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+            
+            // Horizontal bar visualization - length represents pace (faster = shorter, slower = longer)
+            GeometryReader { geometry in
+                let barWidth = geometry.size.width
+                
+                // Normalize pace to bar length: pace range 3-12 min/km maps to bar width
+                // Faster pace (lower min/km) = shorter bar, slower pace (higher min/km) = longer bar
+                let minPaceRange: Double = 3.0  // Fastest expected pace
+                let maxPaceRange: Double = 12.0 // Slowest expected pace
+                let normalizedPace = min(max((pace - minPaceRange) / (maxPaceRange - minPaceRange), 0), 1.0)
+                let barLength = barWidth * CGFloat(normalizedPace)
+                
+                ZStack(alignment: .leading) {
+                    // Background bar (full width)
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(Color.white.opacity(0.1))
+                        .frame(width: barWidth, height: 10)
+                    
+                    // Colored pace bar (length = pace value)
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(
+                            LinearGradient(
+                                colors: [barColor, barColor.opacity(0.7)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
+                        .frame(width: max(barLength, 4), height: 10) // Minimum 4pt width for visibility
+                        .shadow(color: barColor.opacity(0.5), radius: 4)
                 }
             }
+            .frame(height: 10)
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 4)
+        .padding(.vertical, 6)
         .background(
-            RoundedRectangle(cornerRadius: 10)
+            RoundedRectangle(cornerRadius: 8)
                 .fill(Color.white.opacity(0.05))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(barColor.opacity(0.2), lineWidth: 1)
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(barColor.opacity(0.3), lineWidth: isLast ? 1.5 : 0.5)
                 )
         )
     }

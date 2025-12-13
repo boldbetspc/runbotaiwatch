@@ -126,12 +126,20 @@ struct ContentViewWrapper: View {
         runTracker.supabaseManager = supabaseManager
         
         // Request HealthKit authorization ON WATCH
+        // Check current authorization status first
+        healthManager.checkAuthorizationStatus()
+        
+        // If not authorized, request authorization automatically
         // Add a small delay to ensure the app is fully initialized
         print("🚀 [App] Scheduling HealthKit authorization request on watch...")
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
             print("🚀 [App] Requesting HealthKit authorization on watch...")
-            // Don't auto-request - user must refresh in Connections page
-            // self.healthManager.requestHealthDataAccess()
+            if !self.healthManager.isAuthorized {
+                print("💓 [App] Not authorized - requesting HealthKit access...")
+                self.healthManager.requestHealthDataAccess()
+            } else {
+                print("✅ [App] Already authorized - skipping request")
+            }
             print("✅ [App] HealthKit authorization request submitted")
         }
         

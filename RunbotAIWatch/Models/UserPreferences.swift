@@ -196,19 +196,4 @@ final class UserPreferences: ObservableObject {
         
         print("📂 [Preferences] Loaded from storage")
     }
-    
-    /// Refresh preferences from Supabase (call after saving or at start of run)
-    func refreshFromSupabase(supabaseManager: SupabaseManager, userId: String) async {
-        guard let freshSettings = await supabaseManager.loadUserPreferences(userId: userId) else {
-            print("⚠️ [Preferences] Could not refresh from Supabase - using cached settings")
-            return
-        }
-        
-        await MainActor.run {
-            // Update local settings with fresh data from Supabase
-            self.settings = freshSettings
-            self.saveToStorage() // Also update local storage
-            print("✅ [Preferences] Refreshed from Supabase - Language: \(freshSettings.language.displayName)")
-        }
-    }
 }
