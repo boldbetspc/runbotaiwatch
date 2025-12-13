@@ -1,6 +1,12 @@
 {
   "images" : [
     {
+      "filename" : "watch_appicon_1024.png",
+      "idiom" : "watch-marketing",
+      "scale" : "1x",
+      "size" : "1024x1024"
+    },
+    {
       "idiom" : "watch",
       "role" : "notificationCenter",
       "scale" : "2x",
@@ -109,11 +115,6 @@
       "scale" : "2x",
       "size" : "129x129",
       "subtype" : "49mm"
-    },
-    {
-      "idiom" : "watch-marketing",
-      "scale" : "1x",
-      "size" : "1024x1024"
     },
     {
       "idiom" : "watch",
