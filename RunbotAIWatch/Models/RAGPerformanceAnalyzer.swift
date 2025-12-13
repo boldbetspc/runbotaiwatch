@@ -30,6 +30,10 @@ import Combine
 ///
 class RAGPerformanceAnalyzer: ObservableObject {
     
+    // MARK: - Configuration
+    private let supabaseURL: String
+    private let supabaseKey: String
+    
     // MARK: - Cached Run Context
     // Preferences, language, runner name - cached once at run start (never change during run)
     // Mem0 insights - fetched fresh at each interval (incremental updates during run)
@@ -38,6 +42,19 @@ class RAGPerformanceAnalyzer: ObservableObject {
     private var cachedUserId: String?
     private var runStartTime: Date?
     private var isRunActive: Bool = false
+    
+    // MARK: - Initialization
+    init() {
+        if let config = ConfigLoader.loadConfig(),
+           let url = config["SUPABASE_URL"] as? String,
+           let key = config["SUPABASE_ANON_KEY"] as? String {
+            self.supabaseURL = url
+            self.supabaseKey = key
+        } else {
+            self.supabaseURL = ""
+            self.supabaseKey = ""
+        }
+    }
     
     /// Call at run start to cache preferences and language (never change during run)
     /// Mem0 insights are fetched fresh at each interval for incremental updates
@@ -1227,7 +1244,11 @@ class RAGPerformanceAnalyzer: ObservableObject {
     }
     
     private func generateRunEmbedding(snapshot: PerformanceSnapshot) async -> [Double]? {
-        guard !openAIKey.isEmpty else { return nil }
+        // Use Supabase edge function for embedding generation (same as OpenAI TTS)
+        guard !supabaseURL.isEmpty, !supabaseKey.isEmpty else {
+            print("⚠️ [RAG] Supabase not configured for embedding generation")
+            return nil
+        }
         
         // Build a text description of the current run state for embedding
         let runDescription = """
@@ -1246,13 +1267,19 @@ class RAGPerformanceAnalyzer: ObservableObject {
         """
         
         do {
-            let url = URL(string: "https://api.openai.com/v1/embeddings")!
+            // Use Supabase edge function: openai-proxy (shared with iOS app and TTS)
+            // The edge function uses OPENAI_API_KEY from Supabase secrets
+            let url = URL(string: "\(supabaseURL)/functions/v1/openai-proxy")!
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
-            request.setValue("Bearer \(openAIKey)", forHTTPHeaderField: "Authorization")
+            request.setValue(supabaseKey, forHTTPHeaderField: "apikey")
+            request.setValue("Bearer \(getAuthToken())", forHTTPHeaderField: "Authorization")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.timeoutInterval = 15
             
+            // Edge function expects endpoint='embeddings' to identify embedding request
             let body: [String: Any] = [
+                "endpoint": "embeddings",
                 "model": "text-embedding-3-small",
                 "input": runDescription
             ]
@@ -1261,19 +1288,31 @@ class RAGPerformanceAnalyzer: ObservableObject {
             
             let (data, response) = try await URLSession.shared.data(for: request)
             
-            if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200,
-               let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let dataArray = json["data"] as? [[String: Any]],
-               let first = dataArray.first,
-               let embedding = first["embedding"] as? [Double] {
-                print("✅ [RAG] Generated embedding with \(embedding.count) dimensions")
-                return embedding
+            if let httpResponse = response as? HTTPURLResponse {
+                if httpResponse.statusCode == 200,
+                   let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let dataArray = json["data"] as? [[String: Any]],
+                   let first = dataArray.first,
+                   let embedding = first["embedding"] as? [Double] {
+                    print("✅ [RAG] Generated embedding via edge function with \(embedding.count) dimensions")
+                    return embedding
+                } else {
+                    let errorString = String(data: data, encoding: .utf8) ?? "Unknown error"
+                    print("❌ [RAG] Embedding generation failed - Status: \(httpResponse.statusCode), Error: \(errorString)")
+                }
             }
         } catch {
             print("❌ [RAG] Embedding generation failed: \(error.localizedDescription)")
         }
         
         return nil
+    }
+    
+    private func getAuthToken() -> String {
+        if let token = UserDefaults.standard.string(forKey: "sessionToken") {
+            return token
+        }
+        return supabaseKey
     }
     
     private func searchSimilarRuns(embedding: [Double], userId: String) async -> [SimilarRunResult] {

@@ -104,13 +104,11 @@ final class VoiceManager: NSObject, ObservableObject {
             
             // watchOS optimized configuration for loud playback
             // Use .playback category without .duckOthers for maximum volume
+            // Note: Volume is controlled via utterance.volume (already set to 1.0) and AVAudioPlayer.volume
             try audioSession.setCategory(.playback, mode: .voicePrompt, options: [])
             try audioSession.setActive(true)
             
-            // Set output volume to maximum (if supported)
-            try audioSession.setPreferredOutputVolume(1.0)
-            
-            print("🔊 [Voice] ✅ Audio session configured for maximum volume")
+            print("🔊 [Voice] ✅ Audio session configured for maximum volume (no ducking)")
         } catch {
             print("🔊 [Voice] ❌ Audio session error: \(error.localizedDescription)")
             // Fallback to basic configuration

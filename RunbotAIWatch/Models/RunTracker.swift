@@ -706,12 +706,28 @@ extension RunTracker {
         let d = 1000.0 // Fixed 1km interval distance
         let dt = max(end.timestamp.timeIntervalSince(start.timestamp), 0.001)
         
-        // Calculate pace in min/km: duration in seconds / 60 = minutes, then divide by distance in km
-        // Example: 278 seconds for 1km = 278/60 = 4.633 min/km = 4:38 min/km
+        // Calculate pace in min/km: (duration in seconds / 60) / (distance in meters / 1000)
+        // Formula: pace (min/km) = (time in seconds) / 60 / (distance in km)
+        // Example: 278 seconds for 1km = (278 / 60) / (1000 / 1000) = 4.633 / 1.0 = 4.633 min/km = 4:38 min/km
+        // Simplified: pace = dt / 60.0 (when d = 1000m, distanceKm = 1.0)
         let paceMinPerKm: Double = {
-            let minutes = dt / 60.0  // Convert seconds to minutes
-            let distanceKm = d / 1000.0  // Convert meters to kilometers
-            return distanceKm > 0 ? minutes / distanceKm : 0.0
+            guard d > 0 && dt > 0 else { 
+                print("⚠️ [RunTracker] Invalid interval data: d=\(d)m, dt=\(dt)s")
+                return 0.0 
+            }
+            // Simple formula: pace (min/km) = (time in seconds) / 60 / (distance in km)
+            // Since d = 1000m always, distanceKm = 1.0, so: pace = dt / 60.0
+            let distanceKm = d / 1000.0
+            let timeMinutes = dt / 60.0
+            let pace = timeMinutes / distanceKm
+            
+            // Log warning if pace seems unrealistic (but don't change it - use actual calculated value)
+            if pace < 2.0 || pace > 20.0 {
+                print("⚠️ [RunTracker] Unusual pace calculated: \(String(format: "%.2f", pace)) min/km (dt=\(String(format: "%.1f", dt))s for \(String(format: "%.0f", d))m)")
+                print("   ⚠️ This may indicate GPS tracking issues, but using calculated value anyway")
+            }
+            
+            return pace
         }()
         
         print("📊 [RunTracker] Creating 1km interval #\(session.intervals.count + 1):")
