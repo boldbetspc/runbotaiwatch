@@ -46,6 +46,12 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
+	<key>NSHealthShareUsageDescription</key>
+	<string>RunbotAI Watch reads your heart rate to provide personalized AI coaching and track your workout intensity</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>RunbotAI Watch saves your workouts to Apple Health to track your running progress</string>
 </dict>
 </plist>
 

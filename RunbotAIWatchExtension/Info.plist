@@ -26,13 +26,13 @@
 	<string>RunbotAI Watch needs your location to track your running route and distance</string>
 	<key>UIBackgroundModes</key>
 	<array>
-		<string>healthkit</string>
-		<string>workout-processing</string>
 	</array>
 	<key>WKBackgroundModes</key>
 	<array>
 		<string>workout-processing</string>
 	</array>
+	<key>CFBundleIconName</key>
+	<string>AppIcon</string>
 	<key>UIUserInterfaceStyle</key>
 	<string>Dark</string>
 	<key>WKApplication</key>
