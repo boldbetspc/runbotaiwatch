@@ -3379,16 +3379,17 @@ struct SplitIntervalBar: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
             
-            // Horizontal bar visualization - length represents pace (faster = shorter, slower = longer)
+            // Horizontal bar visualization - bar length directly represents pace value (min/km)
+            // No normalization - bar length is proportional to pace value
             GeometryReader { geometry in
                 let barWidth = geometry.size.width
                 
-                // Normalize pace to bar length: pace range 3-12 min/km maps to bar width
-                // Faster pace (lower min/km) = shorter bar, slower pace (higher min/km) = longer bar
-                let minPaceRange: Double = 3.0  // Fastest expected pace
-                let maxPaceRange: Double = 12.0 // Slowest expected pace
-                let normalizedPace = min(max((pace - minPaceRange) / (maxPaceRange - minPaceRange), 0), 1.0)
-                let barLength = barWidth * CGFloat(normalizedPace)
+                // FIXED: Bar length directly represents pace value in min/km
+                // Scale: 1 min/km = barWidth / maxPaceForDisplay
+                // Use max pace of 15 min/km for scaling (reasonable upper bound for display)
+                let maxPaceForDisplay: Double = 15.0
+                let scaledPace = min(pace, maxPaceForDisplay) // Cap at max for display
+                let barLength = barWidth * CGFloat(scaledPace / maxPaceForDisplay)
                 
                 ZStack(alignment: .leading) {
                     // Background bar (full width)
@@ -3396,7 +3397,7 @@ struct SplitIntervalBar: View {
                         .fill(Color.white.opacity(0.1))
                         .frame(width: barWidth, height: 10)
                     
-                    // Colored pace bar (length = pace value)
+                    // Colored pace bar (length directly represents pace value)
                     RoundedRectangle(cornerRadius: 4)
                         .fill(
                             LinearGradient(

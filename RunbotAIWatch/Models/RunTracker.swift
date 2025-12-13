@@ -19,6 +19,7 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
     private var intervalBuffer: [CLLocation] = []
     private let intervalDistanceMeters: Double = 1000.0 // create interval every 1km
     private var lastIntervalEndDistance: Double = 0.0 // Track cumulative distance for 1km intervals
+    private var lastIntervalEndTime: Date? // Track time when last interval ended (for calculating interval pace)
     var supabaseManager: SupabaseManager?
     var healthManager: HealthManager?
     
@@ -95,6 +96,7 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         previousLocations = []
         intervalBuffer = []
         lastIntervalEndDistance = 0.0 // Reset interval tracking
+        lastIntervalEndTime = newSession.startTime // Initialize with run start time
         paceHistory = [] // Reset pace history for new run
         
         print("🏃 [RunTracker] Starting location manager...")
@@ -385,8 +387,10 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
                         // Create interval when 1km is complete
                         let distanceSinceLastInterval = totalDistance - lastIntervalEndDistance
                         if distanceSinceLastInterval >= intervalDistanceMeters {
-                            createIntervalIfPossible(in: &session)
+                            let intervalEndTime = Date() // Time when this km milestone was hit
+                            createIntervalIfPossible(in: &session, intervalEndTime: intervalEndTime)
                             lastIntervalEndDistance = totalDistance
+                            lastIntervalEndTime = intervalEndTime
                             intervalBuffer.removeAll(keepingCapacity: true)
                         }
                     }
@@ -696,24 +700,25 @@ extension RunTracker {
         intervalBuffer = intervalBuffer.filter { $0.timestamp >= cutoff }
     }
 
-    private func createIntervalIfPossible(in session: inout RunSession) {
+    private func createIntervalIfPossible(in session: inout RunSession, intervalEndTime: Date) {
         guard intervalBuffer.count >= 2 else { return }
-        let start = intervalBuffer.first!
-        let end = intervalBuffer.last!
         
-        // Use actual 1km distance (1000m) for the interval, not buffered distance
-        // This ensures each interval represents exactly 1km
+        // Calculate time taken for this specific 1km interval
+        // Interval start time = time when previous interval ended (or run start for first interval)
+        let intervalStartTime = lastIntervalEndTime ?? session.startTime
+        let durationSeconds = intervalEndTime.timeIntervalSince(intervalStartTime)
+        
+        // FIXED: Calculate pace correctly: time taken for this 1km interval (in minutes) / 1 km
+        // Example: If user finished 1st km in 5 minutes → pace = 5 min / 1 km = 5 min/km
+        // Example: If user hit 2km in 9.5 minutes → pace = (9.5 - 5) min / 1 km = 4.5 min/km
         let d = 1000.0 // Fixed 1km interval distance
-        let dt = max(end.timestamp.timeIntervalSince(start.timestamp), 0.001)
-        let paceMinPerKm: Double = {
-            let mps = d / dt
-            let kmPerMin = (mps * 3.6) / 60.0
-            return kmPerMin > 0 ? 1.0 / kmPerMin : 0.0
-        }()
+        let paceMinPerKm = durationSeconds / 60.0 // Convert seconds to minutes, then divide by 1km
         
         print("📊 [RunTracker] Creating 1km interval #\(session.intervals.count + 1):")
+        print("   - Interval start time: \(intervalStartTime)")
+        print("   - Interval end time: \(intervalEndTime)")
         print("   - Distance: \(String(format: "%.2f", d))m")
-        print("   - Duration: \(String(format: "%.1f", dt))s")
+        print("   - Duration: \(String(format: "%.1f", durationSeconds))s (\(String(format: "%.2f", durationSeconds / 60.0)) minutes)")
         print("   - Pace: \(String(format: "%.2f", paceMinPerKm)) min/km")
         
         var intervals = session.intervals
@@ -722,10 +727,10 @@ extension RunTracker {
             id: UUID().uuidString,
             runId: session.id,
             index: idx,
-            startTime: start.timestamp,
-            endTime: end.timestamp,
+            startTime: intervalStartTime,
+            endTime: intervalEndTime,
             distanceMeters: d,
-            durationSeconds: dt,
+            durationSeconds: durationSeconds,
             paceMinPerKm: paceMinPerKm
         )
         intervals.append(interval)
