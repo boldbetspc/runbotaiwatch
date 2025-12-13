@@ -30,10 +30,6 @@ import Combine
 ///
 class RAGPerformanceAnalyzer: ObservableObject {
     
-    // MARK: - Configuration
-    private let supabaseURL: String
-    private let supabaseKey: String
-    
     // MARK: - Cached Run Context
     // Preferences, language, runner name - cached once at run start (never change during run)
     // Mem0 insights - fetched fresh at each interval (incremental updates during run)
@@ -42,19 +38,6 @@ class RAGPerformanceAnalyzer: ObservableObject {
     private var cachedUserId: String?
     private var runStartTime: Date?
     private var isRunActive: Bool = false
-    
-    // MARK: - Initialization
-    init() {
-        if let config = ConfigLoader.loadConfig(),
-           let url = config["SUPABASE_URL"] as? String,
-           let key = config["SUPABASE_ANON_KEY"] as? String {
-            self.supabaseURL = url
-            self.supabaseKey = key
-        } else {
-            self.supabaseURL = ""
-            self.supabaseKey = ""
-        }
-    }
     
     /// Call at run start to cache preferences and language (never change during run)
     /// Mem0 insights are fetched fresh at each interval for incremental updates
