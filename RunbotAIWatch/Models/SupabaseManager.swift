@@ -146,23 +146,18 @@ class SupabaseManager: ObservableObject {
             // Use elapsedTime for current duration (works even if duration is 0 at start)
             let currentDurationSeconds = max(0, Int(runData.elapsedTime))
             
-            // Calculate duration_minutes for check constraint (if table has this column/constraint)
-            // The constraint might require duration_minutes to be >= 0 or within valid range
-            let durationMinutes = max(0, Int(runData.elapsedTime / 60.0))
-            
             // Ensure numeric values are valid (no NaN, negative for distance)
             let distanceMeters = max(0.0, runData.distance.isFinite ? runData.distance : 0.0)
             let elevationMeters = runData.elevation.isFinite ? max(0.0, runData.elevation) : 0.0
             let caloriesValue = runData.calories.isFinite ? max(0, Int(runData.calories)) : 0
             
             // NOTE: average_pace_minutes_per_km is a GENERATED COLUMN - don't send it
-            // NOTE: duration_minutes may have a check constraint - include it to satisfy constraint
+            // NOTE: duration_minutes column does NOT exist in run_activities table - only duration_s
             var runPayload: [String: Any] = [
                 "id": runData.id,
                 "user_id": userId,
                 "name": runName,
                 "duration_s": currentDurationSeconds, // Required: integer, NOT NULL
-                "duration_minutes": durationMinutes, // Add to satisfy check constraint (if column exists)
                 "activity_date": formatter.string(from: runData.startTime), // Required: timestamp, NOT NULL
                 "distance_meters": distanceMeters, // Required: numeric, NOT NULL (ensure >= 0)
                 "calories": caloriesValue,
@@ -256,14 +251,11 @@ class SupabaseManager: ObservableObject {
             // Calculate duration_s for update (required: integer, NOT NULL)
             let updateDurationSeconds = max(0, Int(runData.elapsedTime))
             
-            // Calculate duration_minutes for check constraint
-            let updateDurationMinutes = max(0, Int(runData.elapsedTime / 60.0))
-            
             // NOTE: average_pace_minutes_per_km is a GENERATED COLUMN - don't send it
+            // NOTE: duration_minutes column does NOT exist in run_activities table - only duration_s
             var runPayload: [String: Any] = [
                 "user_id": userId,
                 "duration_s": updateDurationSeconds, // Required: integer, NOT NULL
-                "duration_minutes": updateDurationMinutes, // Add this to satisfy check constraint
                 "distance_meters": runData.distance, // Required: numeric, NOT NULL
                 "calories": Int(runData.calories),
                 "elevation_gain_meters": runData.elevation,
