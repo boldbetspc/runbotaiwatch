@@ -890,91 +890,104 @@ struct MainRunbotView: View {
                 let _ = healthManager.zonePercentages
                 let adaptiveGuidance = healthManager.adaptiveGuidance
                 
-                // Beautiful Heart Rate Display (No Circle)
-                VStack(spacing: 8) {
+                // Heart Rate Display (Reduced size)
+                VStack(spacing: 4) {
                     // Heart icon with pulsing animation
-                        Image(systemName: "heart.fill")
-                        .font(.system(size: 24))
-                            .foregroundColor(currentZone != nil ? HeartZoneCalculator.zoneColor(for: currentZone!) : .rbError)
+                    Image(systemName: "heart.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(currentZone != nil ? HeartZoneCalculator.zoneColor(for: currentZone!) : .rbError)
                         .scaleEffect(1.0 + sin(wavePhase * 0.2) * 0.15)
-                        .shadow(color: (currentZone != nil ? HeartZoneCalculator.zoneColor(for: currentZone!) : .rbError).opacity(0.6), radius: 8)
+                        .shadow(color: (currentZone != nil ? HeartZoneCalculator.zoneColor(for: currentZone!) : .rbError).opacity(0.6), radius: 6)
                         
-                    // Large HR value
-                        if let hr = currentHR {
-                            Text("\(Int(hr))")
-                            .font(.system(size: 56, weight: .black, design: .rounded))
+                    // Reduced HR value
+                    if let hr = currentHR {
+                        Text("\(Int(hr))")
+                            .font(.system(size: 36, weight: .black, design: .rounded))
                             .foregroundColor(.white)
-                            .shadow(color: .white.opacity(0.3), radius: 4)
+                            .shadow(color: .white.opacity(0.3), radius: 3)
                     } else {
                         Text("--")
-                            .font(.system(size: 56, weight: .black, design: .rounded))
-                                .foregroundColor(.white.opacity(0.5))
-                        }
-                        
-                    // BPM label
-                        Text("BPM")
-                        .font(.system(size: 20, weight: .bold, design: .rounded))
-                        .foregroundColor(.white.opacity(0.6))
+                            .font(.system(size: 36, weight: .black, design: .rounded))
+                            .foregroundColor(.white.opacity(0.5))
                     }
-                .padding(.vertical, 12)
+                        
+                    // BPM label (smaller)
+                    Text("BPM")
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                        .foregroundColor(.white.opacity(0.6))
+                }
+                .padding(.vertical, 8)
                     
-                // Beautiful Color-Coded Zone Badge
+                // Enhanced Color-Coded Zone Badge (Larger and more prominent)
                 if let zone = currentZone {
-                    HStack(spacing: 8) {
-                        // Zone color indicator
-                        RoundedRectangle(cornerRadius: 4)
+                    let zoneColor = HeartZoneCalculator.zoneColor(for: zone)
+                    
+                    VStack(spacing: 8) {
+                        HStack(spacing: 10) {
+                            // Larger zone color indicator bar
+                            RoundedRectangle(cornerRadius: 6)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [
+                                            zoneColor,
+                                            zoneColor.opacity(0.8)
+                                        ],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
+                                )
+                                .frame(width: 8, height: 50)
+                                .shadow(color: zoneColor.opacity(0.6), radius: 6)
+                            
+                            VStack(alignment: .leading, spacing: 4) {
+                                // ZONE label (larger)
+                                Text("ZONE \(zone)")
+                                    .font(.system(size: 16, weight: .black, design: .rounded))
+                                    .foregroundColor(zoneColor)
+                                    .tracking(1.0)
+                                
+                                // Zone name (much larger)
+                                Text(HeartZoneCalculator.zoneName(for: zone))
+                                    .font(.system(size: 24, weight: .bold, design: .rounded))
+                                    .foregroundColor(.white)
+                                    .shadow(color: zoneColor.opacity(0.4), radius: 4)
+                            }
+                            
+                            Spacer()
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 14)
+                    .background(
+                        RoundedRectangle(cornerRadius: 14)
                             .fill(
                                 LinearGradient(
                                     colors: [
-                                        HeartZoneCalculator.zoneColor(for: zone),
-                                        HeartZoneCalculator.zoneColor(for: zone).opacity(0.7)
+                                        zoneColor.opacity(0.2),
+                                        zoneColor.opacity(0.1)
                                     ],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
                                 )
                             )
-                            .frame(width: 6, height: 32)
-                            .shadow(color: HeartZoneCalculator.zoneColor(for: zone).opacity(0.5), radius: 4)
-                        
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("ZONE \(zone)")
-                                .font(.system(size: 14, weight: .black, design: .rounded))
-                                .foregroundColor(HeartZoneCalculator.zoneColor(for: zone))
-                            
-                            Text(HeartZoneCalculator.zoneName(for: zone))
-                                .font(.system(size: 18, weight: .bold, design: .rounded))
-                                .foregroundColor(.white)
-                        }
-                        
-                        Spacer()
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(Color.white.opacity(0.08))
                             .overlay(
-                                RoundedRectangle(cornerRadius: 12)
+                                RoundedRectangle(cornerRadius: 14)
                                     .stroke(
                                         LinearGradient(
                                             colors: [
-                                                HeartZoneCalculator.zoneColor(for: zone).opacity(0.4),
-                                                HeartZoneCalculator.zoneColor(for: zone).opacity(0.1)
+                                                zoneColor.opacity(0.6),
+                                                zoneColor.opacity(0.3)
                                             ],
                                             startPoint: .topLeading,
                                             endPoint: .bottomTrailing
                                         ),
-                                        lineWidth: 1.5
+                                        lineWidth: 2
                                     )
                             )
                     )
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 3)
-                    .background(
-                        Capsule()
-                            .fill(HeartZoneCalculator.zoneColor(for: zone).opacity(0.15))
-                    )
-                    .padding(.top, 2)
+                    .shadow(color: zoneColor.opacity(0.3), radius: 8)
+                    .padding(.horizontal, 6)
+                    .padding(.top, 4)
                 }
                 
                 // Adaptive Guidance (KEY FEATURE!)
@@ -3883,3 +3896,4 @@ struct AllLanguagesView: View {
         .environmentObject(UserPreferences())
         .environmentObject(SupabaseManager())
 }
+
