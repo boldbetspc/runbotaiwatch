@@ -192,46 +192,6 @@ fileprivate enum HapticEvent {
     case success
 }
 
-    // MARK: - Helper Functions
-    
-    private func setupSpeechFinishedCallback() {
-        voiceManager.onSpeechFinished = {
-            DispatchQueue.main.async {
-                print("📝 [MainRunbotView] TTS finished - showing feedback text")
-                // Show text after TTS finishes
-                self.showFeedbackText = true
-                // Start 2-minute timer to hide text
-                self.textDisplayTimer?.invalidate()
-                self.textDisplayTimer = Timer.scheduledTimer(withTimeInterval: 120.0, repeats: false) { _ in
-                    DispatchQueue.main.async {
-                        print("📝 [MainRunbotView] 2 minutes elapsed - hiding feedback text")
-                        self.showFeedbackText = false
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: - Helper Functions
-    
-    private func setupSpeechFinishedCallback() {
-        voiceManager.onSpeechFinished = {
-            DispatchQueue.main.async {
-                print("📝 [MainRunbotView] TTS finished - showing feedback text")
-                // Show text after TTS finishes
-                self.showFeedbackText = true
-                // Start 2-minute timer to hide text
-                self.textDisplayTimer?.invalidate()
-                self.textDisplayTimer = Timer.scheduledTimer(withTimeInterval: 120.0, repeats: false) { _ in
-                    DispatchQueue.main.async {
-                        print("📝 [MainRunbotView] 2 minutes elapsed - hiding feedback text")
-                        self.showFeedbackText = false
-                    }
-                }
-            }
-        }
-    }
-
 fileprivate func playHaptic(_ event: HapticEvent) {
 #if canImport(WatchKit)
     let device = WKInterfaceDevice.current()
@@ -1469,6 +1429,25 @@ struct MainRunbotView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     
+    // MARK: - Helper Functions
+    
+    private func setupSpeechFinishedCallback() {
+        voiceManager.onSpeechFinished = {
+            DispatchQueue.main.async {
+                print("📝 [MainRunbotView] TTS finished - showing feedback text")
+                // Show text after TTS finishes
+                self.showFeedbackText = true
+                // Start 2-minute timer to hide text
+                self.textDisplayTimer?.invalidate()
+                self.textDisplayTimer = Timer.scheduledTimer(withTimeInterval: 120.0, repeats: false) { _ in
+                    DispatchQueue.main.async {
+                        print("📝 [MainRunbotView] 2 minutes elapsed - hiding feedback text")
+                        self.showFeedbackText = false
+                    }
+                }
+            }
+        }
+    }
     
     // MARK: - Stats Pages (Scrollable)
     enum StatType {
