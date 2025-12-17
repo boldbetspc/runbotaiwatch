@@ -3,7 +3,7 @@ import CoreLocation
 import Combine
 import WatchKit
 
-class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate, WKExtendedRuntimeSessionDelegate {
+class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published var isRunning = false
     @Published var currentSession: RunSession?
     @Published var statsUpdate: RunningStatsUpdate?
@@ -22,9 +22,6 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate, WKExten
     private var lastIntervalEndDistance: Double = 0.0 // Track cumulative distance for 1km intervals
     var supabaseManager: SupabaseManager?
     var healthManager: HealthManager?
-    
-    // Extended runtime session to keep screen awake during runs
-    private var extendedRuntimeSession: WKExtendedRuntimeSession?
     
     // Pace history for energy signature graph (stores last 60 data points, ~1 per second)
     @Published var paceHistory: [Double] = []
@@ -116,11 +113,6 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate, WKExten
             supabaseManager: supabaseManager
         )
         print("✅ [RunTracker] HealthManager startHeartRateMonitoring called")
-        
-        // Start extended runtime session to keep screen awake during run
-        #if os(watchOS)
-        startExtendedRuntimeSession()
-        #endif
         
         // Notify iOS that workout started
         if let sessionId = currentSession?.id {
@@ -285,11 +277,6 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate, WKExten
         
         // Stop HealthManager HR monitoring
         healthManager?.stopHeartRateMonitoring()
-        
-        // Stop extended runtime session
-        #if os(watchOS)
-        stopExtendedRuntimeSession()
-        #endif
         
         // Ensure session has endTime set (should already be set by forceFinalStatsUpdate)
         if var session = currentSession {
@@ -752,61 +739,4 @@ extension RunTracker {
             }
         }
     }
-    
-    // MARK: - Extended Runtime Session (Keep Screen Awake)
-    
-    #if os(watchOS)
-    private func startExtendedRuntimeSession() {
-        print("📱 [RunTracker] Starting extended runtime session to keep screen awake...")
-        
-        // Stop any existing session first
-        stopExtendedRuntimeSession()
-        
-        // Create new extended runtime session
-        let session = WKExtendedRuntimeSession()
-        session.delegate = self
-        extendedRuntimeSession = session
-        
-        // Start the session - this keeps the screen awake and app active
-        session.start()
-        print("✅ [RunTracker] Extended runtime session started - screen will stay awake during run")
-    }
-    
-    private func stopExtendedRuntimeSession() {
-        if let session = extendedRuntimeSession {
-            print("📱 [RunTracker] Stopping extended runtime session...")
-            session.invalidate()
-            extendedRuntimeSession = nil
-            print("✅ [RunTracker] Extended runtime session stopped")
-        }
-    }
-    
-    // MARK: - WKExtendedRuntimeSessionDelegate
-    
-    func extendedRuntimeSession(_ extendedRuntimeSession: WKExtendedRuntimeSession, didInvalidateWith reason: WKExtendedRuntimeSessionInvalidationReason, error: Error?) {
-        print("📱 [RunTracker] Extended runtime session invalidated: \(reason)")
-        if let error = error {
-            print("❌ [RunTracker] Error: \(error.localizedDescription)")
-        }
-        
-        DispatchQueue.main.async { [weak self] in
-            self?.extendedRuntimeSession = nil
-        }
-    }
-    
-    func extendedRuntimeSessionDidStart(_ extendedRuntimeSession: WKExtendedRuntimeSession) {
-        print("✅ [RunTracker] Extended runtime session started successfully - screen will stay awake")
-    }
-    
-    func extendedRuntimeSessionWillExpire(_ extendedRuntimeSession: WKExtendedRuntimeSession) {
-        print("⚠️ [RunTracker] Extended runtime session will expire soon - restarting if run is still active...")
-        
-        // If run is still active, restart the session
-        if isRunning {
-            DispatchQueue.main.async { [weak self] in
-                self?.startExtendedRuntimeSession()
-            }
-        }
-    }
-    #endif
 }

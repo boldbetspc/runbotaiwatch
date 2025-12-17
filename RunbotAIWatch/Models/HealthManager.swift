@@ -505,7 +505,8 @@ class HealthManager: NSObject, ObservableObject {
             startWorkoutSession()
             
             // Start HR query after a short delay to let workout session initialize
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+            // Run on background thread to prevent blocking
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 1.0) { [weak self] in
                 self?.startHeartRateQuery()
             }
         } else {
@@ -771,7 +772,8 @@ class HealthManager: NSObject, ObservableObject {
             }
             
             // Start HR query (anchored query provides real-time updates)
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            // Run on background thread to prevent blocking
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.5) { [weak self] in
                 guard let self = self, self.workoutSession != nil else { return }
                 self.startHeartRateQuery()
             }
@@ -857,12 +859,23 @@ class HealthManager: NSObject, ObservableObject {
     }
     
     private func startHeartRateQuery() {
-        print("💓 [HealthManager] ========== STARTING HEART RATE QUERY ==========")
+        // Ensure we're on a background thread to prevent blocking
+        guard !Thread.isMainThread else {
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                self?.startHeartRateQuery()
+            }
+            return
+        }
         
-        // Stop existing query if any
-        if let existingQuery = heartRateQuery {
-            print("💓 [HealthManager] Stopping existing HR query...")
-            healthStore.stop(existingQuery)
+        print("💓 [HealthManager] ========== STARTING HEART RATE QUERY ==========")
+        print("💓 [HealthManager] Thread: \(Thread.isMainThread ? "Main" : "Background")")
+        
+        // Prevent duplicate execution - check BEFORE stopping
+        if heartRateQuery != nil {
+            print("⚠️ [HealthManager] HR query already exists - stopping and restarting...")
+            if let existingQuery = heartRateQuery {
+                healthStore.stop(existingQuery)
+            }
             heartRateQuery = nil
         }
         
@@ -943,9 +956,18 @@ class HealthManager: NSObject, ObservableObject {
         }
         
         heartRateQuery = query
-        print("💓 [HealthManager] Executing HR query...")
-        healthStore.execute(query)
-        print("✅ [HealthManager] HR query executed - waiting for updates...")
+        print("💓 [HealthManager] Executing HR query on background queue...")
+        
+        // Execute query on background queue to prevent blocking main thread
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else {
+                print("⚠️ [HealthManager] Self deallocated before executing query")
+                return
+            }
+            print("💓 [HealthManager] Executing query on background thread...")
+            self.healthStore.execute(query)
+            print("✅ [HealthManager] HR query executed - waiting for updates...")
+        }
         
         // Also try to read from workout builder statistics if available
         // This is a fallback if the query doesn't work

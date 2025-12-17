@@ -125,6 +125,12 @@ class SupabaseManager: ObservableObject {
             return false
         }
         
+        // Skip save if duration is 0 or negative (violates database constraint)
+        if runData.duration <= 0 {
+            print("⚠️ [Supabase] Skipping save - duration is 0 or negative (violates constraint)")
+            return false
+        }
+        
         do {
             let formatter = ISO8601DateFormatter()
             let _: Any = runData.endTime.map { formatter.string(from: $0) } ?? NSNull()

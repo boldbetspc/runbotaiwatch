@@ -291,7 +291,10 @@ final class VoiceManager: NSObject, ObservableObject {
     private func speechFinished() {
         isSpeaking = false
         currentText = ""
-        onSpeechFinished?()
+        // Call callback on main thread to avoid blocking
+        DispatchQueue.main.async {
+            self.onSpeechFinished?()
+        }
         print("✅ [Voice] Speech finished")
     }
 }

@@ -231,14 +231,13 @@ struct MainRunbotView: View {
     @State private var didTriggerInitialCoaching = false
     @State private var showSaveSuccess = false
     @State private var saveMessage = ""
-    @State private var showFeedbackText = false // Show text after TTS finishes
-    @State private var textDisplayTimer: Timer? // Timer to hide text after 2 minutes
     // Train mode removed - only run mode supported
     private let runMode: RunMode = .run
     
     private enum CarouselPage: Int, Hashable {
         case startStop
         case aiCoach          // AI Coach FIRST after start
+        case aiFeedbackText   // AI Feedback text page (shown after TTS)
         case runStats         // Combined stats
         case heartZone
         case heartZoneChart   // New page for pie chart
@@ -249,7 +248,7 @@ struct MainRunbotView: View {
     }
     
     private var carouselPages: [CarouselPage] {
-        [.startStop, .aiCoach, .runStats, .heartZone, .heartZoneChart, .energyPulse, .splitIntervals, .connections, .settings]
+        [.startStop, .aiCoach, .aiFeedbackText, .runStats, .heartZone, .heartZoneChart, .energyPulse, .splitIntervals, .connections, .settings]
     }
     
     var body: some View {
@@ -307,30 +306,6 @@ struct MainRunbotView: View {
                 supabaseManager.initializeSession(for: userId)
             }
             // Train mode and PR model loading removed
-            
-            // Set up callback for when TTS finishes
-            setupSpeechFinishedCallback()
-        }
-        .onChange(of: voiceManager.isSpeaking) { oldValue, newValue in
-            // When TTS starts, hide text and cancel timer
-            if newValue {
-                showFeedbackText = false
-                textDisplayTimer?.invalidate()
-                textDisplayTimer = nil
-                // Re-setup callback in case it was cleared
-                setupSpeechFinishedCallback()
-            }
-        }
-        .onChange(of: aiCoach.currentFeedback) { oldValue, newValue in
-            // When new feedback arrives, ensure callback is set up
-            if !newValue.isEmpty && newValue != oldValue {
-                setupSpeechFinishedCallback()
-            }
-        }
-        .onDisappear {
-            // Clean up timer when view disappears
-            textDisplayTimer?.invalidate()
-            textDisplayTimer = nil
         }
         .onChange(of: authManager.isAuthenticated) { oldValue, isAuth in
             if isAuth, let userId = authManager.currentUser?.id {
@@ -386,6 +361,8 @@ struct MainRunbotView: View {
             startStopPage()
         case .aiCoach:
             aiCoachPageWithGIF()
+        case .aiFeedbackText:
+            aiFeedbackTextPage()
         case .runStats:
             combinedStatsPage()
         case .heartZone:
@@ -453,13 +430,9 @@ struct MainRunbotView: View {
                         if let session = runTracker.currentSession {
                             print("🆔 [MainRunbotView] Run started with UUID: \(session.id)")
                             
-                            // Initial save to database to create the run_activities record
-                            let userId = authManager.currentUser?.id ?? "watch_user"
-                            Task {
-                                print("💾 [MainRunbotView] Creating initial run_activities record: \(session.id)")
-                                let success = await supabaseManager.saveRunActivity(session, userId: userId, healthManager: healthManager)
-                                print(success ? "✅ [MainRunbotView] Initial run record created" : "❌ [MainRunbotView] Failed to create initial run record")
-                            }
+                        // Skip initial save - duration is 0 which violates database constraint
+                        // The run will be saved via continuous updates once it has duration > 0
+                        print("💾 [MainRunbotView] Skipping initial save (duration=0) - will save via continuous updates")
                         }
                         
                         // Kick off an initial AI coaching prompt shortly after start
@@ -592,24 +565,8 @@ struct MainRunbotView: View {
         let isActive = aiCoach.isCoaching || isSpeaking
         let feedbackText = aiCoach.currentFeedback
         
-        ZStack {
-            // Show full-screen scrollable text after TTS finishes (for 2 minutes)
-            if showFeedbackText && !feedbackText.isEmpty {
-                ScrollView {
-                    Text(feedbackText)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.white.opacity(0.95))
-                        .multilineTextAlignment(.center)
-                        .lineSpacing(4)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 10)
-                        .frame(maxWidth: .infinity)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
-            } else {
-                // Show animation during TTS, static icon otherwise
-                VStack(spacing: 6) {
+        // Show animation during TTS, static icon otherwise
+        VStack(spacing: 6) {
                     // Background glow when active
                     if isActive {
                         RadialGradient(
@@ -708,8 +665,41 @@ struct MainRunbotView: View {
                     }
                     
                     Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    
+    // MARK: - 📝 AI Feedback Text Page
+    @ViewBuilder
+    private func aiFeedbackTextPage() -> some View {
+        let feedbackText = aiCoach.currentFeedback
+        
+        VStack(spacing: 8) {
+            // Header
+            Text("AI Feedback")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundColor(.rbAccent)
+                .padding(.top, 8)
+            
+            // Scrollable feedback text
+            if !feedbackText.isEmpty {
+                ScrollView {
+                    Text(feedbackText)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.white.opacity(0.95))
+                        .multilineTextAlignment(.leading)
+                        .lineSpacing(6)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                Spacer()
+                Text("No feedback available")
+                    .font(.system(size: 12, weight: .regular))
+                    .foregroundColor(.white.opacity(0.5))
+                Spacer()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1427,26 +1417,6 @@ struct MainRunbotView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-    
-    // MARK: - Helper Functions
-    
-    private func setupSpeechFinishedCallback() {
-        voiceManager.onSpeechFinished = {
-            DispatchQueue.main.async {
-                print("📝 [MainRunbotView] TTS finished - showing feedback text")
-                // Show text after TTS finishes
-                self.showFeedbackText = true
-                // Start 2-minute timer to hide text
-                self.textDisplayTimer?.invalidate()
-                self.textDisplayTimer = Timer.scheduledTimer(withTimeInterval: 120.0, repeats: false) { _ in
-                    DispatchQueue.main.async {
-                        print("📝 [MainRunbotView] 2 minutes elapsed - hiding feedback text")
-                        self.showFeedbackText = false
-                    }
-                }
-            }
-        }
     }
     
     // MARK: - Stats Pages (Scrollable)
