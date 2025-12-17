@@ -408,6 +408,24 @@ class AICoachManager: NSObject, ObservableObject {
         }
         
         return """
+        This is END OF RUN feedback. Ignore closing HR or pace—what matters is outcome and historical meaning. Use the Performance Analyzer RAG embedding as the primary lens; it already synthesizes target completion, distance-vs-expected gaps, pacing shape, fatigue signals, and recurring historical patterns.
+        
+        Your analytical task:
+        
+        Judge the result: ahead/on target/slightly behind/behind/way behind based on target completion
+        
+        Define the pacing narrative (negative/positive/consistent/fade) and what it implies
+        
+        If HR exists, interpret efficiency through zone distribution and drift
+        
+        Compare against history: repeat breakdown or meaningful improvement, referencing Mem0 where relevant
+        
+        Assess adherence to coaching strategy (did they follow prescribed pacing or execution?)
+        
+        Surface one specific win and one critical fix—data-backed, not a list
+        
+        Extract one key lesson that explains performance and give one next developmental priority (not punitive)
+        
         ============================================================================
         USER PREFERENCES:
         - Language: \(preferences.language.displayName)
@@ -421,45 +439,23 @@ class AICoachManager: NSObject, ObservableObject {
         MEM0 PERSONALIZED INSIGHTS:
         \(mem0Insights.isEmpty ? "First tracked run!" : mem0Insights)
         
-        ============================================================================
-        COACHING TASK
-        ============================================================================
-        
-        Generate a CRITICAL, PERSONAL end-of-run analysis (max 70 words):
-        
-        1. TARGET ASSESSMENT: Did they hit \(preferences.targetDistance.displayName) target? Be specific.
-        2. PERFORMANCE ANALYSIS: Include pace vs target, overall pace pattern (consistent/negative splits/positive splits), and key interval highlights.
-        3. WHAT WENT WELL: One specific thing with data (e.g., "Zone 2 efficiency at 65% was excellent")
-        4. WHAT NEEDS WORK: One critical improvement area with facts (e.g., "Pace dropped 45s in final km")
-        5. LEARNING/TAKEAWAYS: Use the COACH STRATEGY from KB above to assess how well they followed coaching
-        6. LESSONS FOR NEXT RUN: What should they focus on next time based on KB learning strategy?
-        7. PERSONAL TOUCH: Reference their history from Mem0 if available
+        Generate a CRITICAL, PERSONAL end-of-run analysis (max 70 words) following the analytical task and rules below.
         
         RULES - INSIGHT SYNTHESIS REQUIRED:
-        - SYNTHESIZE PATTERNS: Connect data across sections to identify root causes and lessons
-        - ROOT CAUSE ANALYSIS: Explain WHY things happened, not just WHAT happened
-          * "Positive splits because started 5 sec/km too fast - Zone 3-4 too high early, paid later"
-          * "Erratic pacing because form broke down mid-run - cadence dropped, stride lengthened"
-          * "Strong finish because negative split strategy - conserved early, had energy for final km"
-        - CONNECT THE DOTS: Link pace patterns + zone distribution + interval trends to find insights
-        - PREDICTIVE LESSONS: "If you start 5 sec/km faster next time, you'll fade at km 8 again"
-        - Be CRITICAL but constructive - real coaches don't sugarcoat
-        - Use SPECIFIC NUMBERS but explain their MEANING and IMPLICATIONS
-        - Use the COACH STRATEGY from KB to assess how well they followed coaching
-        - Match personality: \(preferences.coachPersonality.rawValue)
-        - Match energy: \(preferences.coachEnergy.rawValue)
-        \(preferences.language != .english ? "- Generate in \(preferences.language.displayName) language" : "")
-        - Maximum 70 words
-        - DO NOT mention any scores or ratings (no "Score: 75" or "Rating: Good")
         
-        BAD EXAMPLE (just data reporting):
-        "10km done at 5:25 vs 5:20 target. Zone 2: 55%, Zone 3: 40%. Intervals: 5:20, 5:22, 5:25. Next run: focus on pace."
+        Connect data across sections to explain why the outcome happened—not just what happened
         
-        GOOD EXAMPLE (insight synthesis):
-        "10km at 5:25 vs 5:20 target - missed by 5 sec/km. Positive splits because started too fast - Zone 3-4 too high early, paid later. Zone efficiency dropped from 55% to 40% as fatigue built. Next run: start 5 sec slower, save energy for finish."
+        Identify one root cause pattern (pace errors, HR overshoot, form breakdown, execution discipline)
         
-        EXAMPLE (good - insight synthesis):
-        "\(runnerName), \(preferences.targetDistance.displayName) done in \(formatDuration(session.duration)) - \(ragAnalysis.targetMet ? "target hit" : "missed by " + ragAnalysis.targetDeviation)! Zone 3 efficiency solid at 48%. Final 2km pace dropped 35 seconds because Zone 4-5 too high early - started too fast, paid later. Next run: start 5 sec/km slower, save energy for finish. Even splits key."
+        Turn the pattern into a forward prediction ("If you start 5 sec/km fast, you'll fade again")
+        
+        Be honest but constructive, use numbers only to explain meaning
+        
+        Check adherence to coaching strategy from the KB
+        
+        Match personality, energy, and language settings
+        
+        Max 70 words, no scores or ratings
         
         NOW GENERATE THE END-OF-RUN FEEDBACK:
         """
