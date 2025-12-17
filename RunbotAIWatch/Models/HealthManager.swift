@@ -579,36 +579,24 @@ class HealthManager: NSObject, ObservableObject {
         
         // ✅ CHECK 3: Check if another workout is already running
         // Only one workout can be active at a time on watchOS
-        // FIX: If we have our own active session, stop it first before starting new one
         if workoutSession != nil && workoutSession?.state == .running {
-            print("⚠️ [HealthManager] CHECK 3: Our own workout session still running - stopping it first...")
-            stopHeartRateMonitoring() // This will properly end the old session
-            // Wait a moment for cleanup, then proceed
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.checkForActiveWorkoutsAndStart()
-            }
+            print("⚠️ [HealthManager] CHECK 3: Workout session already running")
             return
         }
         
-        // Check for other active workouts and handle them
-        checkForActiveWorkoutsAndStart()
-    }
-    
-    /// Check for active workouts and either stop them or proceed with starting new workout
-    private func checkForActiveWorkoutsAndStart() {
-        checkForActiveWorkouts { [weak self] hasActiveWorkout, activeWorkoutUUID in
+        // Check for other active workouts by querying recent workouts
+        checkForActiveWorkouts { [weak self] hasActiveWorkout in
             guard let self = self else { return }
             
             if hasActiveWorkout {
-                print("⚠️ [HealthManager] Found active workout: \(activeWorkoutUUID ?? "unknown")")
-                print("💡 [HealthManager] Auto-stopping orphaned workout before starting new one...")
-                
-                // FIX: Automatically stop the orphaned workout by ending our own session cleanup
-                // Since we don't have access to other app's workouts, we'll proceed anyway
-                // HealthKit should handle conflicts automatically
-                print("✅ [HealthManager] Proceeding with new workout - HealthKit will handle conflicts")
+                print("❌ [HealthManager] CHECK 3 FAILED: Another workout is already active")
+                print("💡 [HealthManager] Please stop the other workout first")
+                DispatchQueue.main.async {
+                    self.workoutStatus = .error("Another workout is active - stop it first")
+                }
+                return
             }
-            print("✅ [HealthManager] CHECK 3 PASSED: Ready to start new workout")
+            print("✅ [HealthManager] CHECK 3 PASSED: No other active workouts")
             
             // Continue with workout session creation
             self.createWorkoutSession()
@@ -616,8 +604,7 @@ class HealthManager: NSObject, ObservableObject {
     }
     
     /// Check if another workout is currently active
-    /// Returns: (hasActiveWorkout: Bool, workoutUUID: String?)
-    private func checkForActiveWorkouts(completion: @escaping (Bool, String?) -> Void) {
+    private func checkForActiveWorkouts(completion: @escaping (Bool) -> Void) {
         let workoutType = HKObjectType.workoutType()
         let predicate = HKQuery.predicateForWorkouts(with: .running)
         let sortDescriptor = NSSortDescriptor(key: HKSampleSortIdentifierEndDate, ascending: false)
@@ -630,17 +617,16 @@ class HealthManager: NSObject, ObservableObject {
         ) { _, samples, error in
             if let error = error {
                 print("⚠️ [HealthManager] Error checking for active workouts: \(error.localizedDescription)")
-                // Assume no active workout if query fails - proceed anyway
-                completion(false, nil)
+                // Assume no active workout if query fails
+                completion(false)
                 return
             }
             
             let hasActiveWorkout = (samples?.count ?? 0) > 0
-            let workoutUUID = samples?.first?.uuid.uuidString
             if hasActiveWorkout {
-                print("⚠️ [HealthManager] Found active workout: \(workoutUUID ?? "unknown")")
+                print("⚠️ [HealthManager] Found active workout: \(samples?.first?.uuid.uuidString ?? "unknown")")
             }
-            completion(hasActiveWorkout, workoutUUID)
+            completion(hasActiveWorkout)
         }
         
         healthStore.execute(query)

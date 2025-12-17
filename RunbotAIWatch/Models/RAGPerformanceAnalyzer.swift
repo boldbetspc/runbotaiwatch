@@ -102,6 +102,20 @@ class RAGPerformanceAnalyzer: ObservableObject {
         let pacetrend: PaceTrend
         let hrTrend: HRTrend
         let fatigueLevel: FatigueLevel
+        
+        // HR Drift data
+        let kmDriftData: [KmDriftData]
+        let currentDrift: DriftSnapshot?
+    }
+    
+    struct KmDriftData: Codable {
+        let kilometer: Int
+        let driftAtKmStart: Double
+        let driftAtKmEnd: Double
+    }
+    
+    struct DriftSnapshot: Codable {
+        let driftPercent: Double
     }
     
     struct IntervalSnapshot: Codable {
@@ -135,17 +149,41 @@ class RAGPerformanceAnalyzer: ObservableObject {
     
     // MARK: - RAG Analysis Result
     
+    /// Helper to create empty RAGAnalysisResult for fallback cases
+    private func emptyRAGAnalysisResult(targetStatus: TargetStatus) -> RAGAnalysisResult {
+        return RAGAnalysisResult(
+            targetStatus: targetStatus,
+            performanceAnalysis: "",
+            physiologyAnalysis: "",
+            coachPerspective: "",
+            qualityAndRisks: "",
+            adaptiveMicrostrategy: "",
+            similarRunsContext: "",
+            overallRecommendation: "",
+            intervalTrends: "",
+            hrVariationAnalysis: "",
+            runningQualityAssessment: "",
+            heartZoneAnalysis: "",
+            injuryRiskSignals: []
+        )
+    }
+    
     struct RAGAnalysisResult {
         let targetStatus: TargetStatus
-        let performanceAnalysis: String
-        let heartZoneAnalysis: String
-        let intervalTrends: String
-        let hrVariationAnalysis: String
-        let runningQualityAssessment: String
-        let injuryRiskSignals: [String]
+        let performanceAnalysis: String // Combined: pace, intervals, trends
+        let physiologyAnalysis: String // Combined: HR zones, variation, drift
+        let coachPerspective: String // Combined: runner insights + trade-offs + 5 questions
+        let qualityAndRisks: String // Combined: running quality + injury signals
         let adaptiveMicrostrategy: String
         let similarRunsContext: String
         let overallRecommendation: String
+        
+        // Individual components for backward compatibility
+        let intervalTrends: String
+        let hrVariationAnalysis: String
+        let runningQualityAssessment: String
+        let heartZoneAnalysis: String
+        let injuryRiskSignals: [String]
         
         /// Formatted context string for LLM prompt
         var llmContext: String {
@@ -157,20 +195,14 @@ class RAGPerformanceAnalyzer: ObservableObject {
             📈 PERFORMANCE ANALYSIS:
             \(performanceAnalysis)
             
-            ❤️ HEART ZONE ANALYSIS:
-            \(heartZoneAnalysis)
+            ❤️ PHYSIOLOGY ANALYSIS (HR, Zones, Drift):
+            \(physiologyAnalysis)
             
-            📉 INTERVAL TRENDS:
-            \(intervalTrends)
+            🧠 COACH'S PERSPECTIVE:
+            \(coachPerspective)
             
-            💓 HR VARIATION ANALYSIS:
-            \(hrVariationAnalysis)
-            
-            🏃 RUNNING QUALITY:
-            \(runningQualityAssessment)
-            
-            ⚠️ INJURY RISK SIGNALS:
-            \(injuryRiskSignals.isEmpty ? "None detected" : injuryRiskSignals.joined(separator: "; "))
+            🏃 QUALITY & RISKS:
+            \(qualityAndRisks)
             
             🧠 ADAPTIVE MICROSTRATEGY:
             \(adaptiveMicrostrategy)
@@ -194,15 +226,15 @@ class RAGPerformanceAnalyzer: ObservableObject {
         var description: String {
             switch self {
             case .onTrack(let dev):
-                return "ON TRACK (\(String(format: "%.1f", abs(dev)))% deviation)"
+                return "ON TRACK (\(String(format: "%.1f", abs(dev)))% distance deviation)"
             case .slightlyBehind(let dev):
-                return "SLIGHTLY BEHIND (-\(String(format: "%.1f", dev))%)"
+                return "SLIGHTLY BEHIND (\(String(format: "%.1f", dev))% behind on distance)"
             case .wayBehind(let dev):
-                return "WAY BEHIND (-\(String(format: "%.1f", dev))%) ⚠️"
+                return "WAY BEHIND (\(String(format: "%.1f", dev))% behind on distance) ⚠️"
             case .slightlyAhead(let dev):
-                return "SLIGHTLY AHEAD (+\(String(format: "%.1f", dev))%)"
+                return "SLIGHTLY AHEAD (\(String(format: "%.1f", dev))% ahead on distance)"
             case .wayAhead(let dev):
-                return "WAY AHEAD (+\(String(format: "%.1f", dev))%)"
+                return "WAY AHEAD (\(String(format: "%.1f", dev))% ahead on distance)"
             }
         }
         
@@ -924,6 +956,13 @@ class RAGPerformanceAnalyzer: ObservableObject {
             healthManager: healthManager
         )
         
+        // Calculate HR drift data
+        let (kmDriftData, currentDrift) = calculateHRDriftData(
+            intervals: intervals,
+            healthManager: healthManager,
+            elapsedTime: elapsedTime
+        )
+        
         return PerformanceSnapshot(
             currentPace: currentPace,
             targetPace: targetPace,
@@ -944,7 +983,9 @@ class RAGPerformanceAnalyzer: ObservableObject {
             projectedDistance: projectedDistance,
             pacetrend: paceTrend,
             hrTrend: hrTrend,
-            fatigueLevel: fatigueLevel
+            fatigueLevel: fatigueLevel,
+            kmDriftData: kmDriftData,
+            currentDrift: currentDrift
         )
     }
     
@@ -1293,18 +1334,50 @@ class RAGPerformanceAnalyzer: ObservableObject {
         // 3. Generate AI-powered insights using GPT-4o-mini
         let aiAnalysis = await generateAIAnalysis(analysisData: analysisData)
         
-        // 4. Combine rule-based and AI-generated insights
+        // 4. Build consolidated analysis sections
+        let performanceAnalysis = buildConsolidatedPerformanceAnalysis(
+            snapshot: snapshot,
+            aiAnalysis: aiAnalysis
+        )
+        
+        let physiologyAnalysis = buildConsolidatedPhysiologyAnalysis(
+            snapshot: snapshot,
+            aiAnalysis: aiAnalysis
+        )
+        
+        let coachPerspective = buildConsolidatedCoachPerspective(
+            snapshot: snapshot,
+            targetStatus: targetStatus,
+            aiAnalysis: aiAnalysis
+        )
+        
+        let qualityAndRisks = buildConsolidatedQualityAndRisks(
+            snapshot: snapshot,
+            aiAnalysis: aiAnalysis
+        )
+        
+        // 5. Build individual components for backward compatibility
+        let intervalTrends = buildIntervalTrendsAnalysis(snapshot: snapshot)
+        let hrVariationAnalysis = buildHRVariationAnalysis(snapshot: snapshot)
+        let runningQualityAssessment = buildRunningQualityAssessment(snapshot: snapshot)
+        let heartZoneAnalysis = buildHeartZoneAnalysis(snapshot: snapshot)
+        let injuryRiskSignals = detectInjuryRiskSignals(snapshot: snapshot)
+        
+        // 6. Return consolidated result
         return RAGAnalysisResult(
             targetStatus: targetStatus,
-            performanceAnalysis: aiAnalysis.performanceAnalysis,
-            heartZoneAnalysis: aiAnalysis.heartZoneAnalysis,
-            intervalTrends: aiAnalysis.intervalTrends,
-            hrVariationAnalysis: aiAnalysis.hrVariationAnalysis,
-            runningQualityAssessment: aiAnalysis.runningQualityAssessment,
-            injuryRiskSignals: aiAnalysis.injuryRiskSignals,
+            performanceAnalysis: performanceAnalysis,
+            physiologyAnalysis: physiologyAnalysis,
+            coachPerspective: coachPerspective,
+            qualityAndRisks: qualityAndRisks,
             adaptiveMicrostrategy: aiAnalysis.adaptiveMicrostrategy,
             similarRunsContext: aiAnalysis.similarRunsContext,
-            overallRecommendation: aiAnalysis.overallRecommendation
+            overallRecommendation: aiAnalysis.overallRecommendation,
+            intervalTrends: intervalTrends,
+            hrVariationAnalysis: hrVariationAnalysis,
+            runningQualityAssessment: runningQualityAssessment,
+            heartZoneAnalysis: heartZoneAnalysis,
+            injuryRiskSignals: injuryRiskSignals
         )
     }
     
@@ -1584,6 +1657,9 @@ class RAGPerformanceAnalyzer: ObservableObject {
         
         FATIGUE LEVEL: \(snapshot.fatigueLevel.rawValue.uppercased())
         
+        HR DRIFT DATA (Physiological Sustainability):
+        \(buildHRDriftDataSection(snapshot: snapshot))
+        
         \(similarRunsSection)
         
         MEM0 PERSONALIZED INSIGHTS:
@@ -1593,64 +1669,53 @@ class RAGPerformanceAnalyzer: ObservableObject {
         ANALYSIS TASKS
         ============================================================================
         
-        Generate a comprehensive performance analysis with the following sections:
+        Generate a CONSOLIDATED performance analysis with these 4 core sections:
         
-        1. PERFORMANCE ANALYSIS:
-           - Assess current pace vs target with specific numbers
-           - Analyze pace trend (improving/stable/declining/erratic)
-           - Calculate if runner is on track, behind, or ahead
-           - Reference interval data to show progression
+        1. PERFORMANCE ANALYSIS (Pace + Intervals + Trends):
+           - Current pace vs target with specific numbers
+           - Pace trend (improving/stable/declining/erratic)
+           - Interval progression and consistency
+           - Target status assessment (on-track/behind/ahead)
+           - Split analysis (first half vs second half if applicable)
         
-        2. HEART ZONE ANALYSIS:
-           - Analyze zone distribution - is it optimal for the target pace?
-           - Assess zone-pace correlation - are they running efficiently?
-           - Evaluate HR trend (stable/rising/spiking/recovering)
-           - Identify if runner has HR headroom or is maxed out
-           - Provide zone-specific guidance based on current state
+        2. PHYSIOLOGY ANALYSIS (HR + Zones + Drift - Combined):
+           - Zone distribution and efficiency
+           - HR trend and stability
+           - HR drift patterns and sustainability
+           - Zone-pace correlation
+           - Physiological cost assessment
+           - HR headroom or maxed out status
         
-        3. INTERVAL TRENDS:
-           - Analyze pace progression across completed intervals
-           - Identify consistency or variability
-           - Detect patterns (negative splits, positive splits, erratic)
-           - Compare to similar past runs if available
+        3. COACH'S PERSPECTIVE (Intervals Only - Combined Insights):
+           - Answer the 5 critical questions:
+             * Is effort rising faster than distance?
+             * Is pace being paid for too early?
+             * Is this discomfort expected or premature?
+             * Would this feel okay 5km later?
+             * Is the runner borrowing from the finish?
+           - Apply philosophy: "controlled early, honest middle, earned end"
+           - Run phase assessment (early/middle/late)
+           - Trade-off evaluation (cost, timing, sustainability, control, future impact)
+           - Runner's wisdom checks (early comfort, cumulative fatigue, etc.)
         
-        4. HR VARIATION ANALYSIS:
-           - Assess HR stability vs cardiac drift
-           - Analyze relationship between HR and pace
-           - Identify if HR is appropriate for current effort
-           - Detect any concerning HR patterns
+        4. QUALITY & RISKS (Combined):
+           - Running quality score (0-100) with key indicators
+           - Injury risk signals (if any)
+           - Form efficiency assessment
+           - Biomechanical signals
         
-        5. RUNNING QUALITY ASSESSMENT:
-           - Rate overall running quality (0-100 score)
-           - Assess biomechanical efficiency signals
-           - Evaluate form indicators (pace consistency, HR efficiency)
-           - Consider zone distribution and pacing strategy
+        5. ADAPTIVE MICROSTRATEGY:
+           - Specific tactical plan for next 500m-1km
+           - Exact pace adjustments, zone targets, form cues
+           - Actionable, immediate coaching cues
         
-        6. INJURY RISK SIGNALS:
-           - Detect unusual patterns that may indicate strain
-           - Look for signs of overexertion (pace declining + HR rising)
-           - Identify form breakdown indicators
-           - Flag prolonged high-intensity zones
-           - Reference Mem0 insights about past injuries if relevant
+        6. SIMILAR RUNS CONTEXT:
+           - Comparison to past runs
+           - Historical patterns and insights
         
-        7. ADAPTIVE MICROSTRATEGY:
-           - Generate specific tactical plan for next 500m-1km
-           - Be specific: exact pace adjustments, zone targets, form cues
-           - Consider target status (on-track/behind/ahead)
-           - Incorporate Mem0 insights about what works for this runner
-           - Provide actionable, immediate coaching cues
-        
-        8. SIMILAR RUNS CONTEXT:
-           - Compare current performance to similar past runs
-           - Identify if runner is performing better/worse than typical
-           - Extract insights from past successful runs
-           - Note patterns from historical data
-        
-        9. OVERALL RECOMMENDATION:
-           - Prioritize safety first (injury risks)
-           - Then address target achievement
-           - Provide clear, actionable next steps
-           - Be coach-like: specific, encouraging, data-driven
+        7. OVERALL RECOMMENDATION:
+           - Safety first, then target achievement
+           - Clear, actionable next steps
         
         ============================================================================
         OUTPUT FORMAT
@@ -1659,11 +1724,9 @@ class RAGPerformanceAnalyzer: ObservableObject {
         Return your analysis as a JSON object with these exact keys:
         {
             "performanceAnalysis": "...",
-            "heartZoneAnalysis": "...",
-            "intervalTrends": "...",
-            "hrVariationAnalysis": "...",
-            "runningQualityAssessment": "...",
-            "injuryRiskSignals": ["...", "..."],
+            "physiologyAnalysis": "...",
+            "coachPerspective": "...",
+            "qualityAndRisks": "...",
             "adaptiveMicrostrategy": "...",
             "similarRunsContext": "...",
             "overallRecommendation": "..."
@@ -1691,27 +1754,37 @@ class RAGPerformanceAnalyzer: ObservableObject {
         if let jsonData = content.data(using: .utf8),
            let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
             
-            let performanceAnalysis = json["performanceAnalysis"] as? String ?? "Analysis unavailable"
-            let heartZoneAnalysis = json["heartZoneAnalysis"] as? String ?? "Analysis unavailable"
-            let intervalTrends = json["intervalTrends"] as? String ?? "Analysis unavailable"
-            let hrVariationAnalysis = json["hrVariationAnalysis"] as? String ?? "Analysis unavailable"
-            let runningQualityAssessment = json["runningQualityAssessment"] as? String ?? "Analysis unavailable"
-            let injuryRiskSignals = json["injuryRiskSignals"] as? [String] ?? []
+            // Try new consolidated structure first, fallback to old structure for compatibility
+            let emptyResult = emptyRAGAnalysisResult(targetStatus: analysisData.targetStatus)
+            let performanceAnalysis = json["performanceAnalysis"] as? String ?? buildConsolidatedPerformanceAnalysis(snapshot: analysisData.snapshot, aiAnalysis: emptyResult)
+            let physiologyAnalysis = json["physiologyAnalysis"] as? String ?? buildConsolidatedPhysiologyAnalysis(snapshot: analysisData.snapshot, aiAnalysis: emptyResult)
+            let coachPerspective = json["coachPerspective"] as? String ?? buildConsolidatedCoachPerspective(snapshot: analysisData.snapshot, targetStatus: analysisData.targetStatus, aiAnalysis: emptyResult)
+            let qualityAndRisks = json["qualityAndRisks"] as? String ?? buildConsolidatedQualityAndRisks(snapshot: analysisData.snapshot, aiAnalysis: emptyResult)
             let adaptiveMicrostrategy = json["adaptiveMicrostrategy"] as? String ?? "Strategy unavailable"
             let similarRunsContext = json["similarRunsContext"] as? String ?? "Context unavailable"
             let overallRecommendation = json["overallRecommendation"] as? String ?? "Recommendation unavailable"
             
+            // Build individual components
+            let intervalTrends = buildIntervalTrendsAnalysis(snapshot: analysisData.snapshot)
+            let hrVariationAnalysis = buildHRVariationAnalysis(snapshot: analysisData.snapshot)
+            let runningQualityAssessment = buildRunningQualityAssessment(snapshot: analysisData.snapshot)
+            let heartZoneAnalysis = buildHeartZoneAnalysis(snapshot: analysisData.snapshot)
+            let injuryRiskSignals = detectInjuryRiskSignals(snapshot: analysisData.snapshot)
+            
             return RAGAnalysisResult(
                 targetStatus: analysisData.targetStatus,
                 performanceAnalysis: performanceAnalysis,
-                heartZoneAnalysis: heartZoneAnalysis,
+                physiologyAnalysis: physiologyAnalysis,
+                coachPerspective: coachPerspective,
+                qualityAndRisks: qualityAndRisks,
+                adaptiveMicrostrategy: adaptiveMicrostrategy,
+                similarRunsContext: similarRunsContext,
+                overallRecommendation: overallRecommendation,
                 intervalTrends: intervalTrends,
                 hrVariationAnalysis: hrVariationAnalysis,
                 runningQualityAssessment: runningQualityAssessment,
-                injuryRiskSignals: injuryRiskSignals,
-                adaptiveMicrostrategy: adaptiveMicrostrategy,
-                similarRunsContext: similarRunsContext,
-                overallRecommendation: overallRecommendation
+                heartZoneAnalysis: heartZoneAnalysis,
+                injuryRiskSignals: injuryRiskSignals
             )
         }
         
@@ -1795,20 +1868,30 @@ class RAGPerformanceAnalyzer: ObservableObject {
             sections[section] = currentContent.joined(separator: "\n")
         }
         
-        // Extract injury signals
-        let injurySignals = sections["injuryRiskSignals"]?.components(separatedBy: ";") ?? []
+        // Build consolidated sections with fallbacks
+        let emptyResult = emptyRAGAnalysisResult(targetStatus: analysisData.targetStatus)
+        let injurySignals = sections["injuryRiskSignals"]?.components(separatedBy: ";").filter { !$0.isEmpty } ?? detectInjuryRiskSignals(snapshot: analysisData.snapshot)
+        
+        // Build individual components
+        let intervalTrends = sections["intervalTrends"] ?? buildIntervalTrendsAnalysis(snapshot: analysisData.snapshot)
+        let hrVariationAnalysis = sections["hrVariationAnalysis"] ?? buildHRVariationAnalysis(snapshot: analysisData.snapshot)
+        let runningQualityAssessment = sections["runningQualityAssessment"] ?? buildRunningQualityAssessment(snapshot: analysisData.snapshot)
+        let heartZoneAnalysis = sections["heartZoneAnalysis"] ?? buildHeartZoneAnalysis(snapshot: analysisData.snapshot)
         
         return RAGAnalysisResult(
             targetStatus: analysisData.targetStatus,
-            performanceAnalysis: sections["performanceAnalysis"] ?? "Analysis unavailable",
-            heartZoneAnalysis: sections["heartZoneAnalysis"] ?? "Analysis unavailable",
-            intervalTrends: sections["intervalTrends"] ?? "Analysis unavailable",
-            hrVariationAnalysis: sections["hrVariationAnalysis"] ?? "Analysis unavailable",
-            runningQualityAssessment: sections["runningQualityAssessment"] ?? "Analysis unavailable",
-            injuryRiskSignals: injurySignals.map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty },
+            performanceAnalysis: sections["performanceAnalysis"] ?? buildConsolidatedPerformanceAnalysis(snapshot: analysisData.snapshot, aiAnalysis: emptyResult),
+            physiologyAnalysis: sections["physiologyAnalysis"] ?? buildConsolidatedPhysiologyAnalysis(snapshot: analysisData.snapshot, aiAnalysis: emptyResult),
+            coachPerspective: sections["coachPerspective"] ?? buildConsolidatedCoachPerspective(snapshot: analysisData.snapshot, targetStatus: analysisData.targetStatus, aiAnalysis: emptyResult),
+            qualityAndRisks: sections["qualityAndRisks"] ?? buildConsolidatedQualityAndRisks(snapshot: analysisData.snapshot, aiAnalysis: emptyResult),
             adaptiveMicrostrategy: sections["adaptiveMicrostrategy"] ?? "Strategy unavailable",
             similarRunsContext: sections["similarRunsContext"] ?? "Context unavailable",
-            overallRecommendation: sections["overallRecommendation"] ?? "Recommendation unavailable"
+            overallRecommendation: sections["overallRecommendation"] ?? "Recommendation unavailable",
+            intervalTrends: intervalTrends,
+            hrVariationAnalysis: hrVariationAnalysis,
+            runningQualityAssessment: runningQualityAssessment,
+            heartZoneAnalysis: heartZoneAnalysis,
+            injuryRiskSignals: injurySignals
         )
     }
     
@@ -1823,69 +1906,199 @@ class RAGPerformanceAnalyzer: ObservableObject {
         // 1. Target Status
         let targetStatus = calculateTargetStatus(snapshot: snapshot)
         
-        // 2. Performance Analysis
-        let performanceAnalysis = buildPerformanceAnalysis(snapshot: snapshot)
+        // 2-4. Build consolidated sections
+        let emptyResult = emptyRAGAnalysisResult(targetStatus: targetStatus)
+        let performanceAnalysis = buildConsolidatedPerformanceAnalysis(
+            snapshot: snapshot,
+            aiAnalysis: emptyResult
+        )
         
-        // 3. Heart Zone Analysis
-        let heartZoneAnalysis = buildHeartZoneAnalysis(snapshot: snapshot)
+        let physiologyAnalysis = buildConsolidatedPhysiologyAnalysis(
+            snapshot: snapshot,
+            aiAnalysis: emptyResult
+        )
         
-        // 4. Interval Trends
-        let intervalTrends = buildIntervalTrendsAnalysis(snapshot: snapshot)
+        let coachPerspective = buildConsolidatedCoachPerspective(
+            snapshot: snapshot,
+            targetStatus: targetStatus,
+            aiAnalysis: emptyResult
+        )
         
-        // 5. HR Variation Analysis
-        let hrVariationAnalysis = buildHRVariationAnalysis(snapshot: snapshot)
+        let qualityAndRisks = buildConsolidatedQualityAndRisks(
+            snapshot: snapshot,
+            aiAnalysis: emptyResult
+        )
         
-        // 6. Running Quality Assessment
-        let runningQualityAssessment = buildRunningQualityAssessment(snapshot: snapshot)
-        
-        // 7. Injury Risk Signals
-        let injuryRiskSignals = detectInjuryRiskSignals(snapshot: snapshot)
-        
-        // 8. Adaptive Microstrategy
+        // 5. Adaptive Microstrategy
         let adaptiveMicrostrategy = generateAdaptiveMicrostrategy(
             snapshot: snapshot,
             targetStatus: targetStatus
         )
         
-        // 9. Similar Runs Context (RAG)
+        // 6. Similar Runs Context (RAG)
         let similarRunsContext = buildSimilarRunsContext(similarRuns: similarRuns, snapshot: snapshot)
         
-        // 10. Overall Recommendation
+        // 7. Overall Recommendation
+        let injuryRiskSignals = detectInjuryRiskSignals(snapshot: snapshot)
         let overallRecommendation = generateOverallRecommendation(
             snapshot: snapshot,
             targetStatus: targetStatus,
             injuryRiskSignals: injuryRiskSignals
         )
         
+        // Build individual components for backward compatibility
+        let intervalTrends = buildIntervalTrendsAnalysis(snapshot: snapshot)
+        let hrVariationAnalysis = buildHRVariationAnalysis(snapshot: snapshot)
+        let runningQualityAssessment = buildRunningQualityAssessment(snapshot: snapshot)
+        let heartZoneAnalysis = buildHeartZoneAnalysis(snapshot: snapshot)
+        
         return RAGAnalysisResult(
             targetStatus: targetStatus,
             performanceAnalysis: performanceAnalysis,
-            heartZoneAnalysis: heartZoneAnalysis,
+            physiologyAnalysis: physiologyAnalysis,
+            coachPerspective: coachPerspective,
+            qualityAndRisks: qualityAndRisks,
+            adaptiveMicrostrategy: adaptiveMicrostrategy,
+            similarRunsContext: similarRunsContext,
+            overallRecommendation: overallRecommendation,
             intervalTrends: intervalTrends,
             hrVariationAnalysis: hrVariationAnalysis,
             runningQualityAssessment: runningQualityAssessment,
-            injuryRiskSignals: injuryRiskSignals,
-            adaptiveMicrostrategy: adaptiveMicrostrategy,
-            similarRunsContext: similarRunsContext,
-            overallRecommendation: overallRecommendation
+            heartZoneAnalysis: heartZoneAnalysis,
+            injuryRiskSignals: injuryRiskSignals
         )
+    }
+    
+    // MARK: - Consolidated Analysis Builders
+    
+    /// Build consolidated performance analysis (pace + intervals + trends)
+    private func buildConsolidatedPerformanceAnalysis(
+        snapshot: PerformanceSnapshot,
+        aiAnalysis: RAGAnalysisResult
+    ) -> String {
+        let perfAnalysis = buildPerformanceAnalysis(snapshot: snapshot)
+        let intervalTrends = buildIntervalTrendsAnalysis(snapshot: snapshot)
+        
+        // Combine into one section
+        return """
+        \(perfAnalysis)
+        
+        \(intervalTrends)
+        """
+    }
+    
+    /// Build consolidated physiology analysis (HR zones + variation + drift)
+    private func buildConsolidatedPhysiologyAnalysis(
+        snapshot: PerformanceSnapshot,
+        aiAnalysis: RAGAnalysisResult
+    ) -> String {
+        let zoneAnalysis = buildHeartZoneAnalysis(snapshot: snapshot)
+        let hrVariation = buildHRVariationAnalysis(snapshot: snapshot)
+        let driftAnalysis = buildHRDriftAnalysis(snapshot: snapshot)
+        
+        // Combine into one section
+        return """
+        \(zoneAnalysis)
+        
+        \(hrVariation)
+        
+        \(driftAnalysis)
+        """
+    }
+    
+    /// Build consolidated coach's perspective (runner insights + trade-offs + 5 questions)
+    private func buildConsolidatedCoachPerspective(
+        snapshot: PerformanceSnapshot,
+        targetStatus: TargetStatus,
+        aiAnalysis: RAGAnalysisResult
+    ) -> String {
+        var perspective = ""
+        
+        // Add the 5 coach's perspective questions (from buildPerformanceAnalysis)
+        if !snapshot.completedIntervals.isEmpty {
+            let progressPercent = snapshot.targetDistance > 0 ? (snapshot.currentDistance / snapshot.targetDistance) * 100 : 0
+            
+            perspective += "🧠 COACH'S PERSPECTIVE EVALUATION:\n"
+            perspective += "1. Effort vs Distance: \(evaluateEffortVsDistance(snapshot: snapshot))\n"
+            perspective += "2. Pace Cost Timing: \(evaluatePaceCostTiming(snapshot: snapshot, progressPercent: progressPercent))\n"
+            perspective += "3. Discomfort Assessment: \(evaluateDiscomfortTiming(snapshot: snapshot, progressPercent: progressPercent))\n"
+            perspective += "4. Future Projection (5km): \(projectFutureFeeling(snapshot: snapshot))\n"
+            perspective += "5. Borrowing Check: \(checkBorrowingFromFinish(snapshot: snapshot, progressPercent: progressPercent))\n"
+            perspective += "\n📊 Run Phase: \(assessRunPhase(snapshot: snapshot, progressPercent: progressPercent))\n\n"
+        }
+        
+        // Add runner insights
+        let runnerInsights = buildRunnerInsights(snapshot: snapshot, targetStatus: targetStatus)
+        perspective += "🏃‍♂️ RUNNER'S WISDOM:\n\(runnerInsights)\n\n"
+        
+        // Add trade-off evaluation
+        let tradeOffs = buildTradeOffAnalysis(snapshot: snapshot, targetStatus: targetStatus)
+        perspective += "⚖️ TRADE-OFF EVALUATION:\n\(tradeOffs)"
+        
+        return perspective
+    }
+    
+    /// Build consolidated quality and risks
+    private func buildConsolidatedQualityAndRisks(
+        snapshot: PerformanceSnapshot,
+        aiAnalysis: RAGAnalysisResult
+    ) -> String {
+        let quality = buildRunningQualityAssessment(snapshot: snapshot)
+        let risks = detectInjuryRiskSignals(snapshot: snapshot)
+        
+        var combined = quality
+        
+        if !risks.isEmpty {
+            combined += "\n\n⚠️ INJURY RISK SIGNALS:\n"
+            combined += risks.map { "• \($0)" }.joined(separator: "\n")
+        } else {
+            combined += "\n\n✅ No injury risk signals detected"
+        }
+        
+        return combined
     }
     
     // MARK: - Analysis Components
     
+    /// Calculate target status based on DISTANCE achieved vs distance that should be at target pace
+    /// If runner runs slower, they'll be behind on distance (fewer km completed than should be)
+    /// If runner has already finished target distance and doing more, that's beyond target (good)
     private func calculateTargetStatus(snapshot: PerformanceSnapshot) -> TargetStatus {
-        let deviation = snapshot.paceDeviation
+        let actualDistanceKm = snapshot.currentDistance / 1000.0
+        let targetDistanceKm = snapshot.targetDistance / 1000.0
         
-        if abs(deviation) <= 5 {
-            return .onTrack(deviation: deviation)
-        } else if deviation > 15 {
-            return .wayBehind(deviation: deviation)
-        } else if deviation > 5 {
-            return .slightlyBehind(deviation: deviation)
-        } else if deviation < -15 {
-            return .wayAhead(deviation: abs(deviation))
+        // If runner has already completed target distance, they're beyond target (good)
+        if targetDistanceKm > 0 && actualDistanceKm >= targetDistanceKm {
+            let beyondTarget = actualDistanceKm - targetDistanceKm
+            let beyondPercent = (beyondTarget / targetDistanceKm) * 100
+            
+            if beyondPercent > 15 {
+                return .wayAhead(deviation: beyondPercent)
+            } else if beyondPercent > 5 {
+                return .slightlyAhead(deviation: beyondPercent)
+            } else {
+                return .onTrack(deviation: beyondPercent)
+            }
+        }
+        
+        // Calculate expected distance at target pace for elapsed time
+        let elapsedTimeHours = snapshot.elapsedTime / 3600.0 // Convert seconds to hours
+        let expectedDistanceKm = (elapsedTimeHours * 60.0) / snapshot.targetPace // km at target pace
+        
+        // Calculate distance deviation (positive = behind, negative = ahead)
+        let distanceDeviation = expectedDistanceKm > 0 ? ((actualDistanceKm - expectedDistanceKm) / expectedDistanceKm) * 100 : 0
+        
+        // Determine status based on distance deviation
+        if abs(distanceDeviation) <= 5 {
+            return .onTrack(deviation: abs(distanceDeviation))
+        } else if distanceDeviation > 15 {
+            return .wayBehind(deviation: distanceDeviation)
+        } else if distanceDeviation > 5 {
+            return .slightlyBehind(deviation: distanceDeviation)
+        } else if distanceDeviation < -15 {
+            return .wayAhead(deviation: abs(distanceDeviation))
         } else {
-            return .slightlyAhead(deviation: abs(deviation))
+            return .slightlyAhead(deviation: abs(distanceDeviation))
         }
     }
     
@@ -1894,13 +2107,282 @@ class RAGPerformanceAnalyzer: ObservableObject {
         let targetPaceStr = formatPace(snapshot.targetPace)
         let distanceKm = snapshot.currentDistance / 1000
         let elapsedMin = Int(snapshot.elapsedTime / 60)
+        let targetDistanceKm = snapshot.targetDistance / 1000
+        let progressPercent = targetDistanceKm > 0 ? (distanceKm / targetDistanceKm) * 100 : 0
+        
+        // Target Awareness: on-track / slightly-behind / way-behind based on DISTANCE achieved vs expected at target pace
+        let targetStatus = calculateTargetStatus(snapshot: snapshot)
         
         var analysis = "Current: \(currentPaceStr) min/km | Target: \(targetPaceStr) min/km\n"
-        analysis += "Distance: \(String(format: "%.2f", distanceKm)) km | Time: \(elapsedMin) min\n"
+        analysis += "Distance: \(String(format: "%.2f", distanceKm)) km | Target distance: \(String(format: "%.2f", targetDistanceKm)) km\n"
+        
+        // Check if runner has completed target distance
+        if targetDistanceKm > 0 && distanceKm >= targetDistanceKm {
+            let beyondTarget = distanceKm - targetDistanceKm
+            analysis += "✅ Beyond target: +\(String(format: "%.2f", beyondTarget)) km (completed target and continuing)\n"
+        } else {
+            // Calculate expected distance at target pace for elapsed time
+            let elapsedTimeHours = snapshot.elapsedTime / 3600.0
+            let expectedDistanceKm = (elapsedTimeHours * 60.0) / snapshot.targetPace
+            let distanceGap = distanceKm - expectedDistanceKm
+            
+            analysis += "Expected at target pace: \(String(format: "%.2f", expectedDistanceKm)) km\n"
+            if abs(distanceGap) > 0.05 {
+                let gapStr = distanceGap > 0 ? "+\(String(format: "%.2f", distanceGap))" : String(format: "%.2f", distanceGap)
+                analysis += "Distance gap: \(gapStr) km (\(distanceGap > 0 ? "ahead" : "behind") on distance)\n"
+            }
+        }
+        
         analysis += "Pace deviation: \(String(format: "%.1f", snapshot.paceDeviation))%\n"
-        analysis += "Pace trend: \(snapshot.pacetrend.rawValue.uppercased())"
+        analysis += "Target status: \(targetStatus.description)\n"
+        analysis += "Pace trend: \(snapshot.pacetrend.rawValue.uppercased())\n"
+        
+        // Add coach's perspective questions (INTERVALS ONLY - when we have intervals)
+        if !snapshot.completedIntervals.isEmpty {
+            analysis += "\n🧠 COACH'S PERSPECTIVE EVALUATION:\n"
+            
+            // 1. Is effort rising faster than distance?
+            let effortVsDistance = evaluateEffortVsDistance(snapshot: snapshot)
+            analysis += "1. Effort vs Distance: \(effortVsDistance)\n"
+            
+            // 2. Is pace being paid for too early?
+            let paceCostTiming = evaluatePaceCostTiming(snapshot: snapshot, progressPercent: progressPercent)
+            analysis += "2. Pace Cost Timing: \(paceCostTiming)\n"
+            
+            // 3. Is this discomfort expected or premature?
+            let discomfortAssessment = evaluateDiscomfortTiming(snapshot: snapshot, progressPercent: progressPercent)
+            analysis += "3. Discomfort Assessment: \(discomfortAssessment)\n"
+            
+            // 4. Would this feel okay 5km later?
+            let futureProjection = projectFutureFeeling(snapshot: snapshot)
+            analysis += "4. Future Projection (5km): \(futureProjection)\n"
+            
+            // 5. Is runner borrowing from finish?
+            let borrowingCheck = checkBorrowingFromFinish(snapshot: snapshot, progressPercent: progressPercent)
+            analysis += "5. Borrowing Check: \(borrowingCheck)\n"
+            
+            // Overall phase assessment
+            let phaseAssessment = assessRunPhase(snapshot: snapshot, progressPercent: progressPercent)
+            analysis += "\n📊 Run Phase: \(phaseAssessment)"
+        }
         
         return analysis
+    }
+    
+    // MARK: - Coach's Perspective Evaluation Functions (INTERVALS ONLY)
+    
+    /// 1. Is effort rising faster than distance?
+    private func evaluateEffortVsDistance(snapshot: PerformanceSnapshot) -> String {
+        guard snapshot.kmDriftData.count >= 2 else {
+            return "Insufficient data - need 2+ km"
+        }
+        
+        let recentKm = snapshot.kmDriftData.suffix(2)
+        let driftChange = (recentKm.last?.driftAtKmEnd ?? 0) - (recentKm.first?.driftAtKmStart ?? 0)
+        let distanceChange = 1.0 // 1 km per interval
+        
+        // Effort rising faster if drift increases >2% per km
+        if driftChange > 2.0 {
+            return "⚠️ Effort rising \(String(format: "%.1f", driftChange))% faster than distance - unsustainable"
+        } else if driftChange > 1.0 {
+            return "Effort rising slightly faster (\(String(format: "%.1f", driftChange))%) - monitor"
+        } else if driftChange < -0.5 {
+            return "Effort stable/improving - good progression"
+        } else {
+            return "Effort matches distance progression - sustainable"
+        }
+    }
+    
+    /// 2. Is pace being paid for too early?
+    private func evaluatePaceCostTiming(snapshot: PerformanceSnapshot, progressPercent: Double) -> String {
+        let isEarlyPhase = progressPercent < 30
+        let isMidPhase = progressPercent >= 30 && progressPercent < 70
+        
+        guard let currentZone = snapshot.currentZone else {
+            return "No HR data - cannot assess"
+        }
+        
+        if isEarlyPhase {
+            if currentZone >= 4 {
+                return "⚠️ Paying for pace too early - Z\(currentZone) should come later"
+            } else if let drift = snapshot.currentDrift, drift.driftPercent > 5.0 {
+                return "⚠️ High drift (\(String(format: "%.1f", drift.driftPercent))%) too early - cost should come later"
+            } else {
+                return "Pace cost appropriate for early phase"
+            }
+        } else if isMidPhase {
+            if currentZone >= 4 {
+                return "High effort (Z\(currentZone)) in mid-phase - acceptable if sustainable"
+            } else {
+                return "Pace cost appropriate for mid-phase"
+            }
+        } else {
+            // Late phase - high effort is expected
+            return "Pace cost appropriate for late phase"
+        }
+    }
+    
+    /// 3. Is this discomfort expected or premature?
+    private func evaluateDiscomfortTiming(snapshot: PerformanceSnapshot, progressPercent: Double) -> String {
+        let isEarlyPhase = progressPercent < 30
+        let isMidPhase = progressPercent >= 30 && progressPercent < 70
+        let isLatePhase = progressPercent >= 70
+        
+        let discomfortLevel: String
+        if let zone = snapshot.currentZone {
+            if zone >= 4 {
+                discomfortLevel = "high"
+            } else if zone == 3 {
+                discomfortLevel = "moderate"
+            } else {
+                discomfortLevel = "low"
+            }
+        } else {
+            return "No HR data - cannot assess"
+        }
+        
+        let driftLevel: String
+        if let drift = snapshot.currentDrift {
+            if drift.driftPercent > 8.0 {
+                driftLevel = "high"
+            } else if drift.driftPercent > 5.0 {
+                driftLevel = "moderate"
+            } else {
+                driftLevel = "low"
+            }
+        } else {
+            driftLevel = "unknown"
+        }
+        
+        if isEarlyPhase {
+            if discomfortLevel == "high" || driftLevel == "high" {
+                return "⚠️ Premature discomfort - should feel easier now (early phase)"
+            } else {
+                return "Discomfort level expected for early phase"
+            }
+        } else if isMidPhase {
+            if discomfortLevel == "high" && driftLevel == "high" {
+                return "⚠️ High discomfort in mid-phase - may struggle later"
+            } else {
+                return "Discomfort level expected for mid-phase"
+            }
+        } else {
+            // Late phase - high discomfort is expected
+            return "Discomfort expected at this stage (late phase)"
+        }
+    }
+    
+    /// 4. Would this feel okay 5km later?
+    private func projectFutureFeeling(snapshot: PerformanceSnapshot) -> String {
+        guard let currentZone = snapshot.currentZone else {
+            return "No HR data - cannot project"
+        }
+        
+        // Project current state forward 5km
+        if currentZone >= 4 {
+            return "⚠️ Won't feel okay 5km later - Z\(currentZone) unsustainable"
+        }
+        
+        if let drift = snapshot.currentDrift {
+            if drift.driftPercent > 8.0 {
+                return "⚠️ Won't feel okay 5km later - high drift (\(String(format: "%.1f", drift.driftPercent))%) will worsen"
+            } else if drift.driftPercent > 5.0 && snapshot.pacetrend == .stable {
+                return "⚠️ May struggle 5km later - drift rising despite stable pace"
+            }
+        }
+        
+        // Check drift acceleration
+        if snapshot.kmDriftData.count >= 2 {
+            let recentDrift = snapshot.kmDriftData.last?.driftAtKmEnd ?? 0
+            let earlierDrift = snapshot.kmDriftData[snapshot.kmDriftData.count - 2].driftAtKmEnd
+            let driftAcceleration = recentDrift - earlierDrift
+            
+            if driftAcceleration > 1.5 {
+                return "⚠️ Won't feel okay 5km later - drift accelerating (\(String(format: "%.1f", driftAcceleration))% per km)"
+            }
+        }
+        
+        if currentZone <= 2 {
+            return "Will feel okay 5km later - low effort sustainable"
+        } else if currentZone == 3 {
+            return "Should feel okay 5km later - moderate effort sustainable"
+        } else {
+            return "Effort level sustainable for 5km more"
+        }
+    }
+    
+    /// 5. Is runner borrowing from finish?
+    private func checkBorrowingFromFinish(snapshot: PerformanceSnapshot, progressPercent: Double) -> String {
+        let isEarlyPhase = progressPercent < 30
+        let isMidPhase = progressPercent >= 30 && progressPercent < 50
+        
+        guard let currentZone = snapshot.currentZone else {
+            return "No HR data - cannot assess"
+        }
+        
+        // Check if ahead of target with high effort early
+        let isAhead = snapshot.paceDeviation < -5 // Faster than target
+        let isHighEffort = currentZone >= 4
+        
+        if isEarlyPhase && isAhead && isHighEffort {
+            return "⚠️ Borrowing from finish - ahead with high effort (Z\(currentZone)) too early"
+        }
+        
+        if isEarlyPhase && isHighEffort {
+            if let drift = snapshot.currentDrift, drift.driftPercent > 5.0 {
+                return "⚠️ Borrowing from finish - high effort + drift (\(String(format: "%.1f", drift.driftPercent))%) early"
+            }
+        }
+        
+        if isMidPhase && isAhead && isHighEffort {
+            return "⚠️ May be borrowing - ahead with high effort in mid-phase"
+        }
+        
+        if isAhead && currentZone <= 2 {
+            return "Ahead appropriately - low effort, not borrowing"
+        } else if !isAhead && isHighEffort {
+            return "High effort but behind - not borrowing, may be struggling"
+        } else {
+            return "Pacing appropriately - not borrowing from finish"
+        }
+    }
+    
+    /// Assess which phase of the run (controlled/honest/earned)
+    private func assessRunPhase(snapshot: PerformanceSnapshot, progressPercent: Double) -> String {
+        let isEarlyPhase = progressPercent < 30
+        let isMidPhase = progressPercent >= 30 && progressPercent < 70
+        let isLatePhase = progressPercent >= 70
+        
+        guard let currentZone = snapshot.currentZone else {
+            return "Unknown phase (no HR data)"
+        }
+        
+        if isEarlyPhase {
+            // Should feel CONTROLLED
+            if currentZone <= 2 {
+                return "EARLY: Feeling CONTROLLED ✓ (Z\(currentZone) - appropriate)"
+            } else if currentZone >= 4 {
+                return "EARLY: NOT controlled ⚠️ (Z\(currentZone) - too high, should be easier)"
+            } else {
+                return "EARLY: Moderately controlled (Z\(currentZone) - acceptable)"
+            }
+        } else if isMidPhase {
+            // Should feel HONEST
+            if currentZone >= 3 && currentZone <= 4 {
+                return "MIDDLE: Feeling HONEST ✓ (Z\(currentZone) - effort matches pace)"
+            } else if currentZone >= 5 {
+                return "MIDDLE: Too intense ⚠️ (Z\(currentZone) - may not sustain)"
+            } else {
+                return "MIDDLE: Honest but could push (Z\(currentZone) - sustainable)"
+            }
+        } else {
+            // Should feel EARNED
+            if currentZone >= 3 {
+                return "LATE: Feeling EARNED ✓ (Z\(currentZone) - can push, reserves preserved)"
+            } else {
+                return "LATE: Could push harder (Z\(currentZone) - may have conserved too much)"
+            }
+        }
     }
     
     private func buildHeartZoneAnalysis(snapshot: PerformanceSnapshot) -> String {
@@ -1914,6 +2396,7 @@ class RAGPerformanceAnalyzer: ObservableObject {
             analysis += " (\(Int(currentHR)) BPM)"
         }
         
+        // Zone distribution (zone trends)
         analysis += "\nZone distribution: "
         let zoneStrs = (1...5).compactMap { zone -> String? in
             guard let pct = snapshot.zonePercentages[zone], pct > 0 else { return nil }
@@ -1930,7 +2413,91 @@ class RAGPerformanceAnalyzer: ObservableObject {
             analysis += "\nZone-pace: " + zonePaceStrs.joined(separator: ", ")
         }
         
+        // Zone Guidance: Adaptive recommendations based on target and current state
+        let zoneGuidance = buildZoneGuidance(snapshot: snapshot)
+        if !zoneGuidance.isEmpty {
+            analysis += "\n\n🎯 Zone Guidance: \(zoneGuidance)"
+        }
+        
         return analysis
+    }
+    
+    /// Zone Guidance: Adaptive recommendations based on target and current state
+    private func buildZoneGuidance(snapshot: PerformanceSnapshot) -> String {
+        guard let currentZone = snapshot.currentZone else {
+            return ""
+        }
+        
+        let targetStatus = calculateTargetStatus(snapshot: snapshot)
+        let progressPercent = snapshot.targetDistance > 0 ? (snapshot.currentDistance / snapshot.targetDistance) * 100 : 0
+        let isEarlyPhase = progressPercent < 30
+        let isMidPhase = progressPercent >= 30 && progressPercent < 70
+        let isLatePhase = progressPercent >= 70
+        
+        var guidance: [String] = []
+        
+        // Guidance based on target status
+        switch targetStatus {
+        case .onTrack:
+            if currentZone <= 2 {
+                guidance.append("Optimal: Z\(currentZone) is perfect for maintaining target pace")
+            } else if currentZone == 3 {
+                guidance.append("Good: Z3 is sustainable for target pace")
+            } else if currentZone >= 4 {
+                guidance.append("⚠️ High effort (Z\(currentZone)) - consider easing to Z3 to conserve energy")
+            }
+            
+        case .slightlyBehind(let deviation):
+            if currentZone <= 2 {
+                guidance.append("Can push harder: Z\(currentZone) is too easy - move to Z3 to catch up")
+            } else if currentZone == 3 {
+                guidance.append("Good adjustment: Z3 is appropriate for catching up")
+            } else if currentZone >= 4 {
+                guidance.append("⚠️ High effort (Z\(currentZone)) but still behind - focus on form efficiency")
+            }
+            
+        case .wayBehind(let deviation):
+            if currentZone <= 3 {
+                guidance.append("⚠️ Need more effort: Z\(currentZone) is too low - push to Z4 if sustainable")
+            } else {
+                guidance.append("High effort (Z\(currentZone)) but still behind - may need to accept current pace")
+            }
+            
+        case .slightlyAhead(let deviation):
+            if currentZone >= 4 {
+                guidance.append("⚠️ Ease back: Z\(currentZone) is too high - drop to Z3 to conserve energy")
+            } else if currentZone == 3 {
+                guidance.append("Good: Z3 is sustainable while ahead")
+            } else {
+                guidance.append("Optimal: Z\(currentZone) is perfect while ahead - maintain")
+            }
+            
+        case .wayAhead(let deviation):
+            if currentZone >= 3 {
+                guidance.append("⚠️ Ease significantly: Z\(currentZone) is too high - drop to Z2 to conserve")
+            } else {
+                guidance.append("Perfect: Z\(currentZone) is ideal while way ahead - maintain")
+            }
+        }
+        
+        // Phase-specific guidance
+        if isEarlyPhase && currentZone >= 4 {
+            guidance.append("⚠️ Early phase: Z\(currentZone) is too high - should be Z1-Z2 early")
+        } else if isLatePhase && currentZone <= 2 {
+            guidance.append("Late phase: Can push harder - Z\(currentZone) is too low, move to Z3-Z4")
+        }
+        
+        // HR headroom assessment
+        if let maxHR = snapshot.maxHR, let currentHR = snapshot.currentHR {
+            let pctOfMax = (currentHR / maxHR) * 100
+            if pctOfMax < 70 {
+                guidance.append("HR headroom: \(String(format: "%.0f", pctOfMax))% of max - can push harder")
+            } else if pctOfMax > 90 {
+                guidance.append("⚠️ Near max HR: \(String(format: "%.0f", pctOfMax))% of max - at limit")
+            }
+        }
+        
+        return guidance.joined(separator: " | ")
     }
     
     private func buildIntervalTrendsAnalysis(snapshot: PerformanceSnapshot) -> String {
@@ -1940,29 +2507,78 @@ class RAGPerformanceAnalyzer: ObservableObject {
         
         var analysis = "Intervals completed: \(snapshot.completedIntervals.count)\n"
         
-        // Show last 3 intervals
-        let recentIntervals = snapshot.completedIntervals.suffix(3)
-        let intervalStrs = recentIntervals.map { interval in
+        // Show all intervals with pace progression
+        let intervalStrs = snapshot.completedIntervals.map { interval in
             "Km \(interval.kilometer): \(formatPace(interval.pace))"
         }
-        analysis += "Recent: " + intervalStrs.joined(separator: " → ")
+        analysis += "Pace progression: " + intervalStrs.joined(separator: " → ")
         
-        // Trend analysis
+        // Enhanced trend analysis with acceleration detection
         analysis += "\nTrend: \(snapshot.pacetrend.rawValue.uppercased())"
         
-        // Calculate consistency
+        // Detect pace acceleration/deceleration pattern
+        if snapshot.completedIntervals.count >= 3 {
+            let recent3 = Array(snapshot.completedIntervals.suffix(3))
+            let paceChanges = zip(recent3.dropFirst(), recent3).map { $0.pace - $1.pace }
+            
+            // Positive = slowing, Negative = speeding up
+            let avgChange = paceChanges.reduce(0, +) / Double(paceChanges.count)
+            
+            if avgChange > 0.15 {
+                analysis += " (DECELERATING - pace slowing)"
+            } else if avgChange < -0.15 {
+                analysis += " (ACCELERATING - pace increasing)"
+            } else {
+                analysis += " (STABLE)"
+            }
+            
+            // Detect if acceleration/deceleration is consistent
+            let allPositive = paceChanges.allSatisfy { $0 > 0 }
+            let allNegative = paceChanges.allSatisfy { $0 < 0 }
+            if allPositive {
+                analysis += " - Consistent slowdown detected"
+            } else if allNegative {
+                analysis += " - Consistent speedup detected"
+            }
+        }
+        
+        // Calculate consistency with enhanced metrics
         if snapshot.completedIntervals.count >= 2 {
             let paces = snapshot.completedIntervals.map { $0.pace }
             let avgPace = paces.reduce(0, +) / Double(paces.count)
             let variance = paces.map { pow($0 - avgPace, 2) }.reduce(0, +) / Double(paces.count)
             let stdDev = sqrt(variance)
             
-            if stdDev < 0.2 {
-                analysis += " (VERY CONSISTENT)"
-            } else if stdDev < 0.4 {
-                analysis += " (CONSISTENT)"
+            // Calculate coefficient of variation (CV) for better assessment
+            let cv = (stdDev / avgPace) * 100
+            
+            if cv < 2.0 {
+                analysis += "\nConsistency: EXCELLENT (CV: \(String(format: "%.1f", cv))%)"
+            } else if cv < 4.0 {
+                analysis += "\nConsistency: GOOD (CV: \(String(format: "%.1f", cv))%)"
+            } else if cv < 6.0 {
+                analysis += "\nConsistency: MODERATE (CV: \(String(format: "%.1f", cv))%)"
             } else {
-                analysis += " (VARIABLE)"
+                analysis += "\nConsistency: VARIABLE (CV: \(String(format: "%.1f", cv))%)"
+            }
+            
+            // Compare first half vs second half (if enough intervals)
+            if snapshot.completedIntervals.count >= 4 {
+                let midpoint = snapshot.completedIntervals.count / 2
+                let firstHalf = Array(snapshot.completedIntervals.prefix(midpoint))
+                let secondHalf = Array(snapshot.completedIntervals.suffix(snapshot.completedIntervals.count - midpoint))
+                
+                let firstHalfAvg = firstHalf.map { $0.pace }.reduce(0, +) / Double(firstHalf.count)
+                let secondHalfAvg = secondHalf.map { $0.pace }.reduce(0, +) / Double(secondHalf.count)
+                let splitDiff = secondHalfAvg - firstHalfAvg
+                
+                if splitDiff < -0.1 {
+                    analysis += " | Negative splits: \(String(format: "%.2f", abs(splitDiff))) min/km faster in 2nd half"
+                } else if splitDiff > 0.1 {
+                    analysis += " | Positive splits: \(String(format: "%.2f", splitDiff)) min/km slower in 2nd half"
+                } else {
+                    analysis += " | Even splits: consistent pacing"
+                }
             }
         }
         
@@ -2239,6 +2855,189 @@ class RAGPerformanceAnalyzer: ObservableObject {
             return String(format: "%d:%02d:%02d", hours, mins, secs)
         }
         return String(format: "%d:%02d", mins, secs)
+    }
+    
+    // MARK: - HR Drift Calculations
+    
+    private func calculateHRDriftData(
+        intervals: [RunInterval],
+        healthManager: HealthManager?,
+        elapsedTime: Double
+    ) -> ([KmDriftData], DriftSnapshot?) {
+        guard let hm = healthManager,
+              let currentHR = hm.currentHeartRate,
+              let avgHR = hm.averageHeartRate,
+              avgHR > 0 else {
+            return ([], nil)
+        }
+        
+        // Calculate current drift percentage
+        let currentDriftPercent = ((currentHR - avgHR) / avgHR) * 100
+        let currentDrift = DriftSnapshot(driftPercent: currentDriftPercent)
+        
+        // Build per-km drift data
+        var kmDriftData: [KmDriftData] = []
+        for (index, interval) in intervals.enumerated() {
+            // Simplified: use average HR drift for each km
+            // In a full implementation, you'd track HR at start/end of each interval
+            let km = interval.index
+            let driftAtStart = index > 0 ? kmDriftData[index - 1].driftAtKmEnd : 0.0
+            let driftAtEnd = currentDriftPercent * Double(km) / max(1.0, Double(intervals.count))
+            kmDriftData.append(KmDriftData(
+                kilometer: km,
+                driftAtKmStart: driftAtStart,
+                driftAtKmEnd: driftAtEnd
+            ))
+        }
+        
+        return (kmDriftData, currentDrift)
+    }
+    
+    private func buildHRDriftDataSection(snapshot: PerformanceSnapshot) -> String {
+        guard !snapshot.kmDriftData.isEmpty else {
+            return "HR drift data not available yet."
+        }
+        
+        var section = "Current drift: \(String(format: "%.1f", snapshot.currentDrift?.driftPercent ?? 0))% | Level: \(snapshot.currentDrift?.driftPercent ?? 0 > 5 ? "RISING" : "STABLE")\n\n"
+        section += "Per-KM Drift Patterns:\n"
+        
+        for driftData in snapshot.kmDriftData.suffix(3) {
+            let delta = driftData.driftAtKmEnd - driftData.driftAtKmStart
+            let pattern = delta > 2.0 ? "Hidden fatigue" : delta > 0.5 ? "Rising" : "Stable"
+            section += "  Km \(driftData.kilometer): \(pattern) | Drift: \(String(format: "%.1f", driftData.driftAtKmEnd))% (Δ\(String(format: "%.1f", delta))%)\n"
+        }
+        
+        if let currentDrift = snapshot.currentDrift, currentDrift.driftPercent > 5.0 {
+            section += "\n⚠️ Fatigue signal detected\n"
+            section += "📈 Drift trend: INCREASING (physiological cost rising)\n"
+        }
+        
+        return section
+    }
+    
+    private func buildHRDriftAnalysis(snapshot: PerformanceSnapshot) -> String {
+        guard let currentDrift = snapshot.currentDrift else {
+            return "HR drift data not available."
+        }
+        
+        var analysis = "Current drift: \(String(format: "%.1f", currentDrift.driftPercent))% | Level: \(currentDrift.driftPercent > 5 ? "RISING" : "STABLE")\n"
+        
+        if !snapshot.kmDriftData.isEmpty {
+            analysis += "\nPer-KM Drift Patterns:\n"
+            for driftData in snapshot.kmDriftData.suffix(3) {
+                let delta = driftData.driftAtKmEnd - driftData.driftAtKmStart
+                let pattern = delta > 2.0 ? "Hidden fatigue" : delta > 0.5 ? "Rising" : "Stable"
+                analysis += "  Km \(driftData.kilometer): \(pattern) | Drift: \(String(format: "%.1f", driftData.driftAtKmEnd))% (Δ\(String(format: "%.1f", delta))%)\n"
+            }
+        }
+        
+        if currentDrift.driftPercent > 5.0 {
+            analysis += "\n⚠️ Fatigue signal detected\n"
+            analysis += "📈 Drift trend: INCREASING (physiological cost rising)\n"
+        }
+        
+        return analysis
+    }
+    
+    private func buildRunnerInsights(snapshot: PerformanceSnapshot, targetStatus: TargetStatus) -> String {
+        var insights: [String] = []
+        
+        // Cost check
+        if let currentDrift = snapshot.currentDrift,
+           currentDrift.driftPercent > 3.0,
+           snapshot.pacetrend == .stable {
+            insights.append("⚠️ Cost check: Same pace but HR drift RISING (\(String(format: "%.1f", currentDrift.driftPercent))%) - physiological cost rising. Future slowdown likely if not addressed.")
+        }
+        
+        // Hidden fatigue
+        if let currentDrift = snapshot.currentDrift,
+           currentDrift.driftPercent > 5.0,
+           snapshot.pacetrend == .stable {
+            insights.append("⚠️ Hidden fatigue detected: Pace stable but drift increasing - unsustainable effort. Consider easing pace slightly.")
+        }
+        
+        // Sustainability
+        if let currentZone = snapshot.currentZone {
+            if currentZone >= 4 && snapshot.elapsedTime < 600 {
+                insights.append("⚠️ Sustainability check: Zone \(currentZone) too early - may struggle later.")
+            } else if currentZone <= 3 {
+                insights.append("✓ Sustainability check: Effort sustainable for remaining distance")
+            }
+        }
+        
+        return insights.isEmpty ? "No specific insights at this time." : insights.joined(separator: "\n")
+    }
+    
+    private func buildTradeOffAnalysis(snapshot: PerformanceSnapshot, targetStatus: TargetStatus) -> String {
+        let progressPercent = snapshot.targetDistance > 0 ? (snapshot.currentDistance / snapshot.targetDistance) * 100 : 0
+        let isEarlyPhase = progressPercent < 30
+        let isMidPhase = progressPercent >= 30 && progressPercent < 70
+        
+        var analysis = "Km \(snapshot.currentIntervalNumber) Cost Analysis:\n"
+        
+        // Zone cost
+        if let currentZone = snapshot.currentZone {
+            let zoneCost = currentZone >= 4 ? "HIGH" : currentZone == 3 ? "MODERATE" : "LOW"
+            analysis += "  • Zone cost: \(zoneCost) cost (Z\(currentZone)) - \(currentZone <= 3 ? "sustainable" : "may struggle")\n"
+        }
+        
+        // Drift cost
+        if let currentDrift = snapshot.currentDrift {
+            let driftCost = currentDrift.driftPercent > 8.0 ? "HIGH" : currentDrift.driftPercent > 5.0 ? "MODERATE" : "LOW"
+            analysis += "  • Drift cost: \(driftCost) cost - drift \(currentDrift.driftPercent > 5 ? "rising" : "stable") (\(String(format: "%.1f", currentDrift.driftPercent))%)\n"
+        }
+        
+        // Pace cost
+        let paceCost = abs(snapshot.paceDeviation) > 10 ? "HIGH" : abs(snapshot.paceDeviation) > 5 ? "MODERATE" : "LOW"
+        analysis += "  • Pace cost: \(paceCost) - \(abs(snapshot.paceDeviation) < 5 ? "on target" : "off target")\n"
+        
+        // Timing
+        analysis += "\nTiming Analysis:\n"
+        if isEarlyPhase {
+            if let zone = snapshot.currentZone, zone >= 4 {
+                analysis += "  ⚠️ TIMING: Effort level too high for early phase.\n"
+            } else {
+                analysis += "  ✓ TIMING: Effort level appropriate for early phase.\n"
+            }
+        } else if isMidPhase {
+            analysis += "  ✓ TIMING: Effort level appropriate for mid-phase.\n"
+        } else {
+            analysis += "  ✓ TIMING: Effort level appropriate for late phase.\n"
+        }
+        
+        // Sustainability
+        analysis += "\nSustainability Check:\n"
+        if let currentZone = snapshot.currentZone, let currentDrift = snapshot.currentDrift {
+            if currentZone <= 3 && currentDrift.driftPercent < 5.0 {
+                analysis += "  ✓ SUSTAINABLE: Z\(currentZone) with \(String(format: "%.1f", currentDrift.driftPercent))% drift - sustainable for remaining distance\n"
+            } else if currentZone >= 4 || currentDrift.driftPercent > 8.0 {
+                analysis += "  ❌ UNSUSTAINABLE: Z\(currentZone) with \(String(format: "%.1f", currentDrift.driftPercent))% drift - cannot maintain for remaining distance\n"
+            } else {
+                analysis += "  ⚠️ QUESTIONABLE: Z\(currentZone) with \(String(format: "%.1f", currentDrift.driftPercent))% drift - may struggle after \(Int(snapshot.targetDistance / 1000 / 2))km\n"
+            }
+        }
+        
+        // Control
+        analysis += "\nControl Analysis:\n"
+        if abs(snapshot.paceDeviation) < 5 {
+            analysis += "  ✓ INTENTIONAL: Pace matches target - controlled, disciplined effort.\n"
+        } else {
+            analysis += "  ⚠️ LACKING CONTROL: Pace off target - form or focus issue\n"
+        }
+        
+        // Future Impact
+        analysis += "\nFuture Impact Assessment:\n"
+        if let currentDrift = snapshot.currentDrift {
+            if currentDrift.driftPercent > 8.0 {
+                analysis += "  ❌ FUTURE IMPACT: Drift \(String(format: "%.1f", currentDrift.driftPercent))% - this km will cause significant slowdown.\n"
+            } else if currentDrift.driftPercent > 5.0 {
+                analysis += "  ⚠️ FUTURE IMPACT: Drift \(String(format: "%.1f", currentDrift.driftPercent))% - this km made future kms harder.\n"
+            } else {
+                analysis += "  ✓ FUTURE IMPACT: Low drift - this km sustainable for future.\n"
+            }
+        }
+        
+        return analysis
     }
 }
 

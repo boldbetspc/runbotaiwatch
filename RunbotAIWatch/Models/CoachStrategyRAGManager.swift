@@ -2,6 +2,7 @@ import Foundation
 
 /// Coach Strategy RAG Manager
 /// Calls the coach-rag-strategy edge function to get adaptive coaching strategies from KB
+/// Uses Graph RAG for enhanced strategy retrieval via graph-based embeddings in coaching_strategies_kb
 /// Different goals for different coaching moments:
 /// - Start: Race strategy (overall plan)
 /// - Intervals: Tactical/adaptive microstrategy + monitoring
@@ -106,7 +107,7 @@ class CoachStrategyRAGManager {
             return nil
         }
         
-        print("📚 [CoachStrategyRAG] ========== REQUESTING COACH STRATEGY ==========")
+        print("📚 [CoachStrategyRAG] ========== REQUESTING COACH STRATEGY (Graph RAG) ==========")
         print("📚 [CoachStrategyRAG] Goal: \(goal)")
         print("📚 [CoachStrategyRAG] Personality: \(personality)")
         print("📚 [CoachStrategyRAG] Energy: \(energyLevel)")
@@ -120,8 +121,9 @@ class CoachStrategyRAGManager {
             request.setValue(getAuthToken(), forHTTPHeaderField: "Authorization")
             request.timeoutInterval = 15
             
-            // Note: Edge function doesn't use 'goal' parameter yet
+            // Note: Edge function uses Graph RAG to retrieve strategies from coaching_strategies_kb
             // It selects strategies based on distance category, runner level, and situation automatically
+            // Graph RAG leverages graph-based embeddings for enhanced strategy matching
             // We pass goal for logging purposes
             let strategyRequest = StrategyRequest(
                 performance_analysis: performanceAnalysis,

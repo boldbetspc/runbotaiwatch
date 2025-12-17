@@ -304,16 +304,6 @@ struct MainRunbotView: View {
                 print("🔵 User authenticated, initializing Supabase session")
                 supabaseManager.initializeSession(for: userId)
             }
-            
-            // Request HealthKit authorization when view appears
-            healthManager.checkAuthorizationStatus()
-            if !healthManager.isAuthorized {
-                print("💓 [MainRunbotView] Not authorized - requesting HealthKit access...")
-                healthManager.requestHealthDataAccess()
-            } else {
-                print("✅ [MainRunbotView] HealthKit already authorized")
-            }
-            
             // Train mode and PR model loading removed
         }
         .onChange(of: authManager.isAuthenticated) { oldValue, isAuth in
@@ -890,121 +880,76 @@ struct MainRunbotView: View {
                 let _ = healthManager.zonePercentages
                 let adaptiveGuidance = healthManager.adaptiveGuidance
                 
-                // Heart Rate Display (Reduced size)
-                VStack(spacing: 4) {
+                // Beautiful Heart Rate Display (No Circle)
+                VStack(spacing: 8) {
                     // Heart icon with pulsing animation
-                    Image(systemName: "heart.fill")
-                        .font(.system(size: 20))
-                        .foregroundColor(currentZone != nil ? HeartZoneCalculator.zoneColor(for: currentZone!) : .rbError)
+                        Image(systemName: "heart.fill")
+                        .font(.system(size: 24))
+                            .foregroundColor(currentZone != nil ? HeartZoneCalculator.zoneColor(for: currentZone!) : .rbError)
                         .scaleEffect(1.0 + sin(wavePhase * 0.2) * 0.15)
-                        .shadow(color: (currentZone != nil ? HeartZoneCalculator.zoneColor(for: currentZone!) : .rbError).opacity(0.6), radius: 6)
+                        .shadow(color: (currentZone != nil ? HeartZoneCalculator.zoneColor(for: currentZone!) : .rbError).opacity(0.6), radius: 8)
                         
-                    // Reduced HR value
-                    if let hr = currentHR {
-                        Text("\(Int(hr))")
-                            .font(.system(size: 36, weight: .black, design: .rounded))
+                    // Large HR value
+                        if let hr = currentHR {
+                            Text("\(Int(hr))")
+                            .font(.system(size: 56, weight: .black, design: .rounded))
                             .foregroundColor(.white)
-                            .shadow(color: .white.opacity(0.3), radius: 3)
+                            .shadow(color: .white.opacity(0.3), radius: 4)
                     } else {
                         Text("--")
-                            .font(.system(size: 36, weight: .black, design: .rounded))
-                            .foregroundColor(.white.opacity(0.5))
-                    }
+                            .font(.system(size: 56, weight: .black, design: .rounded))
+                                .foregroundColor(.white.opacity(0.5))
+                        }
                         
-                    // BPM label (smaller)
-                    Text("BPM")
-                        .font(.system(size: 14, weight: .bold, design: .rounded))
+                    // BPM label
+                        Text("BPM")
+                        .font(.system(size: 20, weight: .bold, design: .rounded))
                         .foregroundColor(.white.opacity(0.6))
-                }
-                .padding(.vertical, 8)
-                    
-                // Beautiful Compact Zone Badge
-                if let zone = currentZone {
-                    let zoneColor = HeartZoneCalculator.zoneColor(for: zone)
-                    let zoneName = HeartZoneCalculator.zoneName(for: zone)
-                    
-                    HStack(spacing: 8) {
-                        // Compact glowing zone indicator
-                        ZStack {
-                            // Glowing background circle
-                            Circle()
-                                .fill(
-                                    RadialGradient(
-                                        colors: [
-                                            zoneColor.opacity(0.4),
-                                            zoneColor.opacity(0.1),
-                                            Color.clear
-                                        ],
-                                        center: .center,
-                                        startRadius: 8,
-                                        endRadius: 18
-                                    )
-                                )
-                                .frame(width: 36, height: 36)
-                            
-                            // Zone number badge
-                            Circle()
-                                .fill(
-                                    LinearGradient(
-                                        colors: [
-                                            zoneColor,
-                                            zoneColor.opacity(0.8)
-                                        ],
-                                        startPoint: .topLeading,
-                                        endPoint: .bottomTrailing
-                                    )
-                                )
-                                .frame(width: 32, height: 32)
-                                .overlay(
-                                    Text("\(zone)")
-                                        .font(.system(size: 16, weight: .black, design: .rounded))
-                                        .foregroundColor(.white)
-                                )
-                                .shadow(color: zoneColor.opacity(0.6), radius: 6)
-                        }
-                        
-                        // Zone info - compact and elegant
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(zoneName)
-                                .font(.system(size: 18, weight: .bold, design: .rounded))
-                                .foregroundColor(.white)
-                                .shadow(color: zoneColor.opacity(0.3), radius: 3)
-                            
-                            HStack(spacing: 4) {
-                                Circle()
-                                    .fill(zoneColor)
-                                    .frame(width: 4, height: 4)
-                                Text("ZONE \(zone)")
-                                    .font(.system(size: 11, weight: .semibold, design: .rounded))
-                                    .foregroundColor(zoneColor.opacity(0.9))
-                                    .tracking(0.5)
-                            }
-                        }
-                        
-                        Spacer()
                     }
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12)
+                .padding(.vertical, 12)
+                    
+                // Beautiful Color-Coded Zone Badge
+                if let zone = currentZone {
+                    HStack(spacing: 8) {
+                        // Zone color indicator
+                        RoundedRectangle(cornerRadius: 4)
                             .fill(
                                 LinearGradient(
                                     colors: [
-                                        zoneColor.opacity(0.15),
-                                        zoneColor.opacity(0.08),
-                                        Color.white.opacity(0.02)
+                                        HeartZoneCalculator.zoneColor(for: zone),
+                                        HeartZoneCalculator.zoneColor(for: zone).opacity(0.7)
                                     ],
                                     startPoint: .leading,
                                     endPoint: .trailing
                                 )
                             )
+                            .frame(width: 6, height: 32)
+                            .shadow(color: HeartZoneCalculator.zoneColor(for: zone).opacity(0.5), radius: 4)
+                        
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("ZONE \(zone)")
+                                .font(.system(size: 14, weight: .black, design: .rounded))
+                                .foregroundColor(HeartZoneCalculator.zoneColor(for: zone))
+                            
+                            Text(HeartZoneCalculator.zoneName(for: zone))
+                                .font(.system(size: 18, weight: .bold, design: .rounded))
+                                .foregroundColor(.white)
+                        }
+                        
+                        Spacer()
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(Color.white.opacity(0.08))
                             .overlay(
                                 RoundedRectangle(cornerRadius: 12)
                                     .stroke(
                                         LinearGradient(
                                             colors: [
-                                                zoneColor.opacity(0.5),
-                                                zoneColor.opacity(0.2)
+                                                HeartZoneCalculator.zoneColor(for: zone).opacity(0.4),
+                                                HeartZoneCalculator.zoneColor(for: zone).opacity(0.1)
                                             ],
                                             startPoint: .topLeading,
                                             endPoint: .bottomTrailing
@@ -1012,10 +957,15 @@ struct MainRunbotView: View {
                                         lineWidth: 1.5
                                     )
                             )
+
                     )
-                    .shadow(color: zoneColor.opacity(0.25), radius: 6, x: 0, y: 2)
                     .padding(.horizontal, 8)
-                    .padding(.top, 6)
+                    .padding(.vertical, 3)
+                    .background(
+                        Capsule()
+                            .fill(HeartZoneCalculator.zoneColor(for: zone).opacity(0.15))
+                    )
+                    .padding(.top, 2)
                 }
                 
                 // Adaptive Guidance (KEY FEATURE!)
@@ -3347,17 +3297,7 @@ struct SplitIntervalBar: View {
     var isAverage: Bool = false
     
     var body: some View {
-        // Fix: If pace is < 1.0, it's likely stored as km/min (speed) instead of min/km (pace)
-        // Convert it: pace = 1 / speed (e.g., 0.29 km/min = 3.45 min/km)
-        let rawPace = interval.paceMinPerKm
-        let pace: Double = {
-            if rawPace > 0 && rawPace < 1.0 {
-                // Value is too small to be min/km, likely stored as km/min (speed)
-                // Convert: pace (min/km) = 1 / speed (km/min)
-                return 1.0 / rawPace
-            }
-            return rawPace
-        }()
+        let pace = interval.paceMinPerKm
         let deviation = targetPace > 0 ? ((pace - targetPace) / targetPace) * 100 : 0
         
         // Color coding based on % deviation
@@ -3420,17 +3360,16 @@ struct SplitIntervalBar: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
             
-            // Horizontal bar visualization - bar length directly represents pace value (min/km)
-            // No normalization - bar length is proportional to pace value
+            // Horizontal bar visualization - length represents pace (faster = shorter, slower = longer)
             GeometryReader { geometry in
                 let barWidth = geometry.size.width
                 
-                // FIXED: Bar length directly represents pace value in min/km
-                // Scale: 1 min/km = barWidth / maxPaceForDisplay
-                // Use max pace of 15 min/km for scaling (reasonable upper bound for display)
-                let maxPaceForDisplay: Double = 15.0
-                let scaledPace = min(pace, maxPaceForDisplay) // Cap at max for display
-                let barLength = barWidth * CGFloat(scaledPace / maxPaceForDisplay)
+                // Normalize pace to bar length: pace range 3-12 min/km maps to bar width
+                // Faster pace (lower min/km) = shorter bar, slower pace (higher min/km) = longer bar
+                let minPaceRange: Double = 3.0  // Fastest expected pace
+                let maxPaceRange: Double = 12.0 // Slowest expected pace
+                let normalizedPace = min(max((pace - minPaceRange) / (maxPaceRange - minPaceRange), 0), 1.0)
+                let barLength = barWidth * CGFloat(normalizedPace)
                 
                 ZStack(alignment: .leading) {
                     // Background bar (full width)
@@ -3438,7 +3377,7 @@ struct SplitIntervalBar: View {
                         .fill(Color.white.opacity(0.1))
                         .frame(width: barWidth, height: 10)
                     
-                    // Colored pace bar (length directly represents pace value)
+                    // Colored pace bar (length = pace value)
                     RoundedRectangle(cornerRadius: 4)
                         .fill(
                             LinearGradient(

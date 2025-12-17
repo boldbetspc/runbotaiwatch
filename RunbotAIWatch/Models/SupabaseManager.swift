@@ -672,6 +672,42 @@ class SupabaseManager: ObservableObject {
         let bestPaceMinPerKm: Double
     }
     
+    struct LastRunStats {
+        let distanceKm: Double
+        let paceMinPerKm: Double
+        let durationSeconds: Double
+        let startTime: Date?
+    }
+    
+    func fetchLastRun(userId: String) async -> LastRunStats? {
+        guard isInitialized else { return nil }
+        do {
+            let url = URL(string: "\(baseURL)/rest/v1/run_activities?user_id=eq.\(userId)&select=distance_meters,average_pace_minutes_per_km,duration_s,start_time&order=start_time.desc&limit=1")!
+            var request = URLRequest(url: url)
+            request.setValue(anonKey, forHTTPHeaderField: "apikey")
+            request.setValue(getAuthHeader(), forHTTPHeaderField: "Authorization")
+            let (data, response) = try await session.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode == 200,
+               let list = try JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+               let lastRun = list.first {
+                let distanceMeters = lastRun["distance_meters"] as? Double ?? 0
+                let pace = lastRun["average_pace_minutes_per_km"] as? Double ?? 0
+                let duration = lastRun["duration_s"] as? Double ?? 0
+                let startTimeStr = lastRun["start_time"] as? String
+                let startTime = startTimeStr.flatMap { ISO8601DateFormatter().date(from: $0) }
+                return LastRunStats(
+                    distanceKm: distanceMeters / 1000.0,
+                    paceMinPerKm: pace,
+                    durationSeconds: duration,
+                    startTime: startTime
+                )
+            }
+        } catch {
+            print("❌ Error fetching last run: \(error)")
+        }
+        return nil
+    }
+    
     func fetchRunAggregates(userId: String, limit: Int = 20) async -> RunAggregates? {
         guard isInitialized else { return nil }
         do {
