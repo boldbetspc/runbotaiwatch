@@ -2060,12 +2060,23 @@ class RAGPerformanceAnalyzer: ObservableObject {
     
     // MARK: - Analysis Components
     
-    /// Calculate target status based on DISTANCE achieved vs distance that should be at target pace
-    /// If runner runs slower, they'll be behind on distance (fewer km completed than should be)
-    /// If runner has already finished target distance and doing more, that's beyond target (good)
+    /// Calculate target status based on:
+    /// 1. Average pace (calculated from elapsed time and distance) vs target pace
+    /// 2. Actual distance vs expected distance at target pace for elapsed time
+    /// If average pace is faster than target AND actual distance > expected distance: AHEAD
+    /// If average pace is slower than target AND actual distance < expected distance: BEHIND
     private func calculateTargetStatus(snapshot: PerformanceSnapshot) -> TargetStatus {
         let actualDistanceKm = snapshot.currentDistance / 1000.0
         let targetDistanceKm = snapshot.targetDistance / 1000.0
+        let elapsedTimeMinutes = snapshot.elapsedTime / 60.0 // Convert seconds to minutes
+        
+        // Calculate average pace from elapsed time and distance
+        // Average pace = elapsed time (minutes) / distance (km) = min/km
+        let averagePace = actualDistanceKm > 0 ? elapsedTimeMinutes / actualDistanceKm : snapshot.currentPace
+        
+        // Calculate expected distance at target pace for elapsed time
+        // Expected distance = elapsed time (minutes) / target pace (min/km) = km
+        let expectedDistanceKm = snapshot.targetPace > 0 ? elapsedTimeMinutes / snapshot.targetPace : 0
         
         // If runner has already completed target distance, they're beyond target (good)
         if targetDistanceKm > 0 && actualDistanceKm >= targetDistanceKm {
@@ -2081,24 +2092,32 @@ class RAGPerformanceAnalyzer: ObservableObject {
             }
         }
         
-        // Calculate expected distance at target pace for elapsed time
-        let elapsedTimeHours = snapshot.elapsedTime / 3600.0 // Convert seconds to hours
-        let expectedDistanceKm = (elapsedTimeHours * 60.0) / snapshot.targetPace // km at target pace
+        // Compare average pace vs target pace
+        // Lower pace (min/km) = faster, so if averagePace < targetPace, runner is faster
+        let paceComparison = snapshot.targetPace > 0 ? averagePace < snapshot.targetPace : false
         
-        // Calculate distance deviation (positive = behind, negative = ahead)
+        // Calculate distance deviation
+        // If actualDistance > expectedDistance: runner is AHEAD (faster pace = more distance covered)
+        // If actualDistance < expectedDistance: runner is BEHIND (slower pace = less distance covered)
+        // Positive deviation = ahead (good), Negative deviation = behind (bad)
         let distanceDeviation = expectedDistanceKm > 0 ? ((actualDistanceKm - expectedDistanceKm) / expectedDistanceKm) * 100 : 0
         
-        // Determine status based on distance deviation
+        // Determine status based on both average pace comparison and distance deviation
+        // Both should agree: faster pace + more distance = AHEAD, slower pace + less distance = BEHIND
         if abs(distanceDeviation) <= 5 {
             return .onTrack(deviation: abs(distanceDeviation))
-        } else if distanceDeviation > 15 {
-            return .wayBehind(deviation: distanceDeviation)
-        } else if distanceDeviation > 5 {
-            return .slightlyBehind(deviation: distanceDeviation)
-        } else if distanceDeviation < -15 {
-            return .wayAhead(deviation: abs(distanceDeviation))
+        } else if distanceDeviation < -15 || (!paceComparison && distanceDeviation < -5) {
+            // Negative deviation = behind (slower pace) OR average pace slower than target
+            return .wayBehind(deviation: abs(distanceDeviation))
+        } else if distanceDeviation < -5 {
+            // Negative deviation = slightly behind
+            return .slightlyBehind(deviation: abs(distanceDeviation))
+        } else if distanceDeviation > 15 || (paceComparison && distanceDeviation > 5) {
+            // Positive deviation = way ahead (faster pace) OR average pace faster than target
+            return .wayAhead(deviation: distanceDeviation)
         } else {
-            return .slightlyAhead(deviation: abs(distanceDeviation))
+            // Positive deviation = slightly ahead
+            return .slightlyAhead(deviation: distanceDeviation)
         }
     }
     

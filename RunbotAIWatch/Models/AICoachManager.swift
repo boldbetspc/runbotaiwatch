@@ -410,6 +410,8 @@ class AICoachManager: NSObject, ObservableObject {
         return """
         This is END OF RUN feedback. Ignore closing HR or pace—what matters is outcome and historical meaning. Use the Performance Analyzer RAG embedding as the primary lens; it already synthesizes target completion, distance-vs-expected gaps, pacing shape, fatigue signals, and recurring historical patterns.
         
+        IMPORTANT: Lower pace in min/km means faster running (e.g., 5:30 min/km is faster than 7:00 min/km). Synthesize this correctly when comparing paces.
+        
         Your analytical task:
         
         Judge the result: ahead/on target/slightly behind/behind/way behind based on target completion
@@ -705,6 +707,14 @@ class AICoachManager: NSObject, ObservableObject {
                 let performancePatterns = ragAnalysis?.performanceAnalysis ?? "No performance patterns available."
                 let adaptiveStrategy = ragAnalysis?.adaptiveMicrostrategy ?? "No adaptive strategy available."
                 
+                // Log RAG data lengths for debugging
+                print("📊 [AICoach] Start-of-run RAG data lengths:")
+                print("   - similarRuns: \(similarRuns.count) chars")
+                print("   - historicalOutcomes: \(historicalOutcomes.count) chars")
+                print("   - performancePatterns: \(performancePatterns.count) chars")
+                print("   - adaptiveStrategy: \(adaptiveStrategy.count) chars")
+                print("   - mem0Context: \(mem0Context.count) chars")
+                
                 // Coach Strategy RAG section
                 var raceStrategySection = ""
                 if let strategy = coachStrategy {
@@ -748,6 +758,8 @@ class AICoachManager: NSObject, ObservableObject {
                 
                 This is the START of the run. You are not assessing current performance yet — focus on history and strategy.
                 
+                IMPORTANT: Lower pace in min/km means faster running (e.g., 5:30 min/km is faster than 7:00 min/km). Synthesize this correctly when comparing paces.
+                
                 Your task: Open with a connection to the runner's previous race and highlight one key lesson that matters today. Then shape race strategy around what history suggests: early-phase control, pacing risk, fatigue prevention, and mental setup for the opening kilometers.
                 
                 Provide a cohesive message that uses historic insights and strategy—not generic advice. Be critical and honest.
@@ -756,7 +768,7 @@ class AICoachManager: NSObject, ObservableObject {
                 // New interval prompt structure with RAG analysis + Coach Strategy Graph RAG
                 if let analysis = ragAnalysis {
                     let raceType = targetDistance?.displayName ?? "run"
-                    let targetDistanceMeters = targetDistance?.meters ?? 5000.0
+                    let targetDistanceMeters = targetDistance?.distanceMeters ?? 5000.0
                     let targetDistanceKm = targetDistanceMeters / 1000.0
                     
                     // Calculate run phase
@@ -833,6 +845,8 @@ class AICoachManager: NSObject, ObservableObject {
                     
                     triggerContext = """
                     This is INTERVAL feedback during mid of the run. Lead with TARGET AWARE judgment using distance-vs-expected to classify ahead/on/behind and set urgency. Interpret what's working, what's slipping, and what needs immediate correction. Check whether the runner is following the assigned strategy or drifting off-plan, and adjust accordingly.
+                    
+                    IMPORTANT: Lower pace in min/km means faster running (e.g., 5:30 min/km is faster than 7:00 min/km). Synthesize this correctly when comparing paces.
                     
                     Help the runner think like an expert by prompting internal questions:
                     - "Am I on target or borrowing from later?"
@@ -1139,15 +1153,39 @@ class AICoachManager: NSObject, ObservableObject {
             ]
             
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
-            let (data, response) = try await URLSession.shared.data(for: request)
+            request.timeoutInterval = 30.0 // 30 second timeout for older devices
             
-            if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200,
-               let jsonResponse = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let choices = jsonResponse["choices"] as? [[String: Any]],
-               let firstChoice = choices.first,
-               let message = firstChoice["message"] as? [String: Any],
-               let content = message["content"] as? String {
-                return content.trimmingCharacters(in: .whitespacesAndNewlines)
+            print("📤 [AICoach] Sending request to OpenAI (prompt length: \(prompt.count) chars, max_tokens: \(maxTokens))")
+            let (data, response) = try await URLSession.shared.data(for: request)
+            print("📥 [AICoach] Received response (data size: \(data.count) bytes)")
+            
+            if let httpResponse = response as? HTTPURLResponse {
+                print("📊 [AICoach] HTTP Status: \(httpResponse.statusCode)")
+                if httpResponse.statusCode == 200 {
+                    if let jsonResponse = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                       let choices = jsonResponse["choices"] as? [[String: Any]],
+                       let firstChoice = choices.first,
+                       let message = firstChoice["message"] as? [String: Any],
+                       let content = message["content"] as? String {
+                        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+                        print("📝 [AICoach] Full feedback received: \(trimmed.count) characters, \(trimmed.split(separator: " ").count) words")
+                        print("📝 [AICoach] Complete feedback: \"\(trimmed)\"")
+                        if trimmed.count < 50 {
+                            print("⚠️ [AICoach] WARNING: Feedback seems truncated (only \(trimmed.count) chars)")
+                        }
+                        return trimmed
+                    } else {
+                        print("❌ [AICoach] Failed to parse response JSON")
+                        if let jsonString = String(data: data, encoding: .utf8) {
+                            print("📄 [AICoach] Raw response: \(jsonString.prefix(500))")
+                        }
+                    }
+                } else {
+                    print("❌ [AICoach] HTTP Error: \(httpResponse.statusCode)")
+                    if let errorData = String(data: data, encoding: .utf8) {
+                        print("📄 [AICoach] Error response: \(errorData.prefix(500))")
+                    }
+                }
             }
         } catch {
             print("❌ [AICoach] OpenAI API error: \(error)")
@@ -1191,6 +1229,8 @@ class AICoachManager: NSObject, ObservableObject {
             self.currentFeedback = trimmed
             self.isCoaching = true
             print("🎤 [AICoach] Delivering NEW feedback using \(preferences.voiceAIModel.displayName) (mapped to \(voiceOption.rawValue))")
+            print("📝 [AICoach] Feedback length: \(trimmed.count) characters, words: ~\(trimmed.split(separator: " ").count)")
+            print("📝 [AICoach] Full feedback text: \(trimmed)")
             voiceManager.speak(trimmed, using: voiceOption, rate: 0.48)
         }
     }

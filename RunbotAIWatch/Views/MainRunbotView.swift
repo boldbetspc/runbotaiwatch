@@ -192,6 +192,46 @@ fileprivate enum HapticEvent {
     case success
 }
 
+    // MARK: - Helper Functions
+    
+    private func setupSpeechFinishedCallback() {
+        voiceManager.onSpeechFinished = {
+            DispatchQueue.main.async {
+                print("📝 [MainRunbotView] TTS finished - showing feedback text")
+                // Show text after TTS finishes
+                self.showFeedbackText = true
+                // Start 2-minute timer to hide text
+                self.textDisplayTimer?.invalidate()
+                self.textDisplayTimer = Timer.scheduledTimer(withTimeInterval: 120.0, repeats: false) { _ in
+                    DispatchQueue.main.async {
+                        print("📝 [MainRunbotView] 2 minutes elapsed - hiding feedback text")
+                        self.showFeedbackText = false
+                    }
+                }
+            }
+        }
+    }
+
+    // MARK: - Helper Functions
+    
+    private func setupSpeechFinishedCallback() {
+        voiceManager.onSpeechFinished = {
+            DispatchQueue.main.async {
+                print("📝 [MainRunbotView] TTS finished - showing feedback text")
+                // Show text after TTS finishes
+                self.showFeedbackText = true
+                // Start 2-minute timer to hide text
+                self.textDisplayTimer?.invalidate()
+                self.textDisplayTimer = Timer.scheduledTimer(withTimeInterval: 120.0, repeats: false) { _ in
+                    DispatchQueue.main.async {
+                        print("📝 [MainRunbotView] 2 minutes elapsed - hiding feedback text")
+                        self.showFeedbackText = false
+                    }
+                }
+            }
+        }
+    }
+
 fileprivate func playHaptic(_ event: HapticEvent) {
 #if canImport(WatchKit)
     let device = WKInterfaceDevice.current()
@@ -231,6 +271,8 @@ struct MainRunbotView: View {
     @State private var didTriggerInitialCoaching = false
     @State private var showSaveSuccess = false
     @State private var saveMessage = ""
+    @State private var showFeedbackText = false // Show text after TTS finishes
+    @State private var textDisplayTimer: Timer? // Timer to hide text after 2 minutes
     // Train mode removed - only run mode supported
     private let runMode: RunMode = .run
     
@@ -305,6 +347,30 @@ struct MainRunbotView: View {
                 supabaseManager.initializeSession(for: userId)
             }
             // Train mode and PR model loading removed
+            
+            // Set up callback for when TTS finishes
+            setupSpeechFinishedCallback()
+        }
+        .onChange(of: voiceManager.isSpeaking) { oldValue, newValue in
+            // When TTS starts, hide text and cancel timer
+            if newValue {
+                showFeedbackText = false
+                textDisplayTimer?.invalidate()
+                textDisplayTimer = nil
+                // Re-setup callback in case it was cleared
+                setupSpeechFinishedCallback()
+            }
+        }
+        .onChange(of: aiCoach.currentFeedback) { oldValue, newValue in
+            // When new feedback arrives, ensure callback is set up
+            if !newValue.isEmpty && newValue != oldValue {
+                setupSpeechFinishedCallback()
+            }
+        }
+        .onDisappear {
+            // Clean up timer when view disappears
+            textDisplayTimer?.invalidate()
+            textDisplayTimer = nil
         }
         .onChange(of: authManager.isAuthenticated) { oldValue, isAuth in
             if isAuth, let userId = authManager.currentUser?.id {
@@ -567,107 +633,123 @@ struct MainRunbotView: View {
         let feedbackText = aiCoach.currentFeedback
         
         ZStack {
-            // Background glow when active
-            if isActive {
-                RadialGradient(
-                    colors: [Color.rbSecondary.opacity(0.2), Color.clear],
-                    center: .center,
-                    startRadius: 30,
-                    endRadius: 120
-                )
-                .ignoresSafeArea()
-            }
-            
-                VStack(spacing: 6) {
-                // Voice wave animation (only when actually speaking)
-                if isSpeaking {
-                    VoiceWaveView(isActive: isSpeaking, phase: wavePhase)
-                        .frame(height: 40)
-                        .padding(.top, 6)
-                        .transition(.opacity.combined(with: .move(edge: .top)))
-                    } else {
-                    Spacer().frame(height: 6)
+            // Show full-screen scrollable text after TTS finishes (for 2 minutes)
+            if showFeedbackText && !feedbackText.isEmpty {
+                ScrollView {
+                    Text(feedbackText)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white.opacity(0.95))
+                        .multilineTextAlignment(.center)
+                        .lineSpacing(4)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .frame(maxWidth: .infinity)
                 }
-                
-                // GIF Avatar with elegant pulsating animation
-                ZStack {
-                    // Single elegant pulsating glow (smooth and refined)
-                    if isSpeaking {
-                            Circle()
-                            .fill(
-                                RadialGradient(
-                                    colors: [
-                                        Color.rbAccent.opacity(0.5),
-                                        Color.rbSecondary.opacity(0.3),
-                                        Color.clear
-                                    ],
-                                    center: .center,
-                                    startRadius: 40,
-                                    endRadius: 65
-                                )
-                            )
-                            .frame(width: 130, height: 130)
-                            .scaleEffect(1.0 + sin(wavePhase * 0.1) * 0.2)
-                            .opacity(0.5 + sin(wavePhase * 0.12) * 0.3)
-                            .blur(radius: 8)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .transition(.opacity.combined(with: .move(edge: .bottom)))
+            } else {
+                // Show animation during TTS, static icon otherwise
+                VStack(spacing: 6) {
+                    // Background glow when active
+                    if isActive {
+                        RadialGradient(
+                            colors: [Color.rbSecondary.opacity(0.2), Color.clear],
+                            center: .center,
+                            startRadius: 30,
+                            endRadius: 120
+                        )
+                        .ignoresSafeArea()
                     }
                     
-                    // AI Coach GIF
-                    ZStack {
-                        // Background circle
-                        Circle()
-                            .fill(Color.black)
-                            .frame(width: 90, height: 90)
-                        
-                        // GIF animation (plays ONLY when speaking)
-                        GIFImage(name: "ai_coach", isAnimating: isSpeaking)
-                            .frame(width: 90, height: 90)
-                            .clipShape(Circle())
-                            .blendMode(.screen)
-                    }
-                    .shadow(color: isSpeaking ? .rbAccent.opacity(0.4) : .clear, radius: 12)
-                }
-                .padding(.top, 4)
-                .onChange(of: isSpeaking) { oldValue, speaking in
-                    print("🎤 [AI Coach Page] Speaking state changed: \(speaking)")
-                    if speaking {
-                        print("▶️ [AI Coach] Starting GIF animation and voice wave")
+                    // Voice wave animation (only when actually speaking)
+                    if isSpeaking {
+                        VoiceWaveView(isActive: isSpeaking, phase: wavePhase)
+                            .frame(height: 40)
+                            .padding(.top, 6)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
                     } else {
-                        print("⏹️ [AI Coach] Stopping GIF animation and voice wave")
+                        Spacer().frame(height: 6)
                     }
-                }
-                
-                // Speaking indicator
-                if isSpeaking {
-                    HStack(spacing: 4) {
-                        ForEach(0..<5, id: \.self) { i in
-                            RoundedRectangle(cornerRadius: 2)
-                                .fill(LinearGradient(colors: [.rbAccent, .rbSecondary], startPoint: .bottom, endPoint: .top))
-                                .frame(width: 3, height: 6 + sin(wavePhase * 0.25 + Double(i) * 0.6) * 5)
+                    
+                    // GIF Avatar with elegant pulsating animation
+                    ZStack {
+                        // Single elegant pulsating glow (smooth and refined)
+                        if isSpeaking {
+                            Circle()
+                                .fill(
+                                    RadialGradient(
+                                        colors: [
+                                            Color.rbAccent.opacity(0.5),
+                                            Color.rbSecondary.opacity(0.3),
+                                            Color.clear
+                                        ],
+                                        center: .center,
+                                        startRadius: 40,
+                                        endRadius: 65
+                                    )
+                                )
+                                .frame(width: 130, height: 130)
+                                .scaleEffect(1.0 + sin(wavePhase * 0.1) * 0.2)
+                                .opacity(0.5 + sin(wavePhase * 0.12) * 0.3)
+                                .blur(radius: 8)
                         }
-                        Text("Speaking")
-                        .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(.rbAccent)
+                        
+                        // AI Coach GIF (animated when speaking, static otherwise)
+                        ZStack {
+                            // Background circle
+                            Circle()
+                                .fill(Color.black)
+                                .frame(width: 90, height: 90)
+                            
+                            // GIF animation (plays ONLY when speaking)
+                            GIFImage(name: "ai_coach", isAnimating: isSpeaking)
+                                .frame(width: 90, height: 90)
+                                .clipShape(Circle())
+                                .blendMode(.screen)
+                        }
+                        .shadow(color: isSpeaking ? .rbAccent.opacity(0.4) : .clear, radius: 12)
                     }
                     .padding(.top, 4)
-                } else if isActive {
-                    Text("AI Coach Active")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundColor(.rbSecondary)
+                    .onChange(of: isSpeaking) { oldValue, speaking in
+                        print("🎤 [AI Coach Page] Speaking state changed: \(speaking)")
+                        if speaking {
+                            print("▶️ [AI Coach] Starting GIF animation and voice wave")
+                        } else {
+                            print("⏹️ [AI Coach] Stopping GIF animation and voice wave")
+                        }
+                    }
+                    
+                    // Speaking indicator
+                    if isSpeaking {
+                        HStack(spacing: 4) {
+                            ForEach(0..<5, id: \.self) { i in
+                                RoundedRectangle(cornerRadius: 2)
+                                    .fill(LinearGradient(colors: [.rbAccent, .rbSecondary], startPoint: .bottom, endPoint: .top))
+                                    .frame(width: 3, height: 6 + sin(wavePhase * 0.25 + Double(i) * 0.6) * 5)
+                            }
+                            Text("Speaking")
+                                .font(.system(size: 9, weight: .semibold))
+                                .foregroundColor(.rbAccent)
+                        }
                         .padding(.top, 4)
+                    } else if isActive {
+                        Text("AI Coach Active")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(.rbSecondary)
+                            .padding(.top, 4)
+                    }
+                    
+                    // Placeholder text when no feedback
+                    if feedbackText.isEmpty {
+                        Text(isRunning ? "Waiting for feedback..." : "Start a run for AI coaching")
+                            .font(.system(size: 11, weight: .regular))
+                            .foregroundColor(.white.opacity(0.4))
+                            .padding(.top, 8)
+                    }
+                    
+                    Spacer()
                 }
-                
-                // Feedback text
-                ScrollView {
-                    Text(feedbackText.isEmpty ? (isRunning ? "Waiting for feedback..." : "Start a run for AI coaching") : feedbackText)
-                        .font(.system(size: 11, weight: feedbackText.isEmpty ? .regular : .medium))
-                        .foregroundColor(feedbackText.isEmpty ? .white.opacity(0.4) : .white.opacity(0.9))
-                        .multilineTextAlignment(.center)
-                        .lineSpacing(3)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                }
-                .frame(maxHeight: .infinity)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1327,17 +1409,25 @@ struct MainRunbotView: View {
                         let last3Intervals = Array(completeIntervals.suffix(3))
                         let reversedIntervals = Array(last3Intervals.reversed())
                         
+                        // Calculate min and max pace for scaling
+                        let allPaces = last3Intervals.map { $0.paceMinPerKm }
+                        let avgPace = completeIntervals.count > 0 ? completeIntervals.map { $0.paceMinPerKm }.reduce(0, +) / Double(completeIntervals.count) : 0.0
+                        let allPacesIncludingAvg = allPaces + (avgPace > 0 ? [avgPace] : [])
+                        let minPace = allPacesIncludingAvg.min() ?? 3.0
+                        let maxPace = allPacesIncludingAvg.max() ?? 12.0
+                        
                         ForEach(reversedIntervals, id: \.id) { interval in
                             SplitIntervalBar(
                                 interval: interval,
                                 targetPace: targetPace,
+                                minPace: minPace,
+                                maxPace: maxPace,
                                 isLast: interval.id == last3Intervals.last?.id
                             )
                         }
                         
                         // Average of all complete intervals
                         if completeIntervals.count > 0 {
-                            let avgPace = completeIntervals.map { $0.paceMinPerKm }.reduce(0, +) / Double(completeIntervals.count)
                             SplitIntervalBar(
                                 interval: RunInterval(
                                     id: "average",
@@ -1350,6 +1440,8 @@ struct MainRunbotView: View {
                                     paceMinPerKm: avgPace
                                 ),
                                 targetPace: targetPace,
+                                minPace: minPace,
+                                maxPace: maxPace,
                                 isAverage: true
                             )
                         }
@@ -3293,6 +3385,8 @@ struct CurvedRaceArc: View {
 struct SplitIntervalBar: View {
     let interval: RunInterval
     let targetPace: Double
+    let minPace: Double
+    let maxPace: Double
     var isLast: Bool = false
     var isAverage: Bool = false
     
@@ -3360,16 +3454,15 @@ struct SplitIntervalBar: View {
                 .frame(maxWidth: .infinity, alignment: .trailing)
             }
             
-            // Horizontal bar visualization - length represents pace (faster = shorter, slower = longer)
+            // Horizontal bar visualization - length represents actual pace value in min/km
+            // Bar length directly proportional to the numeric pace value (no fixed scale)
             GeometryReader { geometry in
                 let barWidth = geometry.size.width
                 
-                // Normalize pace to bar length: pace range 3-12 min/km maps to bar width
-                // Faster pace (lower min/km) = shorter bar, slower pace (higher min/km) = longer bar
-                let minPaceRange: Double = 3.0  // Fastest expected pace
-                let maxPaceRange: Double = 12.0 // Slowest expected pace
-                let normalizedPace = min(max((pace - minPaceRange) / (maxPaceRange - minPaceRange), 0), 1.0)
-                let barLength = barWidth * CGFloat(normalizedPace)
+                // Map actual pace value to bar length using dynamic range from displayed intervals
+                // Bar length = (pace - minPace) / (maxPace - minPace) * barWidth
+                let paceRange = maxPace - minPace
+                let barLength = paceRange > 0 ? barWidth * CGFloat((pace - minPace) / paceRange) : barWidth * 0.5
                 
                 ZStack(alignment: .leading) {
                     // Background bar (full width)
