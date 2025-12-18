@@ -165,11 +165,11 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         let averagePace = distanceKm > 0 ? elapsedSeconds / 60.0 / distanceKm : 0.0
         let caloriesEstimate = distanceKm * caloriesBurnedPerKm
         
-        // Calculate final current pace from last 30 seconds (same improved logic as updateStats)
+        // Calculate final current pace from last 10 seconds (real-time pace)
         let currentPace: Double = {
             guard previousLocations.count >= 2 else { return averagePace }
             
-            let cutoffTime = Date().addingTimeInterval(-30)
+            let cutoffTime = Date().addingTimeInterval(-10) // Last 10 seconds for real-time pace
             let recentLocations = previousLocations.filter { 
                 $0.timestamp >= cutoffTime && 
                 $0.horizontalAccuracy > 0 && 
@@ -180,7 +180,7 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
             guard recentLocations.count >= 3 else { return averagePace }
             
             var segmentPaces: [Double] = []
-            var totalDistance30s: Double = 0.0
+            var totalDistance10s: Double = 0.0
             
             for i in 1..<recentLocations.count {
                 let prev = recentLocations[i-1]
@@ -190,7 +190,7 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
                 let segmentTime = abs(curr.timestamp.timeIntervalSince(prev.timestamp))
                 
                 if segmentDistance > 2.0 && segmentTime > 0 && segmentTime < 5.0 {
-                    totalDistance30s += segmentDistance
+                    totalDistance10s += segmentDistance
                     let segmentDistanceKm = segmentDistance / 1000.0
                     if segmentDistanceKm > 0 && segmentTime > 0 {
                         let segmentPace = segmentTime / 60.0 / segmentDistanceKm
@@ -201,7 +201,8 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
                 }
             }
             
-            guard totalDistance30s >= 15.0 && segmentPaces.count >= 2 else { return averagePace }
+            // Need at least 10m of movement in last 10s to calculate pace
+            guard totalDistance10s >= 10.0 && segmentPaces.count >= 2 else { return averagePace }
             
             // Use weighted average for smoother pace
             if segmentPaces.count >= 3 {
@@ -457,13 +458,13 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         let elapsedHours = elapsedSeconds / 3600.0
         let avgSpeed = elapsedHours > 0 ? distanceKm / elapsedHours : 0.0
 
-        // Calculate current pace from last 30 seconds of location data
+        // Calculate current pace from last 10 seconds of location data (Real-Time Pace)
         // Uses weighted average of recent segments for smoother, more accurate pace
         let currentPace: Double = {
             guard previousLocations.count >= 2 else { return 0.0 }
             
-            // Get locations from last 30 seconds with strict filtering
-            let cutoffTime = Date().addingTimeInterval(-30)
+            // Get locations from last 10 seconds with strict filtering (Real-Time Pace)
+            let cutoffTime = Date().addingTimeInterval(-10) // Last 10 seconds for RT pace
             let recentLocations = previousLocations.filter { 
                 $0.timestamp >= cutoffTime && 
                 $0.horizontalAccuracy > 0 && 
@@ -475,8 +476,8 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
             
             // Calculate distance and time for each segment
             var segmentPaces: [Double] = []
-            var totalDistance30s: Double = 0.0
-            var totalTime30s: Double = 0.0
+            var totalDistance10s: Double = 0.0
+            var totalTime10s: Double = 0.0
             
             for i in 1..<recentLocations.count {
                 let prev = recentLocations[i-1]
@@ -491,8 +492,8 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
                 
                 // Only count valid segments: > 2m distance, reasonable time
                 if segmentDistance > 2.0 && segmentTime > 0 && segmentTime < 5.0 {
-                    totalDistance30s += segmentDistance
-                    totalTime30s += segmentTime
+                    totalDistance10s += segmentDistance
+                    totalTime10s += segmentTime
                     
                     // Calculate pace for this segment
                     let segmentDistanceKm = segmentDistance / 1000.0
@@ -506,8 +507,8 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
                 }
             }
             
-            // Need at least 15m of movement in 30s to calculate pace
-            guard totalDistance30s >= 15.0 && segmentPaces.count >= 2 else { return 0.0 }
+            // Need at least 10m of movement in last 10s to calculate pace
+            guard totalDistance10s >= 10.0 && segmentPaces.count >= 2 else { return 0.0 }
             
             // Use weighted average: give more weight to recent segments
             // This provides smoother, more responsive pace
@@ -714,17 +715,27 @@ extension RunTracker {
         // Use actual 1km distance (1000m) for the interval
         let d = 1000.0 // Fixed 1km interval distance
         
-        // Calculate actual time taken to cover this 1km interval
-        // This is the time from when we started this interval to now
+        // Calculate actual time taken to cover THIS SPECIFIC 1km interval
+        // This is the time difference from when THIS interval started to when it completed
+        // Example: If 1st km took 5:30 and 2nd km completed at 9:00 total, 
+        // then 2nd km pace = (9:00 - 5:30) / 1km = 3:30 / 1km = 3.5 min/km
         let dt = max(currentTime.timeIntervalSince(intervalStartTime), 0.001)
         
-        // Simple pace calculation: time taken to cover 1km (in seconds) / 60.0 = minutes per km
+        // Pace calculation: time taken for THIS specific km (in seconds) / 60.0 = minutes per km
         let paceMinPerKm = dt / 60.0
+        
+        // Calculate cumulative time for debugging
+        let cumulativeTime = currentTime.timeIntervalSince(session.startTime)
+        let previousIntervalTotalTime = session.intervals.isEmpty ? 0.0 : session.intervals.map { $0.durationSeconds }.reduce(0, +)
         
         print("📊 [RunTracker] Creating 1km interval #\(session.intervals.count + 1):")
         print("   - Distance: \(String(format: "%.2f", d))m")
-        print("   - Duration: \(String(format: "%.1f", dt))s")
-        print("   - Pace: \(String(format: "%.2f", paceMinPerKm)) min/km")
+        print("   - Interval start time: \(intervalStartTime)")
+        print("   - Interval end time: \(currentTime)")
+        print("   - Time for THIS km: \(String(format: "%.1f", dt))s (\(String(format: "%.2f", dt/60.0)) min)")
+        print("   - Cumulative time: \(String(format: "%.1f", cumulativeTime))s")
+        print("   - Previous intervals total: \(String(format: "%.1f", previousIntervalTotalTime))s")
+        print("   - Pace for THIS km: \(String(format: "%.2f", paceMinPerKm)) min/km")
         
         var intervals = session.intervals
         let idx = intervals.count
