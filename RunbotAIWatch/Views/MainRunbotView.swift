@@ -1359,19 +1359,13 @@ struct MainRunbotView: View {
                         let last3Intervals = Array(completeIntervals.suffix(3))
                         let reversedIntervals = Array(last3Intervals.reversed())
                         
-                        // Calculate min and max pace for scaling
-                        let allPaces = last3Intervals.map { $0.paceMinPerKm }
+                        // Calculate average pace for display
                         let avgPace = completeIntervals.count > 0 ? completeIntervals.map { $0.paceMinPerKm }.reduce(0, +) / Double(completeIntervals.count) : 0.0
-                        let allPacesIncludingAvg = allPaces + (avgPace > 0 ? [avgPace] : [])
-                        let minPace = allPacesIncludingAvg.min() ?? 3.0
-                        let maxPace = allPacesIncludingAvg.max() ?? 12.0
                         
                         ForEach(reversedIntervals, id: \.id) { interval in
                             SplitIntervalBar(
                                 interval: interval,
                                 targetPace: targetPace,
-                                minPace: minPace,
-                                maxPace: maxPace,
                                 isLast: interval.id == last3Intervals.last?.id
                             )
                         }
@@ -1390,8 +1384,6 @@ struct MainRunbotView: View {
                                     paceMinPerKm: avgPace
                                 ),
                                 targetPace: targetPace,
-                                minPace: minPace,
-                                maxPace: maxPace,
                                 isAverage: true
                             )
                         }
@@ -3334,10 +3326,11 @@ struct CurvedRaceArc: View {
 struct SplitIntervalBar: View {
     let interval: RunInterval
     let targetPace: Double
-    let minPace: Double
-    let maxPace: Double
     var isLast: Bool = false
     var isAverage: Bool = false
+    
+    // Fixed scale: 0-15 min/km = full width (no normalization)
+    private let maxPaceForScale: Double = 15.0
     
     var body: some View {
         let pace = interval.paceMinPerKm
@@ -3370,48 +3363,18 @@ struct SplitIntervalBar: View {
                 Text(formatPace(pace))
                     .font(.system(size: 13, weight: .bold, design: .monospaced))
                     .foregroundColor(barColor)
-                    .frame(width: 50, alignment: .leading)
-                
-                // Deviation indicator
-                HStack(spacing: 2) {
-                    if abs(deviation) <= 5 {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.rbSuccess)
-                    } else if deviation < -10 {
-                        Image(systemName: "bolt.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.rbAccent)
-                    } else if deviation < -5 {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(Color(red: 0.0, green: 0.7, blue: 1.0))
-                    } else if deviation <= 10 {
-                        Image(systemName: "arrow.down.circle.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.rbWarning)
-                    } else {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .font(.system(size: 10))
-                            .foregroundColor(.rbError)
-                    }
-                    
-                    Text(String(format: "%.1f%%", abs(deviation)))
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundColor(barColor.opacity(0.8))
-                }
-                .frame(maxWidth: .infinity, alignment: .trailing)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             
-            // Horizontal bar visualization - length represents actual pace value in min/km
-            // Bar length directly proportional to the numeric pace value (no fixed scale)
+            // Horizontal bar visualization - length represents absolute pace value in min/km
+            // Fixed scale: 0-15 min/km = full width (no normalization or percentages)
             GeometryReader { geometry in
                 let barWidth = geometry.size.width
                 
-                // Map actual pace value to bar length using dynamic range from displayed intervals
-                // Bar length = (pace - minPace) / (maxPace - minPace) * barWidth
-                let paceRange = maxPace - minPace
-                let barLength = paceRange > 0 ? barWidth * CGFloat((pace - minPace) / paceRange) : barWidth * 0.5
+                // Bar length = (pace / maxPaceForScale) * barWidth
+                // This directly represents the absolute pace value
+                let normalizedPace = min(max(pace, 0), maxPaceForScale) // Clamp to 0-15 min/km
+                let barLength = barWidth * CGFloat(normalizedPace / maxPaceForScale)
                 
                 ZStack(alignment: .leading) {
                     // Background bar (full width)
@@ -3419,7 +3382,7 @@ struct SplitIntervalBar: View {
                         .fill(Color.white.opacity(0.1))
                         .frame(width: barWidth, height: 10)
                     
-                    // Colored pace bar (length = pace value)
+                    // Colored pace bar (length = absolute pace value)
                     RoundedRectangle(cornerRadius: 4)
                         .fill(
                             LinearGradient(
