@@ -7,7 +7,6 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		26AADE0F2EF422C400481125 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = IOS4 /* Assets.xcassets */; };
 		26CE3E7A2EE6391F00CA9CB9 /* RunbotAIWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 261B1A892EE30D150041BB64 /* RunbotAIWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		AA30RES /* Config.plist in Resources */ = {isa = PBXBuildFile; fileRef = AA30 /* Config.plist */; };
 		AICOACHGIF1 /* RunbotAIWatch/ai_coach.gif in Resources */ = {isa = PBXBuildFile; fileRef = AICOACHGIF2 /* RunbotAIWatch/ai_coach.gif */; };
@@ -72,7 +71,6 @@
 		26C7A4642EE5FEE000E2CE66 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				Assets.xcassets,
 				Models/AICoachManager.swift,
 				Models/AuthenticationManager.swift,
 				Models/CoachStrategyRAGManager.swift,
@@ -102,6 +100,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				AppStub.swift,
+				Assets.xcassets,
 			);
 			target = EXT73646956WID9DU92QF9K4KU1B /* RunbotAIWatchExtension */;
 		};
@@ -332,7 +331,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				26AADE0F2EF422C400481125 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
