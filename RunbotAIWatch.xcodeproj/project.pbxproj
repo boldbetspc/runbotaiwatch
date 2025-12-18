@@ -384,6 +384,7 @@
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = NO;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				CODE_SIGN_ENTITLEMENTS = RunbotAIWatch/RunbotAIWatch.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 2;
@@ -477,6 +478,7 @@
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = U67HW5F63Z;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = RunbotAIWatchExtension/Info.plist;
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "RunbotAI Watch reads your heart rate to provide personalized AI coaching and track your workout intensity";
@@ -511,6 +513,7 @@
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = U67HW5F63Z;
 				ENABLE_PREVIEWS = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = RunbotAIWatchExtension/Info.plist;
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "RunbotAI Watch reads your heart rate to provide personalized AI coaching and track your workout intensity";
