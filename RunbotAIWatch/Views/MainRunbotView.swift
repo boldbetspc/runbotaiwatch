@@ -231,6 +231,7 @@ struct MainRunbotView: View {
     @State private var didTriggerInitialCoaching = false
     @State private var showSaveSuccess = false
     @State private var saveMessage = ""
+    @State private var carouselTimer: Timer?
     // Train mode removed - only run mode supported
     private let runMode: RunMode = .run
     
@@ -307,6 +308,9 @@ struct MainRunbotView: View {
             }
             // Train mode and PR model loading removed
         }
+        .onDisappear {
+            stopCarouselTimer()
+        }
         .onChange(of: authManager.isAuthenticated) { oldValue, isAuth in
             if isAuth, let userId = authManager.currentUser?.id {
                 print("🔵 User logged in, initializing Supabase session")
@@ -350,6 +354,29 @@ struct MainRunbotView: View {
                     runStartTime: runTracker.currentSession?.startTime
                 )
                 lastCoachingKm = km
+            }
+        }
+        // Auto-switch to AI coach page when scheduled coaching starts
+        .onChange(of: aiCoach.isCoaching) { oldValue, newValue in
+            if newValue && isRunning {
+                // Switch to AI coach page when coaching starts
+                carouselSelection = .aiCoach
+            }
+        }
+        .onChange(of: voiceManager.isSpeaking) { oldValue, newValue in
+            if newValue && isRunning {
+                // Switch to AI coach page when TTS starts
+                carouselSelection = .aiCoach
+            }
+        }
+        // Auto-rotate carousel every 30 seconds (skipping aiFeedbackText page)
+        .onChange(of: isRunning) { oldValue, newValue in
+            if newValue {
+                // Start carousel auto-switch timer when run starts
+                startCarouselTimer()
+            } else {
+                // Stop timer when run stops
+                stopCarouselTimer()
             }
         }
     }
@@ -924,21 +951,21 @@ struct MainRunbotView: View {
                     // Large HR value
                         if let hr = currentHR {
                             Text("\(Int(hr))")
-                            .font(.system(size: 56, weight: .black, design: .rounded))
+                            .font(.system(size: 42, weight: .black, design: .rounded))
                             .foregroundColor(.white)
                             .shadow(color: .white.opacity(0.3), radius: 4)
                     } else {
                         Text("--")
-                            .font(.system(size: 56, weight: .black, design: .rounded))
+                            .font(.system(size: 42, weight: .black, design: .rounded))
                                 .foregroundColor(.white.opacity(0.5))
                         }
                         
                     // BPM label
                         Text("BPM")
-                        .font(.system(size: 20, weight: .bold, design: .rounded))
+                        .font(.system(size: 14, weight: .bold, design: .rounded))
                         .foregroundColor(.white.opacity(0.6))
                     }
-                .padding(.vertical, 12)
+                .padding(.vertical, 8)
                     
                 // Beautiful Color-Coded Zone Badge
                 if let zone = currentZone {
@@ -997,7 +1024,7 @@ struct MainRunbotView: View {
                         Capsule()
                             .fill(HeartZoneCalculator.zoneColor(for: zone).opacity(0.15))
                     )
-                    .padding(.top, 2)
+                    .padding(.top, -4)
                 }
                 
                 // Adaptive Guidance (KEY FEATURE!)
@@ -1489,6 +1516,37 @@ struct MainRunbotView: View {
             return String(format: "%d:%02d:%02d", hours, minutes, secs)
         }
         return String(format: "%d:%02d", minutes, secs)
+    }
+    
+    // MARK: - Carousel Auto-Switch
+    private func startCarouselTimer() {
+        stopCarouselTimer() // Stop any existing timer
+        carouselTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [self] _ in
+            // Skip aiFeedbackText page when auto-switching
+            // Don't auto-switch if AI coaching is active (let user see the coach)
+            if !aiCoach.isCoaching && !voiceManager.isSpeaking {
+                switchToNextPage()
+            }
+        }
+    }
+    
+    private func stopCarouselTimer() {
+        carouselTimer?.invalidate()
+        carouselTimer = nil
+    }
+    
+    private func switchToNextPage() {
+        // Get pages excluding aiFeedbackText for auto-switch
+        let pagesForAutoSwitch = carouselPages.filter { $0 != .aiFeedbackText }
+        guard let currentIndex = pagesForAutoSwitch.firstIndex(of: carouselSelection) else {
+            // If current page is not in the list (e.g., aiFeedbackText), go to first page
+            carouselSelection = pagesForAutoSwitch.first ?? .startStop
+            return
+        }
+        
+        // Move to next page, wrapping around
+        let nextIndex = (currentIndex + 1) % pagesForAutoSwitch.count
+        carouselSelection = pagesForAutoSwitch[nextIndex]
     }
     
     private func paceFromAvgSpeed(_ avgSpeedKmh: Double) -> Double {
