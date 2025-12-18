@@ -356,16 +356,25 @@ struct MainRunbotView: View {
                 lastCoachingKm = km
             }
         }
-        // Auto-switch to AI coach page when scheduled coaching starts
+        // Auto-switch to AI coach page when AI feedback happens
         .onChange(of: aiCoach.isCoaching) { oldValue, newValue in
             if newValue && isRunning {
                 // Switch to AI coach page when coaching starts
+                print("🎯 [MainRunbotView] AI coaching started - switching to AI coach page")
                 carouselSelection = .aiCoach
             }
         }
         .onChange(of: voiceManager.isSpeaking) { oldValue, newValue in
             if newValue && isRunning {
                 // Switch to AI coach page when TTS starts
+                print("🎯 [MainRunbotView] TTS started - switching to AI coach page")
+                carouselSelection = .aiCoach
+            }
+        }
+        .onChange(of: aiCoach.currentFeedback) { oldValue, newValue in
+            if !newValue.isEmpty && isRunning && newValue != oldValue {
+                // Switch to AI coach page when feedback text is set
+                print("🎯 [MainRunbotView] AI feedback received - switching to AI coach page")
                 carouselSelection = .aiCoach
             }
         }
