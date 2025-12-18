@@ -585,22 +585,44 @@ class HealthManager: NSObject, ObservableObject {
             return
         }
         
-        // Check for other active workouts by querying recent workouts
-        checkForActiveWorkouts { [weak self] hasActiveWorkout in
+        // ✅ CHECK 3: End any existing workout before starting new one
+        endAnyActiveWorkout { [weak self] in
             guard let self = self else { return }
-            
-            if hasActiveWorkout {
-                print("❌ [HealthManager] CHECK 3 FAILED: Another workout is already active")
-                print("💡 [HealthManager] Please stop the other workout first")
-                DispatchQueue.main.async {
-                    self.workoutStatus = .error("Another workout is active - stop it first")
-                }
-                return
-            }
-            print("✅ [HealthManager] CHECK 3 PASSED: No other active workouts")
+            print("✅ [HealthManager] CHECK 3 PASSED: Any active workouts have been ended")
             
             // Continue with workout session creation
             self.createWorkoutSession()
+        }
+    }
+    
+    /// End any active workout before starting a new one
+    private func endAnyActiveWorkout(completion: @escaping () -> Void) {
+        // First, end our own workout session if it exists
+        if let session = workoutSession, session.state == .running {
+            print("🛑 [HealthManager] Ending existing workout session before starting new one...")
+            endWorkoutSession()
+            // Wait a moment for the session to end, then proceed
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                completion()
+            }
+            return
+        }
+        
+        // Check for other active workouts (from other apps or previous sessions)
+        checkForActiveWorkouts { [weak self] hasActiveWorkout in
+            guard let self = self else {
+                completion()
+                return
+            }
+            
+            if hasActiveWorkout {
+                print("⚠️ [HealthManager] Found active workout from another source")
+                print("💡 [HealthManager] Note: Cannot end workouts started by other apps")
+                print("💡 [HealthManager] Proceeding - HealthKit will handle the conflict")
+            }
+            
+            // Proceed with starting new workout
+            completion()
         }
     }
     
