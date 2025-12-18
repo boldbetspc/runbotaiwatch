@@ -707,6 +707,12 @@ class AICoachManager: NSObject, ObservableObject {
                 let performancePatterns = ragAnalysis?.performanceAnalysis ?? "No performance patterns available."
                 let adaptiveStrategy = ragAnalysis?.adaptiveMicrostrategy ?? "No adaptive strategy available."
                 
+                // Check if we have meaningful historical data from RAG (not just default "No..." messages)
+                let hasRAGData = (similarRuns != "No similar runs found." && !similarRuns.isEmpty) ||
+                                 (historicalOutcomes != "No historical outcomes available." && !historicalOutcomes.isEmpty) ||
+                                 (performancePatterns != "No performance patterns available." && !performancePatterns.isEmpty) ||
+                                 (adaptiveStrategy != "No adaptive strategy available." && !adaptiveStrategy.isEmpty)
+                
                 // Log RAG data lengths for debugging
                 print("📊 [AICoach] Start-of-run RAG data lengths:")
                 print("   - similarRuns: \(similarRuns.count) chars")
@@ -714,6 +720,7 @@ class AICoachManager: NSObject, ObservableObject {
                 print("   - performancePatterns: \(performancePatterns.count) chars")
                 print("   - adaptiveStrategy: \(adaptiveStrategy.count) chars")
                 print("   - mem0Context: \(mem0Context.count) chars")
+                print("   - hasRAGData: \(hasRAGData)")
                 
                 // Coach Strategy RAG section
                 var raceStrategySection = ""
@@ -746,7 +753,7 @@ class AICoachManager: NSObject, ObservableObject {
                 PERFORMANCE ANALYSIS - Historical performance patterns from Performance Analyzer RAG:
                 
                 HISTORICAL CONTEXT:
-                - Previous race (most recent): \(lastRun != nil ? "\(String(format: "%.2f", lastRun!.distanceKm))km at \(formatPace(lastRun!.paceMinPerKm)) pace, duration \(formatDuration(lastRun!.durationSeconds))" : "No previous run data available")
+                - Previous race (most recent): \(lastRun != nil ? "\(String(format: "%.2f", lastRun!.distanceKm))km at \(formatPace(lastRun!.paceMinPerKm)) pace, duration \(formatDuration(lastRun!.durationSeconds))" : (hasRAGData ? "Historical data available from RAG analysis below" : "No previous run data available"))
                 - Similar runs: \(similarRuns)
                 - Historical outcomes: \(historicalOutcomes)
                 - Performance patterns from previous runs: \(performancePatterns)
