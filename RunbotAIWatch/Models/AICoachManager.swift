@@ -15,8 +15,10 @@ class AICoachManager: NSObject, ObservableObject {
     
     private var coachingTimer: Timer?
     private var feedbackTimer: Timer?
+    private var feedbackClearTimer: Timer? // Timer to clear feedback text 2 minutes after TTS completes
     private let openAIKey: String
     private let maxCoachingDuration: TimeInterval = 40.0 // 40 seconds auto-terminate for voice TTS
+    private let feedbackRetentionDuration: TimeInterval = 120.0 // 2 minutes - keep feedback text visible after TTS
     private var runnerName: String = "Runner"
     private var currentTrigger: CoachingTrigger = .interval
     private var lastDeliveredFeedback: String?
@@ -525,9 +527,23 @@ class AICoachManager: NSObject, ObservableObject {
         isCoaching = false
         coachingTimer?.invalidate()
         coachingTimer = nil
-        currentFeedback = ""
+        // Don't clear currentFeedback here - let it persist for 2 minutes after TTS completes
+        // The feedbackClearTimer will handle clearing it
         coachingTimeRemaining = 0.0
-        lastDeliveredFeedback = nil
+        // Don't clear lastDeliveredFeedback - needed for duplicate detection
+    }
+    
+    /// Schedule clearing of feedback text 2 minutes after TTS completes
+    private func scheduleFeedbackClear() {
+        // Cancel any existing clear timer
+        feedbackClearTimer?.invalidate()
+        
+        // Schedule new timer to clear feedback after 2 minutes
+        feedbackClearTimer = Timer.scheduledTimer(withTimeInterval: feedbackRetentionDuration, repeats: false) { [weak self] _ in
+            guard let self = self else { return }
+            print("📝 [AICoach] Clearing feedback text after 2 minute retention period")
+            self.currentFeedback = ""
+        }
     }
     
     // MARK: - AI Feedback Generation
@@ -940,20 +956,8 @@ class AICoachManager: NSObject, ObservableObject {
         
         """
         
-        let examplesSection = trigger == .runStart ? "" : """
-        GOOD EXAMPLES (INSIGHT SYNTHESIS using Coach Perspective + Trade-offs):
-        - "\(runnerName), 8% behind target but HR stable Zone 3. Coach Perspective: 'effort rising faster than distance' - drift 6.2% means hidden fatigue. Trade-off: 'future impact negative'. Ease to 6:20 next km to prevent bigger slowdown. You have headroom but cost is rising."
-        - "Pace declining last 3km (5:20→5:25). Coach Perspective: 'paying for pace too early' - started too fast. Trade-off: 'Zone 4 cost too high early, future impact negative'. Runner's Wisdom: 'form breaking down'. Ease to Zone 2 for 500m, then reassess."
-        - "Zone 5 for 15% already. Coach Perspective: 'would struggle 5km later' + Trade-off: 'unsustainable for remaining 5km'. Drift at 8% means if you maintain this, you'll fade hard. Ease to Zone 3 now - smart recovery preserves finish."
-        
-        BAD EXAMPLES (avoid):
-        - "Pace is 6:45, target is 6:30. HR is 165. Zone 3." (no synthesis, no why, no insight)
-        - "You're behind target. Pick up pace." (no root cause, no pattern connection)
-        - "Great job, keep going!" (no action, ignores data)
-        - "You're almost there!" (not actionable)
-        - "Stay strong and push through." (vague, no specific guidance)
-        
-        """
+        // Examples section removed for interval feedback - cleaner prompt
+        let examplesSection = ""
         
         let criticalRulesSection = trigger == .runStart ? "" : """
         CRITICAL RULES - INSIGHT SYNTHESIS REQUIRED:
@@ -961,8 +965,10 @@ class AICoachManager: NSObject, ObservableObject {
         2. EXPLAIN WHY, not just WHAT: "Pace declining because HR drift rising - physiological cost increasing" not just "pace is slow".
         3. PREDICTIVE INSIGHTS: Connect current patterns to future outcomes ("if drift continues, you'll struggle at km 8").
         4. ROOT CAUSE FOCUS: Identify WHY things are happening, not just that they're happening.
-        5. Use runner's name "\(runnerName)" if it feels natural.
-        6. NO preamble. Just the coaching message with synthesized insights.
+        5. RECOGNIZE STRONG OUTPERFORMANCE: If the runner is ahead in distance vs expected (positive net distance at elapsed time) AND current pace is faster than target pace (e.g., 4:00 min/km vs 7:00 min/km target) AND heart rate zones are sustainable (appropriate, not excessive) AND there is no significant heart rate drift, acknowledge they're performing well. Allow them to continue this strong pace, but keep them aware to monitor and watch out for signs of fatigue or unsustainable effort. Don't unnecessarily suggest slowing down when performance is strong and sustainable.
+        6. RECOGNIZE TARGET DISTANCE ACHIEVED: If the runner has already covered the total target distance and continues running further, recognize this as outperformance. Acknowledge they've exceeded their target and are continuing strong. Provide encouragement for the extra distance while monitoring for sustainable effort.
+        7. Use runner's name "\(runnerName)" if it feels natural.
+        8. NO preamble. Just the coaching message with synthesized insights.
         
         """
         
@@ -1221,6 +1227,17 @@ class AICoachManager: NSObject, ObservableObject {
         print("🎤 [AICoach] Voice mapping: voiceAIModel=\(preferences.voiceAIModel.rawValue) -> voiceOption=\(voiceOption.rawValue)")
         
         await MainActor.run {
+            // Cancel any existing feedback clear timer (new feedback is arriving)
+            self.feedbackClearTimer?.invalidate()
+            self.feedbackClearTimer = nil
+            
+            // Set up callback to schedule feedback clear 2 minutes after TTS completes
+            voiceManager.onSpeechFinished = { [weak self] in
+                guard let self = self else { return }
+                print("📝 [AICoach] TTS completed - scheduling feedback text to clear in 2 minutes")
+                self.scheduleFeedbackClear()
+            }
+            
             if let last = self.lastDeliveredFeedback,
                last.caseInsensitiveCompare(trimmed) == .orderedSame {
                 self.currentFeedback = trimmed

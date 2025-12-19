@@ -7,6 +7,8 @@ class AuthenticationManager: NSObject, ObservableObject {
     @Published var currentUser: User?
     @Published var isLoading = false
     @Published var errorMessage: String?
+    @Published var needsPINSetup = false
+    @Published var needsPINEntry = false
     
     private let supabaseURL: String
     private let supabaseKey: String
@@ -56,6 +58,17 @@ class AuthenticationManager: NSObject, ObservableObject {
             self.currentUser = user
             self.sessionToken = token
             self.isAuthenticated = true
+            
+            // Check PIN status
+            if keychainManager.isPINEnabled() {
+                print("🔐 [AuthenticationManager] PIN is enabled - will show PIN entry overlay")
+                self.needsPINEntry = true
+            } else {
+                // PIN not set up - but don't show setup on app launch (only after fresh login)
+                // This prevents showing PIN setup every time app launches
+                print("🔐 [AuthenticationManager] PIN not enabled - but skipping setup (only show after fresh login)")
+            }
+            
             print("🔐 [AuthenticationManager] User authenticated successfully")
         } else {
             print("🔐 [AuthenticationManager] ❌ No saved user found - user needs to login")
@@ -164,7 +177,6 @@ class AuthenticationManager: NSObject, ObservableObject {
                     await MainActor.run {
                         self.currentUser = user
                         self.sessionToken = authResponse.access_token
-                        self.isAuthenticated = true
                         self.isLoading = false
                         self.errorMessage = nil
                         
@@ -175,6 +187,24 @@ class AuthenticationManager: NSObject, ObservableObject {
                         UserDefaults.standard.set(authResponse.access_token, forKey: "sessionToken")
                         print("🔐 [Auth] ✅ Session saved to UserDefaults")
                         print("🔐 [Auth] User ID: \(user.id) - available for all services")
+                        
+                        // Always authenticate immediately - PIN is optional convenience feature
+                        self.isAuthenticated = true
+                        
+                        // Check if PIN is already set up - if not, prompt for PIN setup (optional)
+                        // IMPORTANT: Set needsPINSetup AFTER isAuthenticated with a small delay
+                        // to ensure view has time to react to isAuthenticated change first
+                        if !keychainManager.isPINEnabled() {
+                            print("🔐 [Auth] PIN not set up - will prompt for PIN setup (optional)")
+                            print("🔐 [Auth] Current state - isAuthenticated: \(self.isAuthenticated), needsPINSetup: \(self.needsPINSetup)")
+                            // Small delay to ensure view updates properly
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                                print("🔐 [Auth] Setting needsPINSetup = true")
+                                self.needsPINSetup = true
+                            }
+                        } else {
+                            print("🔐 [Auth] PIN already set up - skipping PIN setup")
+                        }
                     }
                 } else {
                     let errorString = String(data: responseData, encoding: .utf8) ?? "Unknown error"
@@ -218,7 +248,6 @@ class AuthenticationManager: NSObject, ObservableObject {
                 await MainActor.run {
                     self.currentUser = user
                     self.sessionToken = authResponse.access_token
-                    self.isAuthenticated = true
                     self.isLoading = false
                     self.errorMessage = nil
                     
@@ -226,6 +255,21 @@ class AuthenticationManager: NSObject, ObservableObject {
                         UserDefaults.standard.set(userData, forKey: "currentUser")
                     }
                     UserDefaults.standard.set(authResponse.access_token, forKey: "sessionToken")
+                    
+                    // Always authenticate immediately - PIN is optional convenience feature
+                    self.isAuthenticated = true
+                    
+                    // Check if PIN is already set up - if not, prompt for PIN setup (optional)
+                    // IMPORTANT: Set needsPINSetup AFTER isAuthenticated with a small delay
+                    // to ensure view has time to react to isAuthenticated change first
+                    // IMPORTANT: Set needsPINSetup AFTER isAuthenticated so view can show overlay
+                    if !keychainManager.isPINEnabled() {
+                        print("🔐 [Auth] PIN not set up - prompting for PIN setup (optional)")
+                        print("🔐 [Auth] Setting needsPINSetup = true, isAuthenticated = \(self.isAuthenticated)")
+                        self.needsPINSetup = true
+                    } else {
+                        print("🔐 [Auth] PIN already set up - skipping PIN setup")
+                    }
                 }
             }
         } catch {
@@ -233,6 +277,66 @@ class AuthenticationManager: NSObject, ObservableObject {
                 self.isLoading = false
                 self.errorMessage = error.localizedDescription
             }
+        }
+    }
+    
+    // MARK: - PIN Management (Optional Feature)
+    
+    /// Setup PIN after first login (optional)
+    func setupPIN(_ pin: String) -> Bool {
+        guard keychainManager.savePIN(pin) else {
+            print("🔐 [Auth] Failed to save PIN")
+            return false
+        }
+        print("🔐 [Auth] PIN setup successful")
+        self.needsPINSetup = false
+        // Post notification to ensure services are initialized
+        if let userId = self.currentUser?.id {
+            NotificationCenter.default.post(name: NSNotification.Name("UserAuthenticated"), object: userId)
+        }
+        return true
+    }
+    
+    /// Validate PIN and clear entry overlay
+    func validatePIN(_ pin: String) -> Bool {
+        guard keychainManager.validatePIN(pin) else {
+            print("🔐 [Auth] PIN validation failed")
+            return false
+        }
+        print("🔐 [Auth] PIN validated - user authenticated")
+        // User is already authenticated (session exists), just clear the PIN entry overlay
+        self.needsPINEntry = false
+        // Post notification to re-initialize services (same as email login)
+        if let userId = self.currentUser?.id {
+            NotificationCenter.default.post(name: NSNotification.Name("UserAuthenticated"), object: userId)
+        }
+        return true
+    }
+    
+    /// Skip PIN setup (optional)
+    func skipPINSetup() {
+        print("🔐 [Auth] PIN setup skipped")
+        self.needsPINSetup = false
+    }
+    
+    /// Skip PIN entry (dismiss overlay)
+    func skipPINEntry() {
+        print("🔐 [Auth] PIN entry skipped")
+        self.needsPINEntry = false
+    }
+    
+    /// Force PIN setup for testing (clears existing PIN and shows setup)
+    /// Use this in simulator/debug to test PIN setup flow
+    func forcePINSetupForTesting() {
+        print("🧪 [Auth] FORCING PIN SETUP FOR TESTING")
+        // Clear any existing PIN
+        keychainManager.deletePIN()
+        // Show PIN setup if authenticated
+        if isAuthenticated {
+            needsPINSetup = true
+            print("🧪 [Auth] PIN setup forced - needsPINSetup = true")
+        } else {
+            print("⚠️ [Auth] Cannot force PIN setup - user not authenticated")
         }
     }
     
@@ -245,6 +349,8 @@ class AuthenticationManager: NSObject, ObservableObject {
         currentUser = nil
         sessionToken = nil
         isAuthenticated = false
+        needsPINSetup = false
+        needsPINEntry = false
         
         UserDefaults.standard.removeObject(forKey: "currentUser")
         UserDefaults.standard.removeObject(forKey: "sessionToken")

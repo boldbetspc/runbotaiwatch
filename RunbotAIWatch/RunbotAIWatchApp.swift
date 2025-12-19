@@ -1,5 +1,7 @@
 import SwiftUI
 import WatchKit
+import HealthKit
+import CoreLocation
 
 @main
 struct RunbotAIWatchApp: App {
@@ -67,15 +69,65 @@ struct ContentViewWrapper: View {
     @ObservedObject var healthManager: HealthManager
     
     @State private var hasInitialized = false
+    @State private var hasRequestedPermissions = false
     
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
             
-            if authManager.isAuthenticated {
+            // Show PIN entry overlay if needed (user is authenticated but needs to enter PIN)
+            if authManager.needsPINEntry {
+                ZStack {
+                    // Show main app in background (user is authenticated)
+                    if authManager.isAuthenticated {
+                        MainRunbotView()
+                    }
+                    // PIN entry overlay on top
+                    PINEntryView(isSetupMode: false)
+                        .background(Color.black.opacity(0.95))
+                }
+            }
+            // Show PIN setup if needed (after first login)
+            // IMPORTANT: Check needsPINSetup BEFORE isAuthenticated to show overlay
+            else if authManager.needsPINSetup {
+                ZStack {
+                    // Show main app in background (user is authenticated)
+                    if authManager.isAuthenticated {
+                        MainRunbotView()
+                    }
+                    // PIN setup overlay on top
+                    PINEntryView(isSetupMode: true)
+                        .background(Color.black.opacity(0.95))
+                }
+                .onAppear {
+                    print("🔐 [ContentViewWrapper] Showing PIN setup overlay - needsPINSetup: \(authManager.needsPINSetup), isAuthenticated: \(authManager.isAuthenticated)")
+                    // Request permissions even when PIN setup is shown
+                    requestPermissionsAfterAuth()
+                }
+            }
+            // Normal flow
+            else if authManager.isAuthenticated {
                 MainRunbotView()
+                    .onAppear {
+                        // Request permissions when authenticated (if not already requested)
+                        requestPermissionsAfterAuth()
+                    }
             } else {
                 AuthenticationView()
+            }
+        }
+        .onChange(of: authManager.needsPINSetup) { oldValue, newValue in
+            print("🔐 [ContentViewWrapper] needsPINSetup changed: \(oldValue) -> \(newValue), isAuthenticated: \(authManager.isAuthenticated)")
+            // When PIN setup is dismissed, ensure permissions are requested
+            if oldValue == true && newValue == false && authManager.isAuthenticated {
+                requestPermissionsAfterAuth()
+            }
+        }
+        .onChange(of: authManager.isAuthenticated) { oldValue, newValue in
+            print("🔐 [ContentViewWrapper] isAuthenticated changed: \(oldValue) -> \(newValue), needsPINSetup: \(authManager.needsPINSetup)")
+            // Request permissions when user becomes authenticated
+            if newValue && !oldValue {
+                requestPermissionsAfterAuth()
             }
         }
         .environmentObject(authManager)
@@ -136,5 +188,71 @@ struct ContentViewWrapper: View {
         }
         
         print("✅ [App] Setup complete - User ID available: \(authManager.currentUser?.id ?? "none")")
+    }
+    
+    /// Request HealthKit and Location permissions after authentication
+    /// This ensures permissions are requested even when PIN setup is shown
+    /// Only requests if permissions are not already granted
+    private func requestPermissionsAfterAuth() {
+        guard authManager.isAuthenticated else {
+            print("⚠️ [ContentViewWrapper] Cannot request permissions - user not authenticated")
+            return
+        }
+        
+        // Check current permission status BEFORE requesting
+        let workoutType = HKObjectType.workoutType()
+        let heartRateType = HKQuantityType.quantityType(forIdentifier: .heartRate)!
+        let healthStore = HKHealthStore()
+        let workoutStatus = healthStore.authorizationStatus(for: workoutType)
+        let hrStatus = healthStore.authorizationStatus(for: heartRateType)
+        let locationStatus = runTracker.locationAuthorizationStatus
+        
+        print("🔐 [ContentViewWrapper] Checking permission status...")
+        print("   - HealthKit Workout: \(workoutStatus.rawValue)")
+        print("   - HealthKit HR: \(hrStatus.rawValue)")
+        print("   - Location: \(locationStatus.rawValue)")
+        
+        // Check if all permissions are already granted
+        let healthKitGranted = (workoutStatus == .sharingAuthorized && hrStatus == .sharingAuthorized)
+        let locationGranted = (locationStatus == .authorizedWhenInUse || locationStatus == .authorizedAlways)
+        
+        if healthKitGranted && locationGranted {
+            print("✅ [ContentViewWrapper] All permissions already granted - skipping request")
+            hasRequestedPermissions = true
+            return
+        }
+        
+        // Prevent duplicate requests within the same session
+        guard !hasRequestedPermissions else {
+            print("🔐 [ContentViewWrapper] Permissions already requested in this session - skipping")
+            return
+        }
+        
+        hasRequestedPermissions = true
+        print("🔐 [ContentViewWrapper] Requesting permissions after authentication...")
+        
+        // STEP 1: Request HealthKit authorization FIRST (before location) - only if not already granted
+        if !healthKitGranted {
+            print("💓 [ContentViewWrapper] STEP 1: Requesting HealthKit authorization...")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                // requestHealthDataAccess() already checks status internally and won't request if authorized
+                healthManager.requestHealthDataAccess()
+                print("✅ [ContentViewWrapper] HealthKit authorization request submitted")
+            }
+        } else {
+            print("✅ [ContentViewWrapper] HealthKit already authorized - skipping request")
+        }
+        
+        // STEP 2: Request location permission AFTER HealthKit (with delay to avoid overlap) - only if not already granted
+        if !locationGranted {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                print("📍 [ContentViewWrapper] STEP 2: Requesting location permission...")
+                // requestLocationPermission() already checks status internally and won't request if authorized
+                runTracker.requestLocationPermission()
+                print("✅ [ContentViewWrapper] Location permission request submitted")
+            }
+        } else {
+            print("✅ [ContentViewWrapper] Location already authorized - skipping request")
+        }
     }
 }

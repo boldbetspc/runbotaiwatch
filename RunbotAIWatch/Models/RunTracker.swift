@@ -61,6 +61,11 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
     }
     
+    // Expose authorization status for checking
+    var locationAuthorizationStatus: CLAuthorizationStatus {
+        return locationManager.authorizationStatus
+    }
+    
     // MARK: - Run Control
     
     func startRun(mode: RunMode = .run, shadowData: ShadowRunData? = nil) {

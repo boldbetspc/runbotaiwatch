@@ -110,10 +110,10 @@
 ### **Example Feedback:**
 
 **With Coach Strategy RAG:**
-> "Sarah, 8% behind target but HR stable Zone 3. Recovery strategy: pick up cadence to 180 - quick light steps. Focus form, not speed. Next km: push Zone 4 briefly to close gap. You have headroom!"
+> "Sarah, you're 8% behind target but HR is stable in Zone 3. Use the recovery strategy: pick up cadence to 180 - quick light steps. Focus on form, not speed. Next km: push to Zone 4 briefly to close the gap. You have headroom!"
 
 **Without Coach Strategy RAG (Fallback):**
-> "Sarah, 8% behind target but HR stable Zone 3. Pick up cadence to 180 - you have headroom. Next km: push Zone 4 briefly. Focus form, not speed. Quick adjustment needed."
+> "Sarah, you're 8% behind target but HR is stable in Zone 3. Pick up cadence to 180 - you have headroom. Next km: push to Zone 4 briefly. Focus on form, not speed."
 
 **Key Elements:**
 - ✅ Uses runner's name
@@ -155,10 +155,10 @@
 ### **Example Feedback:**
 
 **With Coach Strategy RAG:**
-> "Sarah, 5.2K in 33:45 - target exceeded! Zone 3 efficiency excellent at 55%. Consistent pacing - even splits with strong finish at 6:25. You followed negative split strategy perfectly. Next run: maintain zone discipline. New personal best pace!"
+> "Sarah, 5.2K done in 33:45 - target exceeded! Your Zone 3 efficiency was excellent at 55%. Consistent pacing throughout - even splits with a strong finish at 6:25. You followed the negative split strategy perfectly. Next run: maintain this zone discipline. New personal best pace!"
 
 **Without Coach Strategy RAG (Fallback):**
-> "Sarah, 5.2K in 33:45 - target exceeded! Zone 3 efficiency excellent at 55%. Consistent pacing - even splits with strong finish at 6:25. Execution was spot-on. Next run: maintain zone discipline. New personal best pace!"
+> "Sarah, 5.2K done in 33:45 - target exceeded! Your Zone 3 efficiency was excellent at 55%. Consistent pacing throughout - even splits with a strong finish at 6:25. Next run: maintain this zone discipline. New personal best pace!"
 
 **Key Elements:**
 - ✅ Uses runner's name
@@ -231,7 +231,7 @@
 
 ### **Example Feedback:**
 
-> "Mike, 15% behind target, HR rising. Accept current pace, focus completion. Recovery strategy: run-walk intervals - 2 min at 7:00, 30 sec walk. Recalibrate target next run. Safety first. You're managing this well."
+> "Mike, you're 15% behind target and HR is rising. Accept current pace, focus on completion. Use the recovery strategy: run-walk intervals - 2 min at 7:00, 30 sec walk. Recalibrate target for next run. Safety first."
 
 **Key Elements:**
 - ✅ Mentions target deviation (15% behind 6:15) - **TARGET-AWARE**
