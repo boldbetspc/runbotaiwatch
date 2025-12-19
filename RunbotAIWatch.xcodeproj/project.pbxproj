@@ -93,7 +93,6 @@
 				Views/ConnectionsView.swift,
 				Views/ContentView.swift,
 				Views/MainRunbotView.swift,
-				Views/PINEntryView.swift,
 				Views/RunningView.swift,
 				Views/SettingsView.swift,
 			);

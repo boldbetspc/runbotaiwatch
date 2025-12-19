@@ -74,10 +74,21 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         print("🏃 [RunTracker] Mode: \(mode)")
         print("🏃 [RunTracker] Already running: \(isRunning)")
         
-        guard !isRunning else {
-            print("⚠️ [RunTracker] Already running - ignoring start request")
+        // CRITICAL: Close any active workout before starting new one
+        if isRunning {
+            print("⚠️ [RunTracker] Active workout detected - stopping it first before starting new workout")
+            stopRun()
+            // Small delay to ensure cleanup completes
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.startRunInternal(mode: mode, shadowData: shadowData)
+            }
             return
         }
+        
+        startRunInternal(mode: mode, shadowData: shadowData)
+    }
+    
+    private func startRunInternal(mode: RunMode = .run, shadowData: ShadowRunData? = nil) {
         
         var newSession = RunSession(
             id: UUID().uuidString,
@@ -107,9 +118,21 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         currentIntervalStartDistance = 0.0
         paceHistory = [] // Reset pace history for new run
         
+        // CRITICAL: Ensure location manager is properly configured before starting
+        // Re-configure to ensure fresh state
+        setupLocationManager()
+        
         print("🏃 [RunTracker] Starting location manager...")
+        print("🏃 [RunTracker] Location authorization: \(locationManager.authorizationStatus.rawValue)")
+        print("🏃 [RunTracker] Desired accuracy: \(locationManager.desiredAccuracy)")
+        print("🏃 [RunTracker] Distance filter: \(locationManager.distanceFilter)")
+        
+        // Start location updates - this will begin GPS acquisition
         locationManager.startUpdatingLocation()
-        print("✅ [RunTracker] Location manager started")
+        print("✅ [RunTracker] Location manager started - GPS signal acquisition in progress...")
+        
+        // Note: GPS may take a few seconds to acquire signal, especially on first run
+        // Distance will start updating once GPS signal is acquired and valid locations are received
         
         // CRITICAL: Start HealthManager for real-time HR via HKWorkoutSession
         // Pass run ID and SupabaseManager for periodic HR saves
@@ -137,6 +160,7 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         startStatsUpdateTimer()
         print("🏃 [RunTracker] Performing initial stats update...")
         updateStats()
+        
         print("✅ [RunTracker] ========== RUN START COMPLETE ==========")
     }
     
@@ -279,14 +303,22 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
     
     func stopRun() {
-        guard isRunning else { return }
+        guard isRunning else {
+            print("⚠️ [RunTracker] stopRun() called but workout is not running")
+            return
+        }
+        
+        print("🏃 [RunTracker] ========== STOPPING RUN ==========")
         
         isRunning = false
         locationManager.stopUpdatingLocation()
         updateTimer?.invalidate()
         
-        // Stop HealthManager HR monitoring
+        // CRITICAL: Stop HealthManager workout session and HR monitoring
+        // This properly ends the HealthKit workout session
+        print("🏃 [RunTracker] Stopping HealthManager workout session...")
         healthManager?.stopHeartRateMonitoring()
+        print("✅ [RunTracker] HealthManager workout session stopped")
         
         // Ensure session has endTime set (should already be set by forceFinalStatsUpdate)
         if var session = currentSession {
@@ -319,9 +351,22 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
         
         for newLocation in locations {
+            // Log GPS signal quality for debugging
+            let accuracy = newLocation.horizontalAccuracy
+            let age = abs(newLocation.timestamp.timeIntervalSinceNow)
+            print("📍 [RunTracker] GPS update - Accuracy: \(String(format: "%.1f", accuracy))m, Age: \(String(format: "%.1f", age))s")
+            
             // CRITICAL: Strict GPS filtering for maximum accuracy
             // 1. Accuracy check: GPS should be < 15m (excellent GPS is 3-8m)
-            guard newLocation.horizontalAccuracy > 0 && newLocation.horizontalAccuracy < 15 else {
+            // On first run, GPS may take time to acquire - we'll accept slightly worse accuracy initially
+            // but improve filtering as we get more locations
+            let isFirstLocation = previousLocations.isEmpty
+            let maxAccuracy = isFirstLocation ? 25.0 : 15.0 // Allow 25m on first location, then 15m
+            
+            guard newLocation.horizontalAccuracy > 0 && newLocation.horizontalAccuracy < maxAccuracy else {
+                if isFirstLocation {
+                    print("📍 [RunTracker] Waiting for better GPS signal (current: \(String(format: "%.1f", accuracy))m, need: <\(maxAccuracy)m)")
+                }
                 continue
             }
             

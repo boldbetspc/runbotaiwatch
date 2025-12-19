@@ -75,38 +75,8 @@ struct ContentViewWrapper: View {
         ZStack {
             Color.black.ignoresSafeArea()
             
-            // Show PIN entry overlay if needed (user is authenticated but needs to enter PIN)
-            if authManager.needsPINEntry {
-                ZStack {
-                    // Show main app in background (user is authenticated)
-                    if authManager.isAuthenticated {
-                        MainRunbotView()
-                    }
-                    // PIN entry overlay on top
-                    PINEntryView(isSetupMode: false)
-                        .background(Color.black.opacity(0.95))
-                }
-            }
-            // Show PIN setup if needed (after first login)
-            // IMPORTANT: Check needsPINSetup BEFORE isAuthenticated to show overlay
-            else if authManager.needsPINSetup {
-                ZStack {
-                    // Show main app in background (user is authenticated)
-                    if authManager.isAuthenticated {
-                        MainRunbotView()
-                    }
-                    // PIN setup overlay on top
-                    PINEntryView(isSetupMode: true)
-                        .background(Color.black.opacity(0.95))
-                }
-                .onAppear {
-                    print("🔐 [ContentViewWrapper] Showing PIN setup overlay - needsPINSetup: \(authManager.needsPINSetup), isAuthenticated: \(authManager.isAuthenticated)")
-                    // Request permissions even when PIN setup is shown
-                    requestPermissionsAfterAuth()
-                }
-            }
-            // Normal flow
-            else if authManager.isAuthenticated {
+            // Normal flow - email authentication only
+            if authManager.isAuthenticated {
                 MainRunbotView()
                     .onAppear {
                         // Request permissions when authenticated (if not already requested)
@@ -116,15 +86,8 @@ struct ContentViewWrapper: View {
                 AuthenticationView()
             }
         }
-        .onChange(of: authManager.needsPINSetup) { oldValue, newValue in
-            print("🔐 [ContentViewWrapper] needsPINSetup changed: \(oldValue) -> \(newValue), isAuthenticated: \(authManager.isAuthenticated)")
-            // When PIN setup is dismissed, ensure permissions are requested
-            if oldValue == true && newValue == false && authManager.isAuthenticated {
-                requestPermissionsAfterAuth()
-            }
-        }
         .onChange(of: authManager.isAuthenticated) { oldValue, newValue in
-            print("🔐 [ContentViewWrapper] isAuthenticated changed: \(oldValue) -> \(newValue), needsPINSetup: \(authManager.needsPINSetup)")
+            print("🔐 [ContentViewWrapper] isAuthenticated changed: \(oldValue) -> \(newValue)")
             // Request permissions when user becomes authenticated
             if newValue && !oldValue {
                 requestPermissionsAfterAuth()
@@ -145,9 +108,9 @@ struct ContentViewWrapper: View {
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("UserAuthenticated"))) { notification in
-            // Re-initialize Supabase session after PIN login
+            // Re-initialize Supabase session after authentication
             if let userId = notification.object as? String {
-                print("🚀 [App] User authenticated via PIN - re-initializing services for: \(userId)")
+                print("🚀 [App] User authenticated - re-initializing services for: \(userId)")
                 supabaseManager.initializeSession(for: userId)
                 print("✅ [App] Services re-initialized")
             }
@@ -156,6 +119,11 @@ struct ContentViewWrapper: View {
     
     private func setupApp() {
         print("🚀 [App] Starting RunbotAIWatch setup...")
+        
+        // Set workout status references in AuthenticationManager (prevents session expiration during runs)
+        authManager.runTracker = runTracker
+        authManager.healthManager = healthManager
+        print("🏃 [App] Set workout status references in AuthenticationManager (prevents session expiration during marathons)")
         
         // Check authentication FIRST
         authManager.checkAuthentication()
@@ -167,7 +135,7 @@ struct ContentViewWrapper: View {
         // Initialize voice
         voiceManager.setupSpeech()
         
-        // Initialize Supabase session if authenticated (including after PIN login)
+        // Initialize Supabase session if authenticated
         if let userId = authManager.currentUser?.id {
             supabaseManager.initializeSession(for: userId)
             print("🚀 [App] Supabase session initialized for: \(userId)")
@@ -191,7 +159,6 @@ struct ContentViewWrapper: View {
     }
     
     /// Request HealthKit and Location permissions after authentication
-    /// This ensures permissions are requested even when PIN setup is shown
     /// Only requests if permissions are not already granted
     private func requestPermissionsAfterAuth() {
         guard authManager.isAuthenticated else {
