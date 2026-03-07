@@ -18,16 +18,20 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
     private var minSpeed: Double = Double.infinity
     private var updateTimer: Timer?
     private var intervalBuffer: [CLLocation] = []
-    private let intervalDistanceMeters: Double = 1000.0 // create interval every 1km
-    private var lastIntervalEndDistance: Double = 0.0 // Track cumulative distance for 1km intervals
-    private var currentIntervalStartTime: Date? // Track when current interval started
-    private var currentIntervalStartDistance: Double = 0.0 // Track distance when current interval started
+    private let intervalDistanceMeters: Double = 1000.0
+    private var lastIntervalEndDistance: Double = 0.0
+    private var currentIntervalStartTime: Date?
+    private var currentIntervalStartDistance: Double = 0.0
     var supabaseManager: SupabaseManager?
     var healthManager: HealthManager?
     
-    // Pace history for energy signature graph (stores last 60 data points, ~1 per second)
+    // Extended runtime session keeps the app alive and prevents watch sleep during runs.
+    // HKWorkoutSession already prevents termination, but this adds protection for
+    // voice AI playback and screen-off scenarios.
+    private var extendedSession: WKExtendedRuntimeSession?
+    
     @Published var paceHistory: [Double] = []
-    private let maxPaceHistorySize = 60 // Store last 60 seconds of pace data
+    private let maxPaceHistorySize = 60
     
     // Configuration
     let runnerWeight: Double = 70.0 // kg, typical runner weight
@@ -61,11 +65,6 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
     }
     
-    // Expose authorization status for checking
-    var locationAuthorizationStatus: CLAuthorizationStatus {
-        return locationManager.authorizationStatus
-    }
-    
     // MARK: - Run Control
     
     func startRun(mode: RunMode = .run, shadowData: ShadowRunData? = nil) {
@@ -74,21 +73,10 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         print("🏃 [RunTracker] Mode: \(mode)")
         print("🏃 [RunTracker] Already running: \(isRunning)")
         
-        // CRITICAL: Close any active workout before starting new one
-        if isRunning {
-            print("⚠️ [RunTracker] Active workout detected - stopping it first before starting new workout")
-            stopRun()
-            // Small delay to ensure cleanup completes
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.startRunInternal(mode: mode, shadowData: shadowData)
-            }
+        guard !isRunning else {
+            print("⚠️ [RunTracker] Already running - ignoring start request")
             return
         }
-        
-        startRunInternal(mode: mode, shadowData: shadowData)
-    }
-    
-    private func startRunInternal(mode: RunMode = .run, shadowData: ShadowRunData? = nil) {
         
         var newSession = RunSession(
             id: UUID().uuidString,
@@ -118,21 +106,9 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         currentIntervalStartDistance = 0.0
         paceHistory = [] // Reset pace history for new run
         
-        // CRITICAL: Ensure location manager is properly configured before starting
-        // Re-configure to ensure fresh state
-        setupLocationManager()
-        
         print("🏃 [RunTracker] Starting location manager...")
-        print("🏃 [RunTracker] Location authorization: \(locationManager.authorizationStatus.rawValue)")
-        print("🏃 [RunTracker] Desired accuracy: \(locationManager.desiredAccuracy)")
-        print("🏃 [RunTracker] Distance filter: \(locationManager.distanceFilter)")
-        
-        // Start location updates - this will begin GPS acquisition
         locationManager.startUpdatingLocation()
-        print("✅ [RunTracker] Location manager started - GPS signal acquisition in progress...")
-        
-        // Note: GPS may take a few seconds to acquire signal, especially on first run
-        // Distance will start updating once GPS signal is acquired and valid locations are received
+        print("✅ [RunTracker] Location manager started")
         
         // CRITICAL: Start HealthManager for real-time HR via HKWorkoutSession
         // Pass run ID and SupabaseManager for periodic HR saves
@@ -155,12 +131,12 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         // Log run start for debugging
         print("🏃 [RunTracker] Run cache refresh will happen in AICoachManager")
         
-        print("✅ [RunTracker] Run started with ID: \(newSession.id)")
-        print("🏃 [RunTracker] Starting stats update timer...")
-        startStatsUpdateTimer()
-        print("🏃 [RunTracker] Performing initial stats update...")
-        updateStats()
+        // Keep the app alive during the run (prevents watch sleep, protects voice AI)
+        startExtendedSession()
         
+        print("✅ [RunTracker] Run started with ID: \(newSession.id)")
+        startStatsUpdateTimer()
+        updateStats()
         print("✅ [RunTracker] ========== RUN START COMPLETE ==========")
     }
     
@@ -194,59 +170,7 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         let averagePace = distanceKm > 0 ? elapsedSeconds / 60.0 / distanceKm : 0.0
         let caloriesEstimate = distanceKm * caloriesBurnedPerKm
         
-        // Calculate final current pace from last 10 seconds (real-time pace)
-        let currentPace: Double = {
-            guard previousLocations.count >= 2 else { return averagePace }
-            
-            let cutoffTime = Date().addingTimeInterval(-10) // Last 10 seconds for real-time pace
-            let recentLocations = previousLocations.filter { 
-                $0.timestamp >= cutoffTime && 
-                $0.horizontalAccuracy > 0 && 
-                $0.horizontalAccuracy < 15 &&
-                abs($0.timestamp.timeIntervalSinceNow) < 3.0
-            }
-            
-            guard recentLocations.count >= 3 else { return averagePace }
-            
-            var segmentPaces: [Double] = []
-            var totalDistance10s: Double = 0.0
-            
-            for i in 1..<recentLocations.count {
-                let prev = recentLocations[i-1]
-                let curr = recentLocations[i]
-                
-                let segmentDistance = haversineDistance(from: prev.coordinate, to: curr.coordinate)
-                let segmentTime = abs(curr.timestamp.timeIntervalSince(prev.timestamp))
-                
-                if segmentDistance > 2.0 && segmentTime > 0 && segmentTime < 5.0 {
-                    totalDistance10s += segmentDistance
-                    let segmentDistanceKm = segmentDistance / 1000.0
-                    if segmentDistanceKm > 0 && segmentTime > 0 {
-                        let segmentPace = segmentTime / 60.0 / segmentDistanceKm
-                        if segmentPace >= 2.0 && segmentPace <= 20.0 {
-                            segmentPaces.append(segmentPace)
-                        }
-                    }
-                }
-            }
-            
-            // Need at least 10m of movement in last 10s to calculate pace
-            guard totalDistance10s >= 10.0 && segmentPaces.count >= 2 else { return averagePace }
-            
-            // Use weighted average for smoother pace
-            if segmentPaces.count >= 3 {
-                var weightedSum: Double = 0.0
-                var totalWeight: Double = 0.0
-                for (index, pace) in segmentPaces.enumerated() {
-                    let weight = pow(1.2, Double(segmentPaces.count - index))
-                    weightedSum += pace * weight
-                    totalWeight += weight
-                }
-                return weightedSum / totalWeight
-            } else {
-                return segmentPaces.reduce(0.0, +) / Double(segmentPaces.count)
-            }
-        }()
+        let currentPace = computeRealtimePace(fallback: averagePace)
         
         // Update session with final values
         session.distance = finalDistanceMeters
@@ -282,10 +206,10 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
             }
         }
         
-        // Create final stats update
         statsUpdate = RunningStatsUpdate(
             distance: finalDistanceMeters,
-            pace: currentPace > 0 ? currentPace : averagePace,
+            pace: currentPace,
+            averagePace: averagePace,
             avgSpeed: avgSpeed,
             calories: caloriesEstimate,
             elevation: totalElevation,
@@ -303,22 +227,14 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
     }
     
     func stopRun() {
-        guard isRunning else {
-            print("⚠️ [RunTracker] stopRun() called but workout is not running")
-            return
-        }
-        
-        print("🏃 [RunTracker] ========== STOPPING RUN ==========")
+        guard isRunning else { return }
         
         isRunning = false
         locationManager.stopUpdatingLocation()
         updateTimer?.invalidate()
         
-        // CRITICAL: Stop HealthManager workout session and HR monitoring
-        // This properly ends the HealthKit workout session
-        print("🏃 [RunTracker] Stopping HealthManager workout session...")
         healthManager?.stopHeartRateMonitoring()
-        print("✅ [RunTracker] HealthManager workout session stopped")
+        stopExtendedSession()
         
         // Ensure session has endTime set (should already be set by forceFinalStatsUpdate)
         if var session = currentSession {
@@ -333,7 +249,7 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
                 let statsDict: [String: Any] = [
                     "distance": stats.distance,
                     "duration": session.duration,
-                    "pace": stats.pace,
+                    "pace": stats.effectivePace,
                     "calories": stats.calories
                 ]
                 WatchConnectivityManager.shared.sendWorkoutEnded(stats: statsDict)
@@ -351,22 +267,9 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         }
         
         for newLocation in locations {
-            // Log GPS signal quality for debugging
-            let accuracy = newLocation.horizontalAccuracy
-            let age = abs(newLocation.timestamp.timeIntervalSinceNow)
-            print("📍 [RunTracker] GPS update - Accuracy: \(String(format: "%.1f", accuracy))m, Age: \(String(format: "%.1f", age))s")
-            
             // CRITICAL: Strict GPS filtering for maximum accuracy
             // 1. Accuracy check: GPS should be < 15m (excellent GPS is 3-8m)
-            // On first run, GPS may take time to acquire - we'll accept slightly worse accuracy initially
-            // but improve filtering as we get more locations
-            let isFirstLocation = previousLocations.isEmpty
-            let maxAccuracy = isFirstLocation ? 25.0 : 15.0 // Allow 25m on first location, then 15m
-            
-            guard newLocation.horizontalAccuracy > 0 && newLocation.horizontalAccuracy < maxAccuracy else {
-                if isFirstLocation {
-                    print("📍 [RunTracker] Waiting for better GPS signal (current: \(String(format: "%.1f", accuracy))m, need: <\(maxAccuracy)m)")
-                }
+            guard newLocation.horizontalAccuracy > 0 && newLocation.horizontalAccuracy < 15 else {
                 continue
             }
             
@@ -508,80 +411,7 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         let elapsedHours = elapsedSeconds / 3600.0
         let avgSpeed = elapsedHours > 0 ? distanceKm / elapsedHours : 0.0
 
-        // Calculate current pace from last 10 seconds of location data (Real-Time Pace)
-        // Uses weighted average of recent segments for smoother, more accurate pace
-        let currentPace: Double = {
-            guard previousLocations.count >= 2 else { return 0.0 }
-            
-            // Get locations from last 10 seconds with strict filtering (Real-Time Pace)
-            let cutoffTime = Date().addingTimeInterval(-10) // Last 10 seconds for RT pace
-            let recentLocations = previousLocations.filter { 
-                $0.timestamp >= cutoffTime && 
-                $0.horizontalAccuracy > 0 && 
-                $0.horizontalAccuracy < 15 && // Only excellent GPS readings
-                abs($0.timestamp.timeIntervalSinceNow) < 3.0 // Not stale
-            }
-            
-            guard recentLocations.count >= 3 else { return 0.0 } // Need at least 3 points
-            
-            // Calculate distance and time for each segment
-            var segmentPaces: [Double] = []
-            var totalDistance10s: Double = 0.0
-            var totalTime10s: Double = 0.0
-            
-            for i in 1..<recentLocations.count {
-                let prev = recentLocations[i-1]
-                let curr = recentLocations[i]
-                
-                let segmentDistance = haversineDistance(
-                    from: prev.coordinate,
-                    to: curr.coordinate
-                )
-                
-                let segmentTime = abs(curr.timestamp.timeIntervalSince(prev.timestamp))
-                
-                // Only count valid segments: > 2m distance, reasonable time
-                if segmentDistance > 2.0 && segmentTime > 0 && segmentTime < 5.0 {
-                    totalDistance10s += segmentDistance
-                    totalTime10s += segmentTime
-                    
-                    // Calculate pace for this segment
-                    let segmentDistanceKm = segmentDistance / 1000.0
-                    if segmentDistanceKm > 0 && segmentTime > 0 {
-                        let segmentPace = segmentTime / 60.0 / segmentDistanceKm
-                        // Only include reasonable paces (2-20 min/km)
-                        if segmentPace >= 2.0 && segmentPace <= 20.0 {
-                            segmentPaces.append(segmentPace)
-                        }
-                    }
-                }
-            }
-            
-            // Need at least 10m of movement in last 10s to calculate pace
-            guard totalDistance10s >= 10.0 && segmentPaces.count >= 2 else { return 0.0 }
-            
-            // Use weighted average: give more weight to recent segments
-            // This provides smoother, more responsive pace
-            if segmentPaces.count >= 3 {
-                // Weighted average: recent segments have more weight
-                var weightedSum: Double = 0.0
-                var totalWeight: Double = 0.0
-                
-                for (index, pace) in segmentPaces.enumerated() {
-                    // More recent segments get higher weight (exponential decay)
-                    let weight = pow(1.2, Double(segmentPaces.count - index))
-                    weightedSum += pace * weight
-                    totalWeight += weight
-                }
-                
-                let weightedPace = weightedSum / totalWeight
-                return weightedPace
-            } else {
-                // Simple average if not enough segments
-                let avgPace = segmentPaces.reduce(0.0, +) / Double(segmentPaces.count)
-                return avgPace
-            }
-        }()
+        let currentPace = computeRealtimePace(fallback: averagePace)
         
         // Estimate calories burned
         caloriesEstimate = distanceKm * caloriesBurnedPerKm
@@ -624,11 +454,10 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
             }
         }
         
-        // Create stats update for UI
-        // Note: pace field shows current pace, average pace is in session.pace
         statsUpdate = RunningStatsUpdate(
             distance: distanceMeters,
-            pace: currentPace > 0 ? currentPace : averagePace, // Show current pace if available, else average
+            pace: currentPace,
+            averagePace: averagePace,
             avgSpeed: avgSpeed,
             calories: caloriesEstimate,
             elevation: totalElevation,
@@ -712,6 +541,83 @@ class RunTracker: NSObject, ObservableObject, CLLocationManagerDelegate {
         minSpeed = Double.infinity
         previousLocations = []
         statsUpdate = nil
+    }
+    
+    // MARK: - Extended Runtime Session (prevents watch sleep during run)
+    
+    private func startExtendedSession() {
+        extendedSession?.invalidate()
+        let session = WKExtendedRuntimeSession()
+        session.delegate = self
+        session.start()
+        extendedSession = session
+        print("⏰ [RunTracker] Extended runtime session started — watch will stay awake")
+    }
+    
+    private func stopExtendedSession() {
+        extendedSession?.invalidate()
+        extendedSession = nil
+        print("⏰ [RunTracker] Extended runtime session ended")
+    }
+}
+
+// MARK: - WKExtendedRuntimeSessionDelegate
+extension RunTracker: WKExtendedRuntimeSessionDelegate {
+    func extendedRuntimeSession(_ session: WKExtendedRuntimeSession, didInvalidateWith reason: WKExtendedRuntimeSessionInvalidationReason, error: Error?) {
+        if let error = error {
+            print("⏰ [RunTracker] Extended session invalidated: \(error.localizedDescription)")
+        }
+        // If the run is still active and the session expired, restart it
+        if isRunning {
+            print("⏰ [RunTracker] Run still active — restarting extended session")
+            startExtendedSession()
+        }
+    }
+    
+    func extendedRuntimeSessionDidStart(_ session: WKExtendedRuntimeSession) {
+        print("⏰ [RunTracker] Extended session running")
+    }
+    
+    func extendedRuntimeSessionWillExpire(_ session: WKExtendedRuntimeSession) {
+        print("⏰ [RunTracker] Extended session expiring — restarting if run active")
+        if isRunning {
+            startExtendedSession()
+        }
+    }
+}
+
+// MARK: - Realtime Pace
+extension RunTracker {
+    /// Compute real-time pace (min/km) from recent GPS locations.
+    /// Uses up to 60 seconds of data so there is almost always a value.
+    /// Falls back to `fallback` (typically averagePace) if no valid movement exists.
+    func computeRealtimePace(fallback: Double) -> Double {
+        guard previousLocations.count >= 2 else { return fallback }
+        
+        let cutoff = Date().addingTimeInterval(-60)
+        let recent = previousLocations.filter {
+            $0.timestamp >= cutoff &&
+            $0.horizontalAccuracy > 0 && $0.horizontalAccuracy < 20
+        }
+        guard recent.count >= 2 else { return fallback }
+        
+        var totalDist: Double = 0
+        var totalTime: Double = 0
+        
+        for i in 1..<recent.count {
+            let d = haversineDistance(from: recent[i-1].coordinate, to: recent[i].coordinate)
+            let t = abs(recent[i].timestamp.timeIntervalSince(recent[i-1].timestamp))
+            if d > 1.0 && t > 0 && t < 10.0 {
+                totalDist += d
+                totalTime += t
+            }
+        }
+        
+        let distKm = totalDist / 1000.0
+        guard distKm > 0.005 && totalTime > 0 else { return fallback } // need ≥5m
+        
+        let pace = (totalTime / 60.0) / distKm // min/km
+        return (pace >= 2.0 && pace <= 20.0) ? pace : fallback
     }
 }
 

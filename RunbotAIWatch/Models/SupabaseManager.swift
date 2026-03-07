@@ -761,7 +761,7 @@ class SupabaseManager: ObservableObject {
                 "personality": personality,
                 "energy": energy,
                 "distance_m": stats.distance,
-                "pace_min_per_km": stats.pace,
+                "pace_min_per_km": stats.effectivePace,
                 "calories": stats.calories,
                 "elevation_m": stats.elevation,
                 "duration_seconds": durationSeconds
@@ -985,5 +985,187 @@ class SupabaseManager: ObservableObject {
         }
         
         return nil
+    }
+    
+    // MARK: - Spotify Device Settings (device_settings table)
+    
+    func loadSpotifyDeviceSettings(userId: String) async -> SpotifyDeviceSettings? {
+        guard isInitialized else { return nil }
+        
+        do {
+            let url = URL(string: "\(baseURL)/rest/v1/device_settings?user_id=eq.\(userId)&select=spotify_enabled,spotify_master_playlist_id,target_heart_rate")!
+            var request = URLRequest(url: url)
+            request.setValue(anonKey, forHTTPHeaderField: "apikey")
+            request.setValue(getAuthHeader(), forHTTPHeaderField: "Authorization")
+            request.timeoutInterval = 10
+            
+            let (data, response) = try await session.data(for: request)
+            
+            if let http = response as? HTTPURLResponse {
+                if http.statusCode == 404 {
+                    print("ℹ️ [Supabase] device_settings table not found")
+                    return nil
+                }
+                if http.statusCode == 200,
+                   let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
+                   let first = list.first {
+                    return SpotifyDeviceSettings(
+                        spotifyEnabled: first["spotify_enabled"] as? Bool ?? false,
+                        masterPlaylistId: first["spotify_master_playlist_id"] as? String,
+                        targetHeartRate: first["target_heart_rate"] as? Int
+                    )
+                }
+            }
+        } catch {
+            print("ℹ️ [Supabase] Device settings not available: \(error.localizedDescription)")
+        }
+        return nil
+    }
+    
+    func saveSpotifyDeviceSettings(userId: String, spotifyEnabled: Bool, masterPlaylistId: String?, targetHeartRate: Int?) async -> Bool {
+        guard isInitialized else { return false }
+        
+        do {
+            var payload: [String: Any] = [
+                "user_id": userId,
+                "spotify_enabled": spotifyEnabled,
+                "updated_at": ISO8601DateFormatter().string(from: Date())
+            ]
+            if let pid = masterPlaylistId { payload["spotify_master_playlist_id"] = pid }
+            if let thr = targetHeartRate { payload["target_heart_rate"] = thr }
+            
+            let patchUrl = URL(string: "\(baseURL)/rest/v1/device_settings?user_id=eq.\(userId)")!
+            var patchRequest = URLRequest(url: patchUrl)
+            patchRequest.httpMethod = "PATCH"
+            patchRequest.setValue(anonKey, forHTTPHeaderField: "apikey")
+            patchRequest.setValue(getAuthHeader(), forHTTPHeaderField: "Authorization")
+            patchRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            patchRequest.setValue("return=representation", forHTTPHeaderField: "Prefer")
+            patchRequest.httpBody = try JSONSerialization.data(withJSONObject: payload)
+            
+            let (patchData, patchResponse) = try await session.data(for: patchRequest)
+            
+            if let http = patchResponse as? HTTPURLResponse,
+               (http.statusCode == 200 || http.statusCode == 204),
+               let responseStr = String(data: patchData, encoding: .utf8),
+               responseStr != "[]" && !responseStr.isEmpty {
+                print("✅ [Supabase] Device settings updated")
+                return true
+            }
+            
+            payload["id"] = UUID().uuidString
+            payload["created_at"] = ISO8601DateFormatter().string(from: Date())
+            
+            let postUrl = URL(string: "\(baseURL)/rest/v1/device_settings")!
+            var postRequest = URLRequest(url: postUrl)
+            postRequest.httpMethod = "POST"
+            postRequest.setValue(anonKey, forHTTPHeaderField: "apikey")
+            postRequest.setValue(getAuthHeader(), forHTTPHeaderField: "Authorization")
+            postRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            postRequest.setValue("return=minimal", forHTTPHeaderField: "Prefer")
+            postRequest.httpBody = try JSONSerialization.data(withJSONObject: payload)
+            
+            let (_, postResponse) = try await session.data(for: postRequest)
+            if let http = postResponse as? HTTPURLResponse,
+               http.statusCode == 200 || http.statusCode == 201 {
+                print("✅ [Supabase] Device settings inserted")
+                return true
+            }
+        } catch {
+            print("❌ [Supabase] Device settings save error: \(error.localizedDescription)")
+        }
+        return false
+    }
+    
+    struct SpotifyDeviceSettings {
+        let spotifyEnabled: Bool
+        let masterPlaylistId: String?
+        let targetHeartRate: Int?
+    }
+    
+    // MARK: - Track Scores (track_scores table)
+    
+    func loadTrackScores(userId: String) async -> [TrackScoreRecord] {
+        guard isInitialized else { return [] }
+        
+        do {
+            let url = URL(string: "\(baseURL)/rest/v1/track_scores?user_id=eq.\(userId)&select=track_uri,score,play_count,last_played_at")!
+            var request = URLRequest(url: url)
+            request.setValue(anonKey, forHTTPHeaderField: "apikey")
+            request.setValue(getAuthHeader(), forHTTPHeaderField: "Authorization")
+            request.timeoutInterval = 15
+            
+            let (data, response) = try await session.data(for: request)
+            
+            if let http = response as? HTTPURLResponse {
+                if http.statusCode == 404 {
+                    print("ℹ️ [Supabase] track_scores table not found")
+                    return []
+                }
+                if http.statusCode == 200,
+                   let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                    return list.compactMap { item -> TrackScoreRecord? in
+                        guard let uri = item["track_uri"] as? String else { return nil }
+                        let score = item["score"] as? Int ?? 0
+                        let playCount = item["play_count"] as? Int ?? 0
+                        let lastPlayedStr = item["last_played_at"] as? String
+                        let lastPlayed = lastPlayedStr.flatMap { ISO8601DateFormatter().date(from: $0) } ?? Date()
+                        return TrackScoreRecord(trackURI: uri, score: score, playCount: playCount, lastPlayedAt: lastPlayed)
+                    }
+                }
+            }
+        } catch {
+            print("ℹ️ [Supabase] Track scores not available: \(error.localizedDescription)")
+        }
+        return []
+    }
+    
+    func batchUpsertTrackScores(userId: String, scores: [TrackScoreRecord]) async -> Bool {
+        guard isInitialized, !scores.isEmpty else { return false }
+        
+        do {
+            let formatter = ISO8601DateFormatter()
+            var payloads: [[String: Any]] = []
+            
+            for score in scores {
+                let payload: [String: Any] = [
+                    "user_id": userId,
+                    "track_uri": score.trackURI,
+                    "score": max(-5, min(5, score.score)),
+                    "play_count": score.playCount,
+                    "last_played_at": formatter.string(from: score.lastPlayedAt),
+                    "updated_at": formatter.string(from: Date())
+                ]
+                payloads.append(payload)
+            }
+            
+            let url = URL(string: "\(baseURL)/rest/v1/track_scores")!
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue(anonKey, forHTTPHeaderField: "apikey")
+            request.setValue(getAuthHeader(), forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("return=minimal,resolution=merge-duplicates", forHTTPHeaderField: "Prefer")
+            request.httpBody = try JSONSerialization.data(withJSONObject: payloads)
+            request.timeoutInterval = 15
+            
+            let (_, response) = try await session.data(for: request)
+            
+            if let http = response as? HTTPURLResponse,
+               http.statusCode == 200 || http.statusCode == 201 {
+                print("✅ [Supabase] Batch upserted \(scores.count) track scores")
+                return true
+            }
+        } catch {
+            print("❌ [Supabase] Track scores upsert error: \(error.localizedDescription)")
+        }
+        return false
+    }
+    
+    struct TrackScoreRecord {
+        let trackURI: String
+        let score: Int
+        let playCount: Int
+        let lastPlayedAt: Date
     }
 }

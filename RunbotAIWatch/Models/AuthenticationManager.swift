@@ -11,10 +11,7 @@ class AuthenticationManager: NSObject, ObservableObject {
     private let supabaseURL: String
     private let supabaseKey: String
     private var sessionToken: String?
-    
-    // References to check workout status (prevent session expiration during runs)
-    weak var runTracker: RunTracker?
-    weak var healthManager: HealthManager?
+    private let keychainManager = KeychainManager.shared
     
     override init() {
         print("🔐 [AuthenticationManager] Initializing...")
@@ -32,13 +29,6 @@ class AuthenticationManager: NSObject, ObservableObject {
         super.init()
     }
     
-    /// Check if a workout is currently active (prevents session expiration during runs)
-    private func isWorkoutActive() -> Bool {
-        let runActive = runTracker?.isRunning ?? false
-        let healthActive = healthManager?.workoutStatus == .running || healthManager?.workoutStatus == .starting
-        return runActive || healthActive
-    }
-    
     func checkAuthentication() {
         print("🔐 [AuthenticationManager] checkAuthentication() called")
         
@@ -47,24 +37,18 @@ class AuthenticationManager: NSObject, ObservableObject {
            let user = try? JSONDecoder().decode(User.self, from: savedUser),
            let token = UserDefaults.standard.string(forKey: "sessionToken") {
             
-            // CRITICAL: Never expire session during active workouts (marathons can be 5-6 hours)
-            let workoutActive = isWorkoutActive()
-            if workoutActive {
-                print("🏃 [AuthenticationManager] Workout is active - skipping token expiration check (session must remain valid)")
-            } else {
-                // Check if token is expired (with smaller buffer - only clear if actually expired)
-                if isTokenExpired(token) {
-                    print("🔐 [AuthenticationManager] ⚠️ Saved token is expired - user needs to re-login")
-                    // Don't auto-logout on app launch - let user use app, will fail gracefully on API calls
-                    // Only clear if token is significantly expired (more than 1 hour past expiration)
-                    let expTime = getTokenExpirationTime(token)
-                    if let exp = expTime, Date().timeIntervalSince1970 > (exp + 3600) {
-                        print("🔐 [AuthenticationManager] Token expired more than 1 hour ago - clearing credentials")
-                        logout()
-                        return
-                    } else {
-                        print("🔐 [AuthenticationManager] Token recently expired - keeping session, will handle on API calls")
-                    }
+            // Check if token is expired (with smaller buffer - only clear if actually expired)
+            if isTokenExpired(token) {
+                print("🔐 [AuthenticationManager] ⚠️ Saved token is expired - user needs to re-login")
+                // Don't auto-logout on app launch - let user use app, will fail gracefully on API calls
+                // Only clear if token is significantly expired (more than 1 hour past expiration)
+                let expTime = getTokenExpirationTime(token)
+                if let exp = expTime, Date().timeIntervalSince1970 > (exp + 3600) {
+                    print("🔐 [AuthenticationManager] Token expired more than 1 hour ago - clearing credentials")
+                    logout()
+                    return
+                } else {
+                    print("🔐 [AuthenticationManager] Token recently expired - keeping session, will handle on API calls")
                 }
             }
             
@@ -72,7 +56,6 @@ class AuthenticationManager: NSObject, ObservableObject {
             self.currentUser = user
             self.sessionToken = token
             self.isAuthenticated = true
-            
             print("🔐 [AuthenticationManager] User authenticated successfully")
         } else {
             print("🔐 [AuthenticationManager] ❌ No saved user found - user needs to login")
@@ -181,6 +164,7 @@ class AuthenticationManager: NSObject, ObservableObject {
                     await MainActor.run {
                         self.currentUser = user
                         self.sessionToken = authResponse.access_token
+                        self.isAuthenticated = true
                         self.isLoading = false
                         self.errorMessage = nil
                         
@@ -191,9 +175,6 @@ class AuthenticationManager: NSObject, ObservableObject {
                         UserDefaults.standard.set(authResponse.access_token, forKey: "sessionToken")
                         print("🔐 [Auth] ✅ Session saved to UserDefaults")
                         print("🔐 [Auth] User ID: \(user.id) - available for all services")
-                        
-                        // Authenticate immediately
-                        self.isAuthenticated = true
                     }
                 } else {
                     let errorString = String(data: responseData, encoding: .utf8) ?? "Unknown error"
@@ -237,6 +218,7 @@ class AuthenticationManager: NSObject, ObservableObject {
                 await MainActor.run {
                     self.currentUser = user
                     self.sessionToken = authResponse.access_token
+                    self.isAuthenticated = true
                     self.isLoading = false
                     self.errorMessage = nil
                     
@@ -244,9 +226,6 @@ class AuthenticationManager: NSObject, ObservableObject {
                         UserDefaults.standard.set(userData, forKey: "currentUser")
                     }
                     UserDefaults.standard.set(authResponse.access_token, forKey: "sessionToken")
-                    
-                    // Authenticate immediately
-                    self.isAuthenticated = true
                 }
             }
         } catch {

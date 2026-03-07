@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		26C173CC2EF5DCC700761EE4 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = IOS4 /* Assets.xcassets */; };
+		2689880F2EEDCDCC00096C14 /* Info.plist in Resources */ = {isa = PBXBuildFile; fileRef = IOS2 /* Info.plist */; };
 		26CE3E7A2EE6391F00CA9CB9 /* RunbotAIWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 261B1A892EE30D150041BB64 /* RunbotAIWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		AA30RES /* Config.plist in Resources */ = {isa = PBXBuildFile; fileRef = AA30 /* Config.plist */; };
 		AICOACHGIF1 /* RunbotAIWatch/ai_coach.gif in Resources */ = {isa = PBXBuildFile; fileRef = AICOACHGIF2 /* RunbotAIWatch/ai_coach.gif */; };
@@ -83,7 +83,10 @@
 				Models/RAGPerformanceAnalyzer.swift,
 				Models/RunDataModels.swift,
 				Models/RunTracker.swift,
+				Models/RunnerStateAnalyzer.swift,
 				Models/SessionCleanupManager.swift,
+				Models/SpotifyManager.swift,
+				Models/SpotifyMoodController.swift,
 				Models/SupabaseManager.swift,
 				Models/UserPreferences.swift,
 				Models/VoiceManager.swift,
@@ -92,7 +95,9 @@
 				Views/AuthenticationView.swift,
 				Views/ConnectionsView.swift,
 				Views/ContentView.swift,
+				Views/DevicesConfigView.swift,
 				Views/MainRunbotView.swift,
+				Views/RunEmotionView.swift,
 				Views/RunningView.swift,
 				Views/SettingsView.swift,
 			);
@@ -102,6 +107,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				AppStub.swift,
+				Assets.xcassets,
 			);
 			target = EXT73646956WID9DU92QF9K4KU1B /* RunbotAIWatchExtension */;
 		};
@@ -331,7 +337,6 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				26C173CC2EF5DCC700761EE4 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

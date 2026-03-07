@@ -61,6 +61,40 @@ class WatchConnectivityManager: NSObject, ObservableObject {
         sendMessage(message)
     }
     
+    /// Send Spotify auth request to the iOS Wrapper.
+    /// Only ONE channel is used at a time to avoid duplicate deliveries that would cancel an
+    /// active ASWebAuthenticationSession (causing the Spotify popup to disappear).
+    ///
+    /// - Reachable: sendMessage only (iOS Wrapper is in foreground, popup can present immediately).
+    /// - Not reachable: applicationContext only (picked up when user opens iOS Wrapper).
+    /// - transferUserInfo intentionally excluded: delivers to backgrounded apps where
+    ///   ASWebAuthenticationSession cannot present, causing immediate "Login error".
+    func sendSpotifyAuthRequest(url: String, codeVerifier: String, redirectURI: String, clientId: String) {
+        let payload: [String: Any] = [
+            "command": "spotifyAuthRequest",
+            "authURL": url,
+            "codeVerifier": codeVerifier,
+            "redirectURI": redirectURI,
+            "clientId": clientId,
+            "timestamp": Date().timeIntervalSince1970  // iOS Wrapper uses this to reject stale deliveries
+        ]
+
+        if session?.isReachable == true {
+            session?.sendMessage(payload, replyHandler: nil) { error in
+                print("⚠️ [WatchConnectivity] spotifyAuthRequest sendMessage failed: \(error.localizedDescription)")
+            }
+            print("📱 [WatchConnectivity] Spotify auth request sent via sendMessage")
+
+            // Clear applicationContext so no stale spotifyAuthRequest is delivered
+            // the next time the iOS Wrapper opens (which would cancel an active OAuth popup).
+            try? session?.updateApplicationContext(["command": "cleared"])
+        } else {
+            // Not reachable — store for when the user opens the iOS Wrapper.
+            try? session?.updateApplicationContext(payload)
+            print("📱 [WatchConnectivity] Spotify auth request stored in applicationContext (not reachable)")
+        }
+    }
+    
     private func sendMessage(_ message: [String: Any]) {
         guard let session = session else { return }
         
@@ -103,8 +137,15 @@ class WatchConnectivityManager: NSObject, ObservableObject {
                 userInfo: message
             )
             
+        case "spotifyTokens":
+            print("📱 [WatchConnectivity] Received Spotify tokens from iPhone")
+            NotificationCenter.default.post(
+                name: NSNotification.Name("SpotifyTokensFromPhone"),
+                object: nil,
+                userInfo: message
+            )
+            
         case "syncPreferences":
-            // iOS sending user preferences
             NotificationCenter.default.post(
                 name: NSNotification.Name("WatchConnectivitySyncPreferences"),
                 object: nil,
@@ -167,6 +208,12 @@ extension WatchConnectivityManager: WCSessionDelegate {
         handleMessage(applicationContext)
     }
     
+    func session(_ session: WCSession, didReceiveUserInfo userInfo: [String: Any] = [:]) {
+        DispatchQueue.main.async {
+            self.lastReceivedMessage = userInfo
+        }
+        handleMessage(userInfo)
+    }
 }
 
 

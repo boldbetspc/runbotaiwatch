@@ -244,13 +244,18 @@ enum SupportedLanguage: String, Codable, CaseIterable {
 // MARK: - Running Stats Update
 struct RunningStatsUpdate {
     let distance: Double
-    let pace: Double
+    let pace: Double        // Real-time pace (min/km) from last ~10s of GPS — 0 if not enough data
+    let averagePace: Double  // Average pace (min/km) = total elapsed time / total distance
     let avgSpeed: Double
     let calories: Double
     let elevation: Double
     let maxSpeed: Double
     let minSpeed: Double
     let currentLocation: CLLocation?
+    
+    /// Best available pace: real-time if GPS data is sufficient, otherwise average.
+    /// Use this when you need a single reliable pace number (e.g. coaching, analytics, saving).
+    var effectivePace: Double { pace > 0 ? pace : averagePace }
 }
 
 // MARK: - Run Mode

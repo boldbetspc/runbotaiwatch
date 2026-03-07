@@ -236,7 +236,7 @@ class CoachStrategyRAGManager {
         }
         
         return PerformanceAnalysis(
-            current_pace: stats.pace,
+            current_pace: stats.effectivePace,
             target_pace: preferences.targetPaceMinPerKm,
             current_distance: stats.distance,
             target_distance: preferences.targetDistanceMeters,
@@ -256,7 +256,7 @@ class CoachStrategyRAGManager {
             hr_variation_analysis: ragAnalysis.hrVariationAnalysis,
             injury_risk_signals: ragAnalysis.injuryRiskSignals,
             adaptive_microstrategy: ragAnalysis.adaptiveMicrostrategy,
-            pace_deviation: abs(stats.pace - preferences.targetPaceMinPerKm) / preferences.targetPaceMinPerKm * 100,
+            pace_deviation: abs(stats.effectivePace - preferences.targetPaceMinPerKm) / preferences.targetPaceMinPerKm * 100,
             completed_intervals: intervals.count,
             interval_paces: intervalPaces
         )

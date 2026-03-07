@@ -223,6 +223,8 @@ struct MainRunbotView: View {
     @StateObject private var aiCoach = AICoachManager()
     @StateObject private var voiceManager = VoiceManager()
     @StateObject private var networkMonitor = NetworkMonitor()
+    @StateObject private var moodController = SpotifyMoodController()
+    private let spotifyManager = SpotifyManager.shared
     
     @State private var carouselSelection: CarouselPage = .startStop
     @State private var wavePhase: Double = 0
@@ -232,6 +234,7 @@ struct MainRunbotView: View {
     @State private var showSaveSuccess = false
     @State private var saveMessage = ""
     @State private var carouselTimer: Timer?
+    @State private var spotifyFeedTimer: Timer?
     // Train mode removed - only run mode supported
     private let runMode: RunMode = .run
     
@@ -239,17 +242,19 @@ struct MainRunbotView: View {
         case startStop
         case aiCoach          // AI Coach FIRST after start
         case aiFeedbackText   // AI Feedback text page (shown after TTS)
+        case runEmotion       // Run Emotion (Spotify mood music)
         case runStats         // Combined stats
         case heartZone
         case heartZoneChart   // New page for pie chart
         case energyPulse      // ECG-style pace visualization
         case splitIntervals   // Split intervals timeline
         case connections      // Network & Workout connections
+        case spotifyConfig    // Spotify device settings
         case settings
     }
     
     private var carouselPages: [CarouselPage] {
-        [.startStop, .aiCoach, .aiFeedbackText, .runStats, .heartZone, .heartZoneChart, .energyPulse, .splitIntervals, .connections, .settings]
+        [.startStop, .aiCoach, .aiFeedbackText, .runEmotion, .runStats, .heartZone, .heartZoneChart, .energyPulse, .splitIntervals, .connections, .spotifyConfig, .settings]
     }
     
     var body: some View {
@@ -300,7 +305,11 @@ struct MainRunbotView: View {
             startWaveAnimation()
             // Wire Supabase manager to RunTracker for continuous saves
             runTracker.supabaseManager = supabaseManager
-            
+            // When TTS finishes, stop coach animation so it doesn't stay stuck
+            voiceManager.onSpeechFinished = { [aiCoach] in
+                DispatchQueue.main.async { aiCoach.stopCoaching() }
+            }
+
             // Initialize Supabase session if user is authenticated
             if authManager.isAuthenticated, let userId = authManager.currentUser?.id {
                 print("🔵 User authenticated, initializing Supabase session")
@@ -318,25 +327,10 @@ struct MainRunbotView: View {
             }
         }
         // Train mode removed - no mode changes
-        // Trigger scheduled coaching on first stats update and distance milestones
-        // Enhanced with RAG-driven closed-loop performance analysis
+        // Trigger interval coaching on distance milestones only.
+        // Start-of-run coaching is triggered by the Start button (0.5s delay) — do NOT trigger here
+        // or it races and blocks startOfRunCoaching (guard !isCoaching).
         .onReceive(runTracker.$statsUpdate.compactMap { $0 }) { stats in
-            // Kickoff once at run start when stats first arrive
-            if isRunning && !didTriggerInitialCoaching {
-                // Train mode removed - always use run mode
-                aiCoach.startScheduledCoaching(
-                    for: stats,
-                    with: userPreferences.settings,
-                    voiceManager: voiceManager,
-                    runSessionId: runTracker.currentSession?.id,
-                    isTrainMode: false,
-                    shadowData: nil,
-                    healthManager: healthManager,
-                    intervals: runTracker.currentSession?.intervals ?? [],
-                    runStartTime: runTracker.currentSession?.startTime
-                )
-                didTriggerInitialCoaching = true
-            }
             let km = Int(stats.distance / 1000.0)
             let freq = userPreferences.settings.feedbackFrequency
             if freq > 0, km > lastCoachingKm, km % freq == 0 {
@@ -388,6 +382,63 @@ struct MainRunbotView: View {
                 stopCarouselTimer()
             }
         }
+        // Voice AI guardrail: when 60s coaching timer fires, stop TTS (auto cut-off)
+        .onReceive(NotificationCenter.default.publisher(for: .coachingTimeLimitReached)) { _ in
+            voiceManager.stopSpeaking()
+        }
+        // Volume ducking: duck Spotify when AI speaks, restore when done
+        .onChange(of: voiceManager.isSpeaking) { _, speaking in
+            if spotifyManager.isConnected && spotifyManager.isPlaying {
+                Task {
+                    if speaking {
+                        await spotifyManager.duckVolume()
+                    } else {
+                        // Small delay before restoring: lets the last word of coaching finish
+                        // before Spotify volume rushes back in, preventing audio clashing.
+                        try? await Task.sleep(nanoseconds: 800_000_000)
+                        // Only restore if still not speaking (a new coaching might have started)
+                        if !voiceManager.isSpeaking {
+                            await spotifyManager.restoreVolume()
+                        }
+                    }
+                }
+            }
+            // Notify mood controller of AI feedback for cooldown
+            if speaking {
+                moodController.notifyAIFeedbackScheduled()
+            }
+        }
+        // Mood switch voice announcement
+        .onReceive(NotificationCenter.default.publisher(for: .moodSwitched)) { notification in
+            guard isRunning,
+                  let info = notification.userInfo,
+                  let newMood = info["newMood"] as? String,
+                  let reason = info["reason"] as? String,
+                  let energyWord = info["energyWord"] as? String else { return }
+            
+            let trackName = info["trackName"] as? String ?? "the next track"
+            
+            // Skip if AI feedback expected within 60s
+            if moodController.isAIFeedbackExpectedSoon() { return }
+            // Skip if AI is currently speaking
+            if voiceManager.isSpeaking || aiCoach.isCoaching { return }
+            
+            let announcement = "\(reason). Switching to \(newMood). Let's play \(trackName) \(energyWord)."
+            // Max 15s, no volume ducking (music continues)
+            let trimmed = String(announcement.prefix(200))
+            voiceManager.speak(trimmed, using: userPreferences.settings.voiceAIModel == .openai ? .gpt4 : .samantha, rate: 0.52)
+        }
+        // Load Spotify device settings on appear
+        .task {
+            if let userId = authManager.currentUser?.id {
+                if let settings = await supabaseManager.loadSpotifyDeviceSettings(userId: userId) {
+                    await MainActor.run {
+                        spotifyManager.spotifyEnabled = settings.spotifyEnabled
+                        spotifyManager.masterPlaylistId = settings.masterPlaylistId
+                    }
+                }
+            }
+        }
     }
     
     @ViewBuilder
@@ -399,6 +450,8 @@ struct MainRunbotView: View {
             aiCoachPageWithGIF()
         case .aiFeedbackText:
             aiFeedbackTextPage()
+        case .runEmotion:
+            RunEmotionView(moodController: moodController, spotifyManager: spotifyManager)
         case .runStats:
             combinedStatsPage()
         case .heartZone:
@@ -412,6 +465,10 @@ struct MainRunbotView: View {
         case .connections:
             ConnectionsView(networkMonitor: networkMonitor)
                 .environmentObject(healthManager)
+        case .spotifyConfig:
+            DevicesConfigView(spotifyManager: spotifyManager)
+                .environmentObject(supabaseManager)
+                .environmentObject(authManager)
         case .settings:
             settingsPage()
         }
@@ -452,6 +509,9 @@ struct MainRunbotView: View {
                         print("🟢 [MainRunbotView] HealthManager: available")
                         print("🟢 [MainRunbotView] RunTracker: available")
                         
+                        // Reset coach state from any previous run so start-of-run and interval feedback can run again
+                        aiCoach.stopCoaching()
+                        
                         // Start run tracker (creates session, starts location, starts HR monitoring)
                         runTracker.startRun(mode: .run, shadowData: nil)
                         
@@ -475,6 +535,7 @@ struct MainRunbotView: View {
                         let stats = runTracker.getCurrentStats() ?? RunningStatsUpdate(
                             distance: 0,
                             pace: 0,
+                            averagePace: 0,
                             avgSpeed: 0,
                             calories: 0,
                             elevation: 0,
@@ -483,10 +544,8 @@ struct MainRunbotView: View {
                             currentLocation: nil
                         )
                         didTriggerInitialCoaching = true
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
-                            // START-OF-RUN COACHING (personalized welcome)
-                            // This also initializes RAG cache with preferences, language, Mem0 for the entire run
-                            // NOW INCLUDES RAG PERFORMANCE ANALYSIS + ADAPTIVE COACH RAG
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                            // START-OF-RUN COACHING (personalized welcome) — only trigger here, not from first stats
                             aiCoach.startOfRunCoaching(
                                 for: stats,
                                 with: userPreferences.settings,
@@ -499,6 +558,13 @@ struct MainRunbotView: View {
                             
                             // Note: Interval coaching is triggered by distance milestones
                             // See onReceive(runTracker.$statsUpdate) below (every N km based on feedbackFrequency)
+                            
+                            // Start Spotify 3s after run start so user can have app open; Run Emotion starts playback
+                            if spotifyManager.isConnected && spotifyManager.spotifyEnabled {
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
+                                    startRunEmotion()
+                                }
+                            }
                         }
                         
                         print("🟢🟢🟢 [MainRunbotView] ========== START RUN COMPLETE ==========")
@@ -747,9 +813,9 @@ struct MainRunbotView: View {
         let distance = runTracker.statsUpdate?.distance ?? 0
         let duration = runTracker.currentSession?.duration ?? 0
         let currentPace = runTracker.statsUpdate?.pace ?? 0
-        let avgPace = paceFromAvgSpeed(runTracker.statsUpdate?.avgSpeed ?? 0)
+        let avgPace = runTracker.statsUpdate?.averagePace ?? 0
         let targetPace = userPreferences.settings.targetPaceMinPerKm
-        let currentPaceClr = paceStatusColor(currentPace, target: targetPace)
+        let currentPaceClr = paceStatusColor(currentPace > 0 ? currentPace : avgPace, target: targetPace)
         let avgPaceClr = paceStatusColor(avgPace, target: targetPace)
         
         // Calculate pace difference for dynamic effects
@@ -783,17 +849,19 @@ struct MainRunbotView: View {
                         .stroke(currentPaceClr.opacity(0.5), lineWidth: 2.5)
                         .frame(width: 80, height: 80)
                     
-                    VStack(spacing: 2) {
-                        Text(formatPace(currentPace))
+                    VStack(spacing: 1) {
+                        Text(formatPace(currentPace > 0 ? currentPace : avgPace))
                             .font(.system(size: 32, weight: .black, design: .rounded))
                             .foregroundColor(.white)
                             .shadow(color: .black.opacity(0.5), radius: 2, x: 1, y: 1)
                             .shadow(color: currentPaceClr.opacity(0.4), radius: 4)
                         
                         Text("PACE RT")
-                            .font(.system(size: 17, weight: .bold, design: .rounded))
+                            .font(.system(size: 14, weight: .bold, design: .rounded))
                             .foregroundColor(.white.opacity(0.85))
-                            .tracking(0.5)
+                        Text("min/km")
+                            .font(.system(size: 8, weight: .medium))
+                            .foregroundColor(.white.opacity(0.5))
                     }
                 }
                 .frame(width: 85, height: 85)
@@ -821,7 +889,7 @@ struct MainRunbotView: View {
                         .stroke(avgPaceClr.opacity(0.5), lineWidth: 2.5)
                         .frame(width: 80, height: 80)
                     
-                    VStack(spacing: 2) {
+                    VStack(spacing: 1) {
                         Text(formatPace(avgPace))
                             .font(.system(size: 32, weight: .black, design: .rounded))
                             .foregroundColor(.white)
@@ -829,9 +897,11 @@ struct MainRunbotView: View {
                             .shadow(color: avgPaceClr.opacity(0.4), radius: 4)
                         
                         Text("PACE AV")
-                            .font(.system(size: 17, weight: .bold, design: .rounded))
+                            .font(.system(size: 14, weight: .bold, design: .rounded))
                             .foregroundColor(.white.opacity(0.85))
-                            .tracking(0.5)
+                        Text("min/km")
+                            .font(.system(size: 8, weight: .medium))
+                            .foregroundColor(.white.opacity(0.5))
                     }
                 }
                 .frame(width: 85, height: 85)
@@ -1287,7 +1357,7 @@ struct MainRunbotView: View {
                 // Waveform visualization - takes most of the space
                     EnhancedEnergyWaveform(
                         paceHistory: runTracker.paceHistory,
-                        currentPace: runTracker.statsUpdate?.pace ?? 0,
+                        currentPace: runTracker.statsUpdate?.effectivePace ?? 0,
                         targetPace: userPreferences.settings.targetPaceMinPerKm,
                     phase: wavePhase
                 )
@@ -1301,7 +1371,7 @@ struct MainRunbotView: View {
                                 Text("PACE")
                             .font(.system(size: 15, weight: .bold))
                             .foregroundColor(.white.opacity(0.5))
-                                Text(formatPace(runTracker.statsUpdate?.pace ?? 0))
+                                Text(formatPace(runTracker.statsUpdate?.effectivePace ?? 0))
                             .font(.system(size: 18, weight: .bold, design: .monospaced))
                             .foregroundColor(.rbAccent)
                     }
@@ -1483,8 +1553,8 @@ struct MainRunbotView: View {
                         
                     case .paces:
                         PaceDialView(
-                            currentPace: runTracker.statsUpdate?.pace ?? 0,
-                            avgPace: paceFromAvgSpeed(runTracker.statsUpdate?.avgSpeed ?? 0),
+                            currentPace: runTracker.statsUpdate?.effectivePace ?? 0,
+                            avgPace: runTracker.statsUpdate?.averagePace ?? 0,
                             targetPace: userPreferences.settings.targetPaceMinPerKm
                         )
                     }
@@ -1556,6 +1626,118 @@ struct MainRunbotView: View {
         // Move to next page, wrapping around
         let nextIndex = (currentIndex + 1) % pagesForAutoSwitch.count
         carouselSelection = pagesForAutoSwitch[nextIndex]
+    }
+    
+    // MARK: - Run Emotion (Spotify Mood Music) Integration
+    
+    private func startRunEmotion() {
+        guard spotifyManager.isConnected && spotifyManager.spotifyEnabled else { return }
+        print("🎵 [MainRunbotView] Starting Run Emotion...")
+        
+        // Load track scores from Supabase
+        let userId = authManager.currentUser?.id ?? "watch_user"
+        Task {
+            let scores = await supabaseManager.loadTrackScores(userId: userId)
+            let feedbacks = scores.map { record in
+                SpotifyMoodController.TrackBiofeedback(
+                    trackURI: record.trackURI,
+                    score: record.score,
+                    playCount: record.playCount,
+                    lastPlayedAt: record.lastPlayedAt
+                )
+            }
+            await MainActor.run {
+                moodController.loadScores(feedbacks)
+            }
+        }
+        
+        moodController.start()
+        
+        // Start Spotify playback with retries (device/playlist may need a moment)
+        Task {
+            var ok = await spotifyManager.startPlayback()
+            if !ok {
+                print("⚠️ [RunEmotion] First playback failed — retry in 3s")
+                try? await Task.sleep(nanoseconds: 3_000_000_000)
+                ok = await spotifyManager.startPlayback()
+            }
+            if !ok {
+                print("⚠️ [RunEmotion] Second attempt failed — retry in 5s")
+                try? await Task.sleep(nanoseconds: 5_000_000_000)
+                ok = await spotifyManager.startPlayback()
+            }
+            if !ok {
+                print("❌ [RunEmotion] Playback failed after 3 attempts. Open Spotify on a device and try again.")
+            }
+        }
+        
+        // Feed stats every 5s
+        spotifyFeedTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: true) { [self] _ in
+            guard let stats = runTracker.getCurrentStats(),
+                  let session = runTracker.currentSession else { return }
+            
+            let targetPace = userPreferences.settings.targetPaceMinPerKm
+            let elapsedTime = session.elapsedTime
+            let expectedDistance = (elapsedTime / 60.0 / targetPace) * 1000.0
+            
+            let intervalDelta: Double? = {
+                guard let lastInterval = session.intervals.last else { return nil }
+                return lastInterval.paceMinPerKm - targetPace
+            }()
+            
+            moodController.feedStats(
+                currentPace: stats.effectivePace,
+                targetPace: targetPace,
+                currentHR: healthManager.currentHeartRate,
+                targetHR: nil,
+                duration: elapsedTime,
+                actualDistance: stats.distance,
+                expectedDistance: expectedDistance,
+                intervalSplitDelta: intervalDelta,
+                cadence: nil
+            )
+        }
+        if let timer = spotifyFeedTimer {
+            RunLoop.current.add(timer, forMode: .common)
+        }
+        
+        print("✅ [MainRunbotView] Run Emotion started with 5s stats feed")
+    }
+    
+    private func stopRunEmotion() {
+        spotifyFeedTimer?.invalidate()
+        spotifyFeedTimer = nil
+        moodController.stop()
+        
+        Task {
+            await spotifyManager.stopPlayback()
+        }
+        
+        // Post-run: batch upsert track scores to Supabase
+        let userId = authManager.currentUser?.id ?? "watch_user"
+        let updatedScores = moodController.getUpdatedScores()
+        if !updatedScores.isEmpty {
+            let records = updatedScores.map { feedback in
+                SupabaseManager.TrackScoreRecord(
+                    trackURI: feedback.trackURI,
+                    score: feedback.score,
+                    playCount: feedback.playCount,
+                    lastPlayedAt: feedback.lastPlayedAt
+                )
+            }
+            Task {
+                _ = await supabaseManager.batchUpsertTrackScores(userId: userId, scores: records)
+                print("✅ [MainRunbotView] Post-run track scores synced (\(records.count) tracks)")
+            }
+            
+            // Store music-performance correlation in Coaching DNA
+            let summary = moodController.generateCorrelationSummary()
+            Mem0Manager.shared.add(userId: userId, text: summary, category: "music_performance", metadata: ["type": "run_emotion_summary"])
+            print("🎵 [MainRunbotView] Music-performance correlation stored in Coaching DNA")
+        }
+        
+        moodController.reset()
+        print("🎵 [MainRunbotView] Run Emotion stopped and synced")
     }
     
     private func paceFromAvgSpeed(_ avgSpeedKmh: Double) -> Double {
@@ -1767,7 +1949,8 @@ struct MainRunbotView: View {
         // GUARDRAIL 1: Stop all ongoing coaching/voice immediately
         aiCoach.stopCoaching()
         voiceManager.stopSpeaking()
-        print("✅ [MainRunbotView] Ongoing AI sessions terminated")
+        stopRunEmotion()
+        print("✅ [MainRunbotView] Ongoing AI sessions and Run Emotion terminated")
         
         // CRITICAL: Capture session and stats AFTER final update, BEFORE stopping tracker
         // This ensures we have the absolute latest distance, pace, HR, etc.

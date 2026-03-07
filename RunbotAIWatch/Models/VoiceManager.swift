@@ -53,11 +53,13 @@ final class VoiceManager: NSObject, ObservableObject {
     /// Speak text with specified voice option
     func speak(_ text: String, using voiceOption: VoiceOption, rate: Float = 0.50) {
         stopSpeaking()
-        
+
         currentText = text
         isSpeaking = true
-        
-        // Play haptic on speech start
+
+        // Activate audio session right before speaking (not at idle)
+        activateAudioSession()
+
         playHaptic(.click)
         
         print("🎤 [Voice] ========== SPEAK REQUEST ==========")
@@ -86,29 +88,47 @@ final class VoiceManager: NSObject, ObservableObject {
         }
     }
     
-    /// Stop current speech
+    /// Stop current speech and fully release the audio session so .duckOthers lifts immediately.
     func stopSpeaking() {
         synthesizer.stopSpeaking(at: .immediate)
         audioPlayer?.stop()
         audioPlayer = nil
         isSpeaking = false
         currentText = ""
+        // Release audio session so .duckOthers disengages and Spotify can restore at full volume.
+        // AVAudioPlayer.stop() and AVSpeechSynthesizer.stopSpeaking() do NOT trigger delegate
+        // callbacks that call speechFinished(), so we must deactivate here explicitly.
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
     
     
     // MARK: - Audio Session Configuration
-    
+
     private func configureAudioSession() {
         do {
             let audioSession = AVAudioSession.sharedInstance()
-            
-            // watchOS optimized configuration
+            // .playback + .voicePrompt: high priority, ducksOthers, plays over silent switch.
+            // .duckOthers: system-level ducking of any on-device audio (e.g. local sounds).
+            // Spotify on iPhone is ducked via the Spotify API separately (SpotifyManager.duckVolume).
             try audioSession.setCategory(.playback, mode: .voicePrompt, options: [.duckOthers])
-            try audioSession.setActive(true, options: .notifyOthersOnDeactivation)
-            
-            print("🔊 [Voice] ✅ Audio session configured")
+            // Do NOT activate here — activate only right before speaking to avoid
+            // keeping other audio ducked during idle time between coaching segments.
+            print("🔊 [Voice] ✅ Audio session category configured (not yet active)")
         } catch {
-            print("🔊 [Voice] ❌ Audio session error: \(error.localizedDescription)")
+            print("🔊 [Voice] ❌ Audio session config error: \(error.localizedDescription)")
+        }
+    }
+
+    /// Activate audio session immediately before speaking.
+    /// Called just before TTS starts so .duckOthers engages only during coaching, not at idle.
+    private func activateAudioSession() {
+        do {
+            let audioSession = AVAudioSession.sharedInstance()
+            try audioSession.setCategory(.playback, mode: .voicePrompt, options: [.duckOthers])
+            try audioSession.setActive(true)
+            print("🔊 [Voice] Audio session activated for speech")
+        } catch {
+            print("🔊 [Voice] ⚠️ Could not activate audio session: \(error.localizedDescription)")
         }
     }
     
@@ -194,12 +214,12 @@ final class VoiceManager: NSObject, ObservableObject {
         // Edge function expects endpoint='audio/speech' to identify TTS request
         // Edge function defaults: model='tts-1-hd', voice='nova', response_format='mp3', speed=1.0
         let body: [String: Any] = [
-            "endpoint": "audio/speech", // Required: tells edge function this is TTS, not chat completion
-            "input": text, // Required: text to convert to speech
-            "model": "tts-1", // Optional: defaults to 'tts-1-hd' if not provided
-            "voice": "nova", // Optional: defaults to 'nova' if not provided
-            "response_format": "mp3", // Optional: defaults to 'mp3' if not provided
-            "speed": 1.0 // Optional: defaults to 1.0 if not provided
+            "endpoint": "audio/speech",
+            "input": text,
+            "model": "tts-1-hd",  // HD model for highest quality coaching audio
+            "voice": "nova",
+            "response_format": "mp3",
+            "speed": 1.0
         ]
         print("🎙️ [Voice] Request body (matching edge function format):")
         print("   - endpoint: audio/speech (TTS request)")
@@ -258,16 +278,21 @@ final class VoiceManager: NSObject, ObservableObject {
     private func playAudioData(_ data: Data) async {
         await MainActor.run {
             do {
-                print("🎙️ [Voice] Creating AVAudioPlayer from OpenAI TTS data...")
+                // Re-activate audio session — may have been deactivated during the network round-trip
+                // for OpenAI TTS. Without this, the MP3 plays at very low volume or is routed wrong.
+                try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .voicePrompt, options: [.duckOthers])
+                try? AVAudioSession.sharedInstance().setActive(true)
+
                 audioPlayer = try AVAudioPlayer(data: data, fileTypeHint: AVFileType.mp3.rawValue)
                 audioPlayer?.delegate = self
                 audioPlayer?.volume = 1.0
-                print("🎙️ [Voice] Starting playback of OpenAI TTS audio...")
+                audioPlayer?.enableRate = true
+                audioPlayer?.rate = 1.0
+                audioPlayer?.prepareToPlay()
                 audioPlayer?.play()
-                print("🎙️ [Voice] ✅✅✅ OpenAI GPT-4 Mini TTS audio is now playing ✅✅✅")
+                print("🎙️ [Voice] OpenAI TTS HD playing (volume 1.0)")
             } catch {
                 print("❌ [Voice] Audio playback error: \(error.localizedDescription)")
-                print("❌ [Voice] Error type: \(type(of: error))")
                 isSpeaking = false
             }
         }
@@ -291,7 +316,8 @@ final class VoiceManager: NSObject, ObservableObject {
     private func speechFinished() {
         isSpeaking = false
         currentText = ""
-        // Call callback on main thread to avoid blocking
+        // Deactivate audio session so .duckOthers releases and Spotify volume restores
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         DispatchQueue.main.async {
             self.onSpeechFinished?()
         }
@@ -322,6 +348,7 @@ extension VoiceManager: AVSpeechSynthesizerDelegate {
             self.isSpeaking = false
             self.currentText = ""
         }
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         print("⏹️ [Voice] Speech cancelled")
     }
 }

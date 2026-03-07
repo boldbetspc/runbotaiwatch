@@ -38,6 +38,19 @@
 	<true/>
 	<key>CFBundleIconName</key>
 	<string>AppIcon</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.rb.runbot.spotify-callback</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>runbot</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>
 

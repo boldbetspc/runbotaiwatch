@@ -18,50 +18,45 @@ struct AuthenticationView: View {
     
     // MARK: - Email/Password View
     private var emailPasswordView: some View {
-        VStack(spacing: 10) {
-            // Title (smaller)
+        VStack(spacing: 12) {
+            // Title
             Text("Sign In")
-                .font(.system(size: 14, weight: .semibold))
+                .font(.headline)
                 .foregroundColor(.white)
-                .padding(.top, 6)
+                .padding(.top, 8)
             
-            // Email Input (smaller)
+            // Email Input
             TextField("Email", text: $email)
                 .textContentType(.emailAddress)
-                .font(.system(size: 13))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
+                .padding(8)
                 .background(Color.gray.opacity(0.2))
-                .cornerRadius(6)
+                .cornerRadius(8)
             
-            // Password Input (smaller)
+            // Password Input
             SecureField("Password", text: $password)
                 .textContentType(.password)
-                .font(.system(size: 13))
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
+                .padding(8)
                 .background(Color.gray.opacity(0.2))
-                .cornerRadius(6)
+                .cornerRadius(8)
             
-            // Auth Button (smaller)
+            // Auth Button
             Button(action: authAction) {
                 HStack {
                     if authManager.isLoading {
                         ProgressView()
                             .progressViewStyle(CircularProgressViewStyle(tint: .black))
-                            .scaleEffect(0.7)
+                            .scaleEffect(0.8)
                     }
                     Text(authManager.isLoading ? "Signing In..." : "Sign In")
-                        .font(.system(size: 13, weight: .semibold))
                 }
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
+                .padding(.vertical, 12)
                 .background(canLogin ? Color.cyan : Color.gray)
                 .foregroundColor(.black)
-                .cornerRadius(8)
+                .cornerRadius(10)
             }
             .disabled(!canLogin)
-            .padding(.top, 6)
+            .padding(.top, 8)
             
             // Error Message
             if let error = authManager.errorMessage {
