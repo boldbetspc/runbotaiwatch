@@ -165,7 +165,7 @@ class HealthManager: NSObject, ObservableObject {
     private var hasRequestedAuthorization = false
     
     // OSLog for better visibility in system logs (works even with transport errors)
-    private let logger = OSLog(subsystem: "com.runbotai.ioswrapper.watchapp", category: "HealthManager")
+    private let logger = OSLog(subsystem: "com.rb.runbot.watchapp", category: "HealthManager")
     
     override init() {
         super.init()

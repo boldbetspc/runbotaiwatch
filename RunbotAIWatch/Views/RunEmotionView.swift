@@ -6,6 +6,7 @@ import SwiftUI
 struct RunEmotionView: View {
     @ObservedObject var moodController: SpotifyMoodController
     @ObservedObject var spotifyManager: SpotifyManager
+    @ObservedObject var appleMusicManager: AppleMusicManager
 
     @State private var orbPhase: Double = 0
     @State private var ringRotation: Double = 0
@@ -14,7 +15,22 @@ struct RunEmotionView: View {
     @State private var animTimer: Timer?
 
     private var mood: SpotifyMoodController.Mood { moodController.currentMood }
-    private var isPlaying: Bool { spotifyManager.isPlaying }
+
+    private var isPlaying: Bool {
+        RunEmotionMusicSource.current == .spotify ? spotifyManager.isPlaying : appleMusicManager.isPlaying
+    }
+
+    private var currentTrackName: String {
+        RunEmotionMusicSource.current == .spotify ? spotifyManager.currentTrackName : appleMusicManager.currentTrackName
+    }
+
+    private var currentTrackArtist: String {
+        RunEmotionMusicSource.current == .spotify ? spotifyManager.currentTrackArtist : appleMusicManager.currentTrackArtist
+    }
+
+    private var isConnected: Bool {
+        RunEmotionMusicSource.current == .spotify ? spotifyManager.isConnected : appleMusicManager.isConnected
+    }
 
     var body: some View {
         ZStack {
@@ -142,9 +158,9 @@ struct RunEmotionView: View {
 
     private var trackCard: some View {
         Group {
-            if isPlaying && !spotifyManager.currentTrackName.isEmpty {
+            if isPlaying && !currentTrackName.isEmpty {
                 playingCard
-            } else if !spotifyManager.isConnected {
+            } else if !isConnected {
                 disconnectedCard
             } else {
                 waitingCard
@@ -168,14 +184,14 @@ struct RunEmotionView: View {
             .frame(width: 14, height: 16)
 
             VStack(alignment: .leading, spacing: 2) {
-                Text(spotifyManager.currentTrackName)
+                Text(currentTrackName)
                     .font(.system(size: 13, weight: .bold))
                     .foregroundColor(.white)
                     .lineLimit(1)
                     .truncationMode(.tail)
 
-                if !spotifyManager.currentTrackArtist.isEmpty {
-                    Text(spotifyManager.currentTrackArtist)
+                if !currentTrackArtist.isEmpty {
+                    Text(currentTrackArtist)
                         .font(.system(size: 10, weight: .medium))
                         .foregroundColor(.white.opacity(0.55))
                         .lineLimit(1)
@@ -198,7 +214,7 @@ struct RunEmotionView: View {
             Image(systemName: "music.note.slash")
                 .font(.system(size: 16))
                 .foregroundColor(.white.opacity(0.5))
-            Text("Spotify not connected")
+            Text("\(RunEmotionMusicSource.current.displayName) not connected")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(.white.opacity(0.5))
         }

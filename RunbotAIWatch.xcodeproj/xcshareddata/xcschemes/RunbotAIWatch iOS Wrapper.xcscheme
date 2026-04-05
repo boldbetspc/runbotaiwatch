@@ -15,6 +15,20 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
+               BlueprintIdentifier = "261B1A882EE30D150041BB64"
+               BuildableName = "RunbotAIWatch.app"
+               BlueprintName = "RunbotAIWatch"
+               ReferencedContainer = "container:RunbotAIWatch.xcodeproj">
+            </BuildableReference>
+         </BuildActionEntry>
+         <BuildActionEntry
+            buildForTesting = "YES"
+            buildForRunning = "YES"
+            buildForProfiling = "YES"
+            buildForArchiving = "YES"
+            buildForAnalyzing = "YES">
+            <BuildableReference
+               BuildableIdentifier = "primary"
                BlueprintIdentifier = "IOS10"
                BuildableName = "RunbotAIWatch iOS Wrapper.app"
                BlueprintName = "RunbotAIWatch iOS Wrapper"
@@ -50,13 +64,6 @@
             ReferencedContainer = "container:RunbotAIWatch.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
-      <AdditionalOptions>
-         <AdditionalOption
-            key = "APP_DISTRIBUTOR_ID_OVERRIDE"
-            value = "com.apple.AppStore"
-            isEnabled = "YES">
-         </AdditionalOption>
-      </AdditionalOptions>
    </LaunchAction>
    <ProfileAction
       buildConfiguration = "Release"

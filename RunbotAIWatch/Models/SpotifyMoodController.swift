@@ -6,6 +6,7 @@ import SwiftUI
 // Orchestrates mood-adaptive music selection using RunnerStateAnalyzer output.
 // 4 moods: Calm Focus, Flow, Push, Restraint.
 // Handles state rules, biofeedback scoring, song ranking, and post-run sync.
+@MainActor
 final class SpotifyMoodController: ObservableObject {
     
     // MARK: - Published State
@@ -73,6 +74,7 @@ final class SpotifyMoodController: ObservableObject {
     
     private let stateAnalyzer = RunnerStateAnalyzer()
     private let spotifyManager = SpotifyManager.shared
+    private let appleMusic = AppleMusicManager.shared
     
     // MARK: - Biofeedback
     
@@ -109,12 +111,71 @@ final class SpotifyMoodController: ObservableObject {
     init() {
         NotificationCenter.default.publisher(for: .spotifyTrackChanged)
             .sink { [weak self] notification in
-                guard let self = self else { return }
                 if let uri = notification.userInfo?["trackURI"] as? String {
-                    self.onTrackChanged(uri)
+                    Task { @MainActor in
+                        self?.onTrackChanged(uri)
+                    }
                 }
             }
             .store(in: &cancellables)
+    }
+    
+    // MARK: - Dual-Provider Helpers
+    
+    private func masterPlaylistId() -> String? {
+        switch RunEmotionMusicSource.current {
+        case .spotify: return spotifyManager.masterPlaylistId
+        case .appleMusic: return appleMusic.masterPlaylistId
+        }
+    }
+
+    private func isMusicConnected() -> Bool {
+        switch RunEmotionMusicSource.current {
+        case .spotify: return spotifyManager.isConnected
+        case .appleMusic: return appleMusic.isConnected
+        }
+    }
+
+    private func fetchPlaylistTracksUnified(_ playlistId: String) async -> [RunEmotionTrack] {
+        switch RunEmotionMusicSource.current {
+        case .spotify:
+            let tracks = await spotifyManager.fetchPlaylistTracks(playlistId)
+            return tracks.map { $0.asRunEmotionTrack() }
+        case .appleMusic:
+            return await appleMusic.fetchPlaylistTracks(playlistId)
+        }
+    }
+
+    private func playTrackIdsUnified(_ ids: [String]) async -> Bool {
+        switch RunEmotionMusicSource.current {
+        case .spotify: return await spotifyManager.playTracks(ids)
+        case .appleMusic: return await appleMusic.playTracks(ids)
+        }
+    }
+
+    private func currentTrackId() -> String {
+        switch RunEmotionMusicSource.current {
+        case .spotify: return spotifyManager.currentTrackURI
+        case .appleMusic: return appleMusic.currentTrackURI
+        }
+    }
+
+    private func isInAntiRepeatUnified(_ id: String) -> Bool {
+        switch RunEmotionMusicSource.current {
+        case .spotify: return spotifyManager.isInAntiRepeat(id)
+        case .appleMusic: return appleMusic.isInAntiRepeat(id)
+        }
+    }
+
+    private func fetchPlayerStateUnified() async -> (durationMs: Int, progressMs: Int, isPlaying: Bool)? {
+        switch RunEmotionMusicSource.current {
+        case .spotify:
+            guard let s = await spotifyManager.fetchPlayerState() else { return nil }
+            return (s.durationMs, s.progressMs, s.isPlaying)
+        case .appleMusic:
+            guard let s = await appleMusic.fetchPlayerState() else { return nil }
+            return (s.durationMs, s.progressMs, s.isPlaying)
+        }
     }
     
     // MARK: - Start / Stop
@@ -180,46 +241,47 @@ final class SpotifyMoodController: ObservableObject {
     // MARK: - Mood Transition
     
     private func handleMoodTransition(to newMood: Mood, reason: String, result: RunnerStateAnalyzer.AnalysisResult) {
-        // Check AI feedback cooldown - don't change mood within 15s of AI feedback
-        // (We use the lastAIFeedbackTime set externally via notifyAIFeedback())
-        
-        // Check if we should wait for natural song completion
-        if spotifyManager.isPlaying {
-            if let state = Task { await spotifyManager.fetchPlayerState() } as? SpotifyManager.PlayerState {
-                let remainingMs = state.durationMs - state.progressMs
-                if remainingMs > 0 && remainingMs < Int(maxSongWaitDuration * 1000) {
-                    pendingMoodSwitch = newMood
-                    if songEndWaitStartTime == nil {
-                        songEndWaitStartTime = Date()
+        Task {
+            if let state = await fetchPlayerStateUnified() {
+                if state.isPlaying {
+                    let remainingMs = state.durationMs - state.progressMs
+                    if remainingMs > 0 && remainingMs < Int(maxSongWaitDuration * 1000) {
+                        pendingMoodSwitch = newMood
+                        if songEndWaitStartTime == nil {
+                            songEndWaitStartTime = Date()
+                        }
+                        
+                        if let waitStart = songEndWaitStartTime,
+                           Date().timeIntervalSince(waitStart) >= maxSongWaitDuration {
+                            executeMoodSwitch(to: newMood, reason: reason, result: result)
+                        }
+                        return
                     }
-                    
-                    // If we've waited too long, force switch
-                    if let waitStart = songEndWaitStartTime,
-                       Date().timeIntervalSince(waitStart) >= maxSongWaitDuration {
-                        executeMoodSwitch(to: newMood, reason: reason, result: result)
-                    }
-                    return
                 }
             }
+            
+            executeMoodSwitch(to: newMood, reason: reason, result: result)
         }
-        
-        executeMoodSwitch(to: newMood, reason: reason, result: result)
     }
     
     private func executeMoodSwitch(to newMood: Mood, reason: String, result: RunnerStateAnalyzer.AnalysisResult) {
         let previousMood = currentMood
         
-        DispatchQueue.main.async {
-            self.currentMood = newMood
-            self.moodColor = newMood.color
-            self.bpmRange = newMood.bpmRangeString
-            self.moodSwitchReason = reason
-        }
+        currentMood = newMood
+        moodColor = newMood.color
+        bpmRange = newMood.bpmRangeString
+        moodSwitchReason = reason
         
         pendingMoodSwitch = nil
         songEndWaitStartTime = nil
         
-        // Post notification for voice announcement
+        let trackName: String = {
+            switch RunEmotionMusicSource.current {
+            case .spotify: return spotifyManager.currentTrackName
+            case .appleMusic: return appleMusic.currentTrackName
+            }
+        }()
+        
         NotificationCenter.default.post(
             name: .moodSwitched,
             object: nil,
@@ -227,12 +289,11 @@ final class SpotifyMoodController: ObservableObject {
                 "previousMood": previousMood.rawValue,
                 "newMood": newMood.rawValue,
                 "reason": reason,
-                "trackName": spotifyManager.currentTrackName,
+                "trackName": trackName,
                 "energyWord": newMood.energyWord
             ]
         )
         
-        // Trigger playlist/track switch
         Task {
             await switchMusicForMood(newMood, cadenceBPM: result.cadenceBPM)
         }
@@ -243,23 +304,27 @@ final class SpotifyMoodController: ObservableObject {
     // MARK: - Music Selection (3-tier filtering)
     
     private func switchMusicForMood(_ mood: Mood, cadenceBPM: Int) async {
-        guard spotifyManager.isConnected else { return }
+        guard isMusicConnected() else { return }
         
-        // If we have a master playlist, use context-based playback
-        if let playlistId = spotifyManager.masterPlaylistId {
-            let tracks = await spotifyManager.fetchPlaylistTracks(playlistId)
+        if let playlistId = masterPlaylistId() {
+            let tracks = await fetchPlaylistTracksUnified(playlistId)
             let ranked = rankTracksForMood(tracks, mood: mood, cadenceBPM: cadenceBPM)
             
             if !ranked.isEmpty {
-                let uris = ranked.prefix(10).map(\.uri)
-                _ = await spotifyManager.playTracks(Array(uris))
+                let ids = ranked.prefix(10).map(\.id)
+                _ = await playTrackIdsUnified(Array(ids))
                 return
             }
         }
         
         // Fallback: play from master playlist context
-        if let pid = spotifyManager.masterPlaylistId {
-            _ = await spotifyManager.switchPlaylist(pid)
+        if let pid = masterPlaylistId() {
+            switch RunEmotionMusicSource.current {
+            case .spotify:
+                _ = await spotifyManager.switchPlaylist(pid)
+            case .appleMusic:
+                _ = await appleMusic.switchPlaylist(pid)
+            }
         }
     }
     
@@ -268,17 +333,15 @@ final class SpotifyMoodController: ObservableObject {
     /// Tier 2: genre + BPM match
     /// Tier 3: genre-only
     /// Rank by biofeedback score descending, shuffle within tiers
-    func rankTracksForMood(_ tracks: [SpotifyTrack], mood: Mood, cadenceBPM: Int) -> [SpotifyTrack] {
+    func rankTracksForMood(_ tracks: [RunEmotionTrack], mood: Mood, cadenceBPM: Int) -> [RunEmotionTrack] {
         let bpmRange = mood.bpmRange
         
-        // Filter out anti-repeat tracks
-        let available = tracks.filter { !spotifyManager.isInAntiRepeat($0.uri) }
+        let available = tracks.filter { !isInAntiRepeatUnified($0.id) }
         guard !available.isEmpty else { return tracks.shuffled() }
         
-        // Tier 1: BPM match within ±5 of cadenceBPM (estimated from duration)
-        var tier1: [SpotifyTrack] = []
-        var tier2: [SpotifyTrack] = []
-        var tier3: [SpotifyTrack] = []
+        var tier1: [RunEmotionTrack] = []
+        var tier2: [RunEmotionTrack] = []
+        var tier3: [RunEmotionTrack] = []
         
         for track in available {
             let estimatedBPM = estimateTrackBPM(track)
@@ -294,11 +357,10 @@ final class SpotifyMoodController: ObservableObject {
             }
         }
         
-        // Sort each tier by biofeedback score descending, then shuffle within equal scores
-        let sortByScore: ([SpotifyTrack]) -> [SpotifyTrack] = { tracks in
+        let sortByScore: ([RunEmotionTrack]) -> [RunEmotionTrack] = { tracks in
             tracks.sorted { a, b in
-                let scoreA = self.trackScores[a.uri]?.score ?? 0
-                let scoreB = self.trackScores[b.uri]?.score ?? 0
+                let scoreA = self.trackScores[a.id]?.score ?? 0
+                let scoreB = self.trackScores[b.id]?.score ?? 0
                 if scoreA != scoreB { return scoreA > scoreB }
                 return Bool.random()
             }
@@ -307,11 +369,7 @@ final class SpotifyMoodController: ObservableObject {
         return sortByScore(tier1) + sortByScore(tier2) + sortByScore(tier3)
     }
     
-    /// Rough BPM estimation from track duration (heuristic for unavailable audio features)
-    private func estimateTrackBPM(_ track: SpotifyTrack) -> Int {
-        // Without Spotify audio features API, use heuristic:
-        // Shorter tracks tend to be higher energy (higher BPM)
-        // 2-3 min → 140-170, 3-4 min → 120-150, 4-6 min → 100-130
+    private func estimateTrackBPM(_ track: RunEmotionTrack) -> Int {
         let durationSec = Double(track.durationMs) / 1000.0
         if durationSec < 180 { return 155 }
         if durationSec < 240 { return 135 }
@@ -322,18 +380,17 @@ final class SpotifyMoodController: ObservableObject {
     // MARK: - Biofeedback Scoring
     
     private func onTrackChanged(_ uri: String) {
-        // Finalize score for previous track
         finalizePreviousTrackScore()
         
-        // Start baseline capture for new track (5s delay)
         baselineCaptureTimer?.invalidate()
         currentTrackBaseline = nil
         
         baselineCaptureTimer = Timer.scheduledTimer(withTimeInterval: 5.0, repeats: false) { [weak self] _ in
-            self?.captureBaseline()
+            Task { @MainActor in
+                self?.captureBaseline()
+            }
         }
         
-        // Initialize or update track score entry
         if trackScores[uri] == nil {
             trackScores[uri] = TrackBiofeedback(
                 trackURI: uri,
@@ -354,7 +411,7 @@ final class SpotifyMoodController: ObservableObject {
     
     private func captureBaseline() {
         currentTrackBaseline = (pace: lastFedPace, hr: lastFedHR ?? 0, time: Date())
-        let currentURI = spotifyManager.currentTrackURI
+        let currentURI = currentTrackId()
         trackScores[currentURI]?.baselinePace = lastFedPace
         trackScores[currentURI]?.baselineHR = lastFedHR
     }
@@ -367,10 +424,9 @@ final class SpotifyMoodController: ObservableObject {
         guard let baseline = currentTrackBaseline,
               Date().timeIntervalSince(baseline.time) >= 30 else { return }
         
-        let currentURI = spotifyManager.currentTrackURI
+        let currentURI = currentTrackId()
         guard !currentURI.isEmpty, baseline.pace > 0 else { return }
         
-        // Lower pace = faster, so improvement means currentPace < baseline
         let paceChange = (baseline.pace - currentPace) / baseline.pace * 100
         let hrChange: Double = {
             guard let hr = currentHR, baseline.hr > 0 else { return 0 }
@@ -379,18 +435,15 @@ final class SpotifyMoodController: ObservableObject {
         
         var scoreChange = 0
         if paceChange >= 3 {
-            scoreChange = 1 // pace improved ≥3%
+            scoreChange = 1
         } else if paceChange <= -3 && hrChange >= 5 {
-            scoreChange = -1 // pace dropped ≥3% AND HR spiked ≥5%
+            scoreChange = -1
         }
         
         if scoreChange != 0, var feedback = trackScores[currentURI] {
             feedback.score = max(-5, min(5, feedback.score + scoreChange))
             trackScores[currentURI] = feedback
-            
-            DispatchQueue.main.async {
-                self.currentTrackScore = feedback.score
-            }
+            currentTrackScore = feedback.score
         }
     }
     
@@ -424,8 +477,9 @@ final class SpotifyMoodController: ObservableObject {
     private func startUpdateTimer() {
         stopUpdateTimer()
         updateTimer = Timer.scheduledTimer(withTimeInterval: updateInterval, repeats: true) { [weak self] _ in
-            // Timer fires but actual updates happen via feedStats()
-            self?.checkPendingMoodSwitch()
+            Task { @MainActor in
+                self?.checkPendingMoodSwitch()
+            }
         }
         if let timer = updateTimer {
             RunLoop.current.add(timer, forMode: .common)
@@ -441,7 +495,7 @@ final class SpotifyMoodController: ObservableObject {
         guard let pending = pendingMoodSwitch else { return }
         
         Task {
-            if let state = await spotifyManager.fetchPlayerState() {
+            if let state = await fetchPlayerStateUnified() {
                 let remainingMs = state.durationMs - state.progressMs
                 if remainingMs <= 2000 || !state.isPlaying {
                     let reason = moodSwitchReason.isEmpty ? "Natural song completion" : moodSwitchReason
@@ -521,13 +575,11 @@ final class SpotifyMoodController: ObservableObject {
         currentTrackBaseline = nil
         lastFedPace = 0
         lastFedHR = nil
-        DispatchQueue.main.async {
-            self.currentMood = .calmFocus
-            self.moodColor = .blue
-            self.bpmRange = "90-110 BPM"
-            self.currentTrackScore = 0
-            self.moodSwitchReason = ""
-        }
+        currentMood = .calmFocus
+        moodColor = .blue
+        bpmRange = "90-110 BPM"
+        currentTrackScore = 0
+        moodSwitchReason = ""
     }
 }
 

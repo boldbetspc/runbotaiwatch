@@ -144,7 +144,12 @@ class WatchConnectivityManager: NSObject, ObservableObject {
                 object: nil,
                 userInfo: message
             )
-            
+
+        case "appleMusicNowPlaying":
+            Task { @MainActor in
+                AppleMusicManager.shared.applyNowPlayingFromWC(message)
+            }
+
         case "syncPreferences":
             NotificationCenter.default.post(
                 name: NSNotification.Name("WatchConnectivitySyncPreferences"),

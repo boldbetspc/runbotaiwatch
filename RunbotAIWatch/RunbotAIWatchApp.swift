@@ -21,7 +21,7 @@ struct RunbotAIWatchApp: App {
     init() {
         print("🚀 [App] ========== RunbotAIWatchApp INITIALIZING ==========")
         print("🚀 [App] Platform: watchOS")
-        print("🚀 [App] Bundle ID: com.runbotai.ioswrapper.watchapp")
+        print("🚀 [App] Bundle ID: com.rb.runbot.watchapp")
         print("🚀 [App] If you see this log, watch logging is working!")
         print("🚀 [App] =================================================")
     }

@@ -715,9 +715,13 @@ final class SpotifyManager: NSObject, ObservableObject {
         
         if trackChanged {
             addToAntiRepeat(newURI)
-            // Post notification for biofeedback capture
             NotificationCenter.default.post(
                 name: .spotifyTrackChanged,
+                object: nil,
+                userInfo: ["trackURI": newURI, "trackName": state.trackName]
+            )
+            NotificationCenter.default.post(
+                name: .runEmotionTrackChanged,
                 object: nil,
                 userInfo: ["trackURI": newURI, "trackName": state.trackName]
             )

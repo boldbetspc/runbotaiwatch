@@ -1,6 +1,7 @@
 import SwiftUI
 import WatchConnectivity
 import AuthenticationServices
+import MusicKit
 
 @main
 struct RunbotAIWatchiOSApp: App {
@@ -375,8 +376,50 @@ extension iOSWatchConnectivityManager: WCSessionDelegate {
     }
 
     func session(_ session: WCSession, didReceiveMessage message: [String: Any], replyHandler: @escaping ([String: Any]) -> Void) {
-        handleWatchMessage(message)
-        replyHandler(["status": "received"])
+        guard let command = message["command"] as? String else {
+            handleWatchMessage(message)
+            replyHandler(["status": "received"])
+            return
+        }
+
+        switch command {
+        case "appleMusicPlayTracks":
+            if let ids = message["trackIds"] as? [String] {
+                Task { @MainActor in
+                    do {
+                        try await AppleMusicBridgeiOS.shared.playTrackIds(ids)
+                        var d = AppleMusicBridgeiOS.shared.currentStateDictionary()
+                        d["ok"] = true
+                        replyHandler(d)
+                    } catch {
+                        replyHandler(["ok": false, "error": error.localizedDescription])
+                    }
+                }
+            } else {
+                replyHandler(["ok": false, "error": "No trackIds"])
+            }
+
+        case "appleMusicStop":
+            Task { @MainActor in
+                do {
+                    try await AppleMusicBridgeiOS.shared.stop()
+                    replyHandler(["ok": true])
+                } catch {
+                    replyHandler(["ok": false, "error": error.localizedDescription])
+                }
+            }
+
+        case "appleMusicStateRequest":
+            Task { @MainActor in
+                var d = AppleMusicBridgeiOS.shared.currentStateDictionary()
+                d["command"] = "appleMusicNowPlaying"
+                replyHandler(d)
+            }
+
+        default:
+            handleWatchMessage(message)
+            replyHandler(["status": "received"])
+        }
     }
 
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String: Any]) {

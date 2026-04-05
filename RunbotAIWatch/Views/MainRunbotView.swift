@@ -225,6 +225,7 @@ struct MainRunbotView: View {
     @StateObject private var networkMonitor = NetworkMonitor()
     @StateObject private var moodController = SpotifyMoodController()
     private let spotifyManager = SpotifyManager.shared
+    private let appleMusicManager = AppleMusicManager.shared
     
     @State private var carouselSelection: CarouselPage = .startStop
     @State private var wavePhase: Double = 0
@@ -386,19 +387,31 @@ struct MainRunbotView: View {
         .onReceive(NotificationCenter.default.publisher(for: .coachingTimeLimitReached)) { _ in
             voiceManager.stopSpeaking()
         }
-        // Volume ducking: duck Spotify when AI speaks, restore when done
+        // Volume ducking: duck music when AI speaks, restore when done
         .onChange(of: voiceManager.isSpeaking) { _, speaking in
-            if spotifyManager.isConnected && spotifyManager.isPlaying {
+            let source = RunEmotionMusicSource.current
+            let musicActive: Bool = {
+                switch source {
+                case .spotify: return spotifyManager.isConnected && spotifyManager.isPlaying
+                case .appleMusic: return appleMusicManager.isConnected && appleMusicManager.isPlaying
+                }
+            }()
+            if musicActive {
                 Task {
                     if speaking {
-                        await spotifyManager.duckVolume()
+                        switch source {
+                        case .spotify: await spotifyManager.duckVolume()
+                        case .appleMusic: await appleMusicManager.duckVolume()
+                        }
                     } else {
                         // Small delay before restoring: lets the last word of coaching finish
-                        // before Spotify volume rushes back in, preventing audio clashing.
+                        // before music volume rushes back in, preventing audio clashing.
                         try? await Task.sleep(nanoseconds: 800_000_000)
-                        // Only restore if still not speaking (a new coaching might have started)
                         if !voiceManager.isSpeaking {
-                            await spotifyManager.restoreVolume()
+                            switch source {
+                            case .spotify: await spotifyManager.restoreVolume()
+                            case .appleMusic: await appleMusicManager.restoreVolume()
+                            }
                         }
                     }
                 }
@@ -451,7 +464,7 @@ struct MainRunbotView: View {
         case .aiFeedbackText:
             aiFeedbackTextPage()
         case .runEmotion:
-            RunEmotionView(moodController: moodController, spotifyManager: spotifyManager)
+            RunEmotionView(moodController: moodController, spotifyManager: spotifyManager, appleMusicManager: appleMusicManager)
         case .runStats:
             combinedStatsPage()
         case .heartZone:
@@ -466,7 +479,7 @@ struct MainRunbotView: View {
             ConnectionsView(networkMonitor: networkMonitor)
                 .environmentObject(healthManager)
         case .spotifyConfig:
-            DevicesConfigView(spotifyManager: spotifyManager)
+            DevicesConfigView(spotifyManager: spotifyManager, appleMusicManager: appleMusicManager)
                 .environmentObject(supabaseManager)
                 .environmentObject(authManager)
         case .settings:
@@ -559,8 +572,8 @@ struct MainRunbotView: View {
                             // Note: Interval coaching is triggered by distance milestones
                             // See onReceive(runTracker.$statsUpdate) below (every N km based on feedbackFrequency)
                             
-                            // Start Spotify 3s after run start so user can have app open; Run Emotion starts playback
-                            if spotifyManager.isConnected && spotifyManager.spotifyEnabled {
+                            // Start music 3s after run start so user can have app open; Run Emotion starts playback
+                            if shouldStartRunEmotionOnRun() {
                                 DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) {
                                     startRunEmotion()
                                 }
@@ -1630,8 +1643,26 @@ struct MainRunbotView: View {
     
     // MARK: - Run Emotion (Spotify Mood Music) Integration
     
+    private func shouldStartRunEmotionOnRun() -> Bool {
+        switch RunEmotionMusicSource.current {
+        case .spotify:
+            return spotifyManager.isConnected && spotifyManager.spotifyEnabled
+        case .appleMusic:
+            return appleMusicManager.isConnected && appleMusicManager.appleMusicEnabled
+        }
+    }
+    
+    private func startRunEmotionPlayback() async -> Bool {
+        switch RunEmotionMusicSource.current {
+        case .spotify:
+            return await spotifyManager.startPlayback()
+        case .appleMusic:
+            return await appleMusicManager.startPlayback()
+        }
+    }
+    
     private func startRunEmotion() {
-        guard spotifyManager.isConnected && spotifyManager.spotifyEnabled else { return }
+        guard shouldStartRunEmotionOnRun() else { return }
         print("🎵 [MainRunbotView] Starting Run Emotion...")
         
         // Load track scores from Supabase
@@ -1653,21 +1684,21 @@ struct MainRunbotView: View {
         
         moodController.start()
         
-        // Start Spotify playback with retries (device/playlist may need a moment)
+        // Start playback with retries (device/playlist may need a moment)
         Task {
-            var ok = await spotifyManager.startPlayback()
+            var ok = await startRunEmotionPlayback()
             if !ok {
                 print("⚠️ [RunEmotion] First playback failed — retry in 3s")
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
-                ok = await spotifyManager.startPlayback()
+                ok = await startRunEmotionPlayback()
             }
             if !ok {
                 print("⚠️ [RunEmotion] Second attempt failed — retry in 5s")
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
-                ok = await spotifyManager.startPlayback()
+                ok = await startRunEmotionPlayback()
             }
             if !ok {
-                print("❌ [RunEmotion] Playback failed after 3 attempts. Open Spotify on a device and try again.")
+                print("❌ [RunEmotion] Playback failed after 3 attempts.")
             }
         }
         
@@ -1685,17 +1716,19 @@ struct MainRunbotView: View {
                 return lastInterval.paceMinPerKm - targetPace
             }()
             
-            moodController.feedStats(
-                currentPace: stats.effectivePace,
-                targetPace: targetPace,
-                currentHR: healthManager.currentHeartRate,
-                targetHR: nil,
-                duration: elapsedTime,
-                actualDistance: stats.distance,
-                expectedDistance: expectedDistance,
-                intervalSplitDelta: intervalDelta,
-                cadence: nil
-            )
+            Task { @MainActor in
+                moodController.feedStats(
+                    currentPace: stats.effectivePace,
+                    targetPace: targetPace,
+                    currentHR: healthManager.currentHeartRate,
+                    targetHR: nil,
+                    duration: elapsedTime,
+                    actualDistance: stats.distance,
+                    expectedDistance: expectedDistance,
+                    intervalSplitDelta: intervalDelta,
+                    cadence: nil
+                )
+            }
         }
         if let timer = spotifyFeedTimer {
             RunLoop.current.add(timer, forMode: .common)
@@ -1710,7 +1743,10 @@ struct MainRunbotView: View {
         moodController.stop()
         
         Task {
-            await spotifyManager.stopPlayback()
+            switch RunEmotionMusicSource.current {
+            case .spotify: await spotifyManager.stopPlayback()
+            case .appleMusic: await appleMusicManager.stopPlayback()
+            }
         }
         
         // Post-run: batch upsert track scores to Supabase
