@@ -103,9 +103,26 @@ class WatchConnectivityManager: NSObject, ObservableObject {
                 print("❌ [WatchConnectivity] Failed to send message: \(error.localizedDescription)")
             }
         } else {
-            // Use application context for background delivery
+            // HR updates use context so only the latest value is kept (avoid flooding transferUserInfo).
             try? session.updateApplicationContext(message)
         }
+    }
+    
+    /// Ask runbot-ios on iPhone to open the Spotify app so Spotify Connect sees an active device for playback.
+    func requestIPhoneOpenSpotifyApp() {
+        guard let session = session, session.activationState == .activated else { return }
+        let payload: [String: Any] = [
+            "command": "openSpotify",
+            "timestamp": Date().timeIntervalSince1970
+        ]
+        if session.isReachable {
+            session.sendMessage(payload, replyHandler: nil) { err in
+                print("⚠️ [WatchConnectivity] openSpotify sendMessage: \(err.localizedDescription)")
+            }
+        } else {
+            session.transferUserInfo(payload)
+        }
+        print("📱 [WatchConnectivity] Requested iPhone to open Spotify")
     }
     
     // MARK: - Receive Messages from iOS
@@ -137,13 +154,22 @@ class WatchConnectivityManager: NSObject, ObservableObject {
                 userInfo: message
             )
             
+        case "authRelay":
+            print("📱 [WatchConnectivity] Received auth relay from iPhone")
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: NSNotification.Name("AuthRelayFromPhone"),
+                    object: nil,
+                    userInfo: message
+                )
+            }
+            
         case "spotifyTokens":
             print("📱 [WatchConnectivity] Received Spotify tokens from iPhone")
-            NotificationCenter.default.post(
-                name: NSNotification.Name("SpotifyTokensFromPhone"),
-                object: nil,
-                userInfo: message
-            )
+            // Apply on main: NotificationCenter userInfo is [AnyHashable: Any] so `as? [String: Any]` in observers often fails.
+            DispatchQueue.main.async {
+                SpotifyManager.shared.applyTokensFromPhone(message)
+            }
 
         case "appleMusicNowPlaying":
             Task { @MainActor in

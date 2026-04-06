@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import WatchConnectivity
 
 class AuthenticationManager: NSObject, ObservableObject {
     @Published var isAuthenticated = false
@@ -12,6 +13,8 @@ class AuthenticationManager: NSObject, ObservableObject {
     private let supabaseKey: String
     private var sessionToken: String?
     private let keychainManager = KeychainManager.shared
+    
+    private var authRelayObserver: NSObjectProtocol?
     
     override init() {
         print("🔐 [AuthenticationManager] Initializing...")
@@ -27,6 +30,67 @@ class AuthenticationManager: NSObject, ObservableObject {
             print("🔐 [AuthenticationManager] ❌ Config NOT loaded!")
         }
         super.init()
+        
+        authRelayObserver = NotificationCenter.default.addObserver(
+            forName: NSNotification.Name("AuthRelayFromPhone"),
+            object: nil, queue: .main
+        ) { [weak self] note in
+            guard let self = self, let info = note.userInfo else { return }
+            self.applyAuthRelay(info)
+        }
+        
+        checkForPendingAuthRelay()
+    }
+    
+    deinit {
+        if let obs = authRelayObserver { NotificationCenter.default.removeObserver(obs) }
+    }
+    
+    /// Apply auth credentials relayed from runbot-ios via WCSession.
+    func applyAuthRelay(_ info: [AnyHashable: Any]) {
+        guard let userId = info["userId"] as? String,
+              let email = info["email"] as? String,
+              let token = info["accessToken"] as? String,
+              !userId.isEmpty, !token.isEmpty else {
+            print("🔐 [AuthRelay] Incomplete payload — ignoring")
+            return
+        }
+        
+        if isAuthenticated, currentUser?.id == userId {
+            // Already signed in as this user — just update the token silently
+            UserDefaults.standard.set(token, forKey: "sessionToken")
+            sessionToken = token
+            print("🔐 [AuthRelay] Token refreshed silently for \(email)")
+            return
+        }
+        
+        let name = (info["name"] as? String) ?? email
+        let user = User(id: userId, email: email, name: name)
+        
+        if let userData = try? JSONEncoder().encode(user) {
+            UserDefaults.standard.set(userData, forKey: "currentUser")
+        }
+        UserDefaults.standard.set(token, forKey: "sessionToken")
+        
+        self.currentUser = user
+        self.sessionToken = token
+        self.isAuthenticated = true
+        self.errorMessage = nil
+        
+        // Post the same notification that the normal login posts so the rest of the app initializes
+        NotificationCenter.default.post(name: NSNotification.Name("UserAuthenticated"), object: userId)
+        
+        print("🔐 [AuthRelay] ✅ Auto signed in from iPhone — \(email) (id: \(userId))")
+    }
+    
+    /// Check WCSession applicationContext for auth that arrived while the Watch wasn't running.
+    private func checkForPendingAuthRelay() {
+        guard WCSession.isSupported() else { return }
+        let ctx = WCSession.default.receivedApplicationContext
+        guard ctx["command"] as? String == "authRelay",
+              let token = ctx["accessToken"] as? String, !token.isEmpty else { return }
+        print("🔐 [AuthRelay] Found pending auth in applicationContext")
+        applyAuthRelay(ctx)
     }
     
     func checkAuthentication() {

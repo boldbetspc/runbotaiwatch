@@ -99,13 +99,13 @@ final class SpotifyManager: NSObject, ObservableObject {
         masterPlaylistId = UserDefaults.standard.string(forKey: "spotify_master_playlist_id")
         masterPlaylistName = UserDefaults.standard.string(forKey: "spotify_master_playlist_name") ?? ""
         
-        // Listen for finished tokens from iPhone (iPhone does the exchange)
+        // Legacy / in-app posts: userInfo is [AnyHashable: Any] — never use `as? [String: Any]` (it fails).
         authTokenObserver = NotificationCenter.default.addObserver(
             forName: NSNotification.Name("SpotifyTokensFromPhone"),
             object: nil, queue: .main
         ) { [weak self] note in
             guard let self = self,
-                  let tokens = note.userInfo as? [String: Any] else { return }
+                  let tokens = Self.tokensDictionary(from: note.userInfo) else { return }
             self.completeAuthWithTokensFromPhone(tokens)
         }
         
@@ -268,6 +268,21 @@ final class SpotifyManager: NSObject, ObservableObject {
         }
     }
     
+    /// WatchConnectivity delivers `[String: Any]` directly — use this path (NotificationCenter casts are unreliable).
+    func applyTokensFromPhone(_ payload: [String: Any]) {
+        completeAuthWithTokensFromPhone(payload)
+    }
+    
+    private static func tokensDictionary(from userInfo: [AnyHashable: Any]?) -> [String: Any]? {
+        guard let userInfo = userInfo, !userInfo.isEmpty else { return nil }
+        var out: [String: Any] = [:]
+        for (k, v) in userInfo {
+            guard let sk = k as? String else { continue }
+            out[sk] = v
+        }
+        return out["access_token"] != nil ? out : nil
+    }
+    
     /// Called when the iOS app sends finished tokens back via WatchConnectivity.
     /// Always processes tokens — even if already connected (handles re-auth and token refresh).
     private func completeAuthWithTokensFromPhone(_ tokens: [String: Any]) {
@@ -378,7 +393,16 @@ final class SpotifyManager: NSObject, ObservableObject {
         if let refresh = json["refresh_token"] as? String {
             refreshToken = refresh
         }
-        let expiresIn = json["expires_in"] as? Double ?? 3600
+        let expiresIn: TimeInterval
+        if let d = json["expires_in"] as? Double {
+            expiresIn = d
+        } else if let i = json["expires_in"] as? Int {
+            expiresIn = TimeInterval(i)
+        } else if let n = json["expires_in"] as? NSNumber {
+            expiresIn = n.doubleValue
+        } else {
+            expiresIn = 3600
+        }
         tokenExpiresAt = Date().addingTimeInterval(expiresIn)
         
         DispatchQueue.main.async {
@@ -509,6 +533,29 @@ final class SpotifyManager: NSObject, ObservableObject {
         return nil
     }
     
+    private func setShuffleEnabled(_ enabled: Bool, deviceId: String, token: String) async {
+        var components = URLComponents(string: "\(spotifyAPIBase)/me/player/shuffle")!
+        components.queryItems = [
+            URLQueryItem(name: "state", value: enabled ? "true" : "false"),
+            URLQueryItem(name: "device_id", value: deviceId)
+        ]
+        guard let url = components.url else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.timeoutInterval = 10
+        do {
+            let (_, response) = try await session.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode == 200 || http.statusCode == 204 {
+                print("🎵 [Spotify] Shuffle \(enabled ? "enabled" : "disabled") for device")
+            } else {
+                print("⚠️ [Spotify] Shuffle API non-success (playback may still work)")
+            }
+        } catch {
+            print("⚠️ [Spotify] Shuffle request failed: \(error.localizedDescription)")
+        }
+    }
+    
     // MARK: - Playback Control
     
     func startPlayback(playlistId: String? = nil, trackURIs: [String]? = nil) async -> Bool {
@@ -534,13 +581,25 @@ final class SpotifyManager: NSObject, ObservableObject {
         }
         
         if deviceId == nil {
-            // Retry device discovery once after a short delay
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            _ = await discoverActiveDevice()
+        }
+        if activeDeviceId == nil {
+            print("🎵 [Spotify] No Connect device — asking iPhone to open Spotify, then retrying…")
+            await MainActor.run { connectionError = "Open Spotify on iPhone…" }
+            WatchConnectivityManager.shared.requestIPhoneOpenSpotifyApp()
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            _ = await discoverActiveDevice()
+        }
+        if activeDeviceId == nil {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             _ = await discoverActiveDevice()
         }
         guard let device = activeDeviceId else {
-            await MainActor.run { connectionError = "No active Spotify device found. Open Spotify on a device." }
-            print("❌ [Spotify] No device found after retry")
+            await MainActor.run {
+                connectionError = "No Spotify device. Open Spotify on your iPhone (Premium) and try again."
+            }
+            print("❌ [Spotify] No device found after retries")
             return false
         }
         
@@ -567,6 +626,7 @@ final class SpotifyManager: NSObject, ObservableObject {
             let (data, response) = try await session.data(for: request)
             if let http = response as? HTTPURLResponse {
                 if http.statusCode == 200 || http.statusCode == 204 {
+                    await setShuffleEnabled(true, deviceId: device, token: token)
                     await MainActor.run {
                         self.isPlaying = true
                         self.connectionError = nil
