@@ -104,6 +104,27 @@ struct ContentViewWrapper: View {
                 print("✅ [App] Services re-initialized")
             }
         }
+        // runbot-ios started a run with Apple Watch as HR source — start HKWorkoutSession on Watch and stream HR via WCSession.
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("WatchConnectivityStartWorkout"))) { notification in
+            let runId = (notification.userInfo?["runId"] as? String) ?? UUID().uuidString
+            if runTracker.isRunning {
+                print("⌚ [App] iPhone startWorkout ignored — Watch run already active (HR already streaming)")
+                return
+            }
+            print("⌚ [App] iPhone requested HR relay — starting workout on Watch, runId=\(runId)")
+            healthManager.startHeartRateMonitoring(
+                runId: runId,
+                supabaseManager: authManager.isAuthenticated ? supabaseManager : nil
+            )
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSNotification.Name("WatchConnectivityStopWorkout"))) { _ in
+            if runTracker.isRunning {
+                print("⌚ [App] iPhone stopWorkout ignored — full Watch run still active")
+                return
+            }
+            print("⌚ [App] iPhone requested stop — ending HR relay on Watch")
+            healthManager.stopHeartRateMonitoring()
+        }
     }
     
     private func setupApp() {
