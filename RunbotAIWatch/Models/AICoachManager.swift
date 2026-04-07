@@ -16,7 +16,8 @@ class AICoachManager: NSObject, ObservableObject {
     private var coachingTimer: Timer?
     private var feedbackTimer: Timer?
     private let openAIKey: String
-    /// Voice AI auto cut-off guardrail: max time for a single coaching segment (start/interval/end). Timer stops UI and posts notification so TTS is stopped.
+    private let supabaseURL: String
+    private let supabaseAnonKey: String
     private let maxCoachingDuration: TimeInterval = 60.0
     private var runnerName: String = "Runner"
     private var currentTrigger: CoachingTrigger = .interval
@@ -43,11 +44,15 @@ class AICoachManager: NSObject, ObservableObject {
     override init() {
         if let config = ConfigLoader.loadConfig() {
             self.openAIKey = (config["OPENAI_API_KEY"] as? String) ?? ""
+            self.supabaseURL = (config["SUPABASE_URL"] as? String) ?? ""
+            self.supabaseAnonKey = (config["SUPABASE_ANON_KEY"] as? String) ?? ""
         } else {
             self.openAIKey = ""
+            self.supabaseURL = ""
+            self.supabaseAnonKey = ""
         }
         super.init()
-        print("🤖 [AICoach] Initialized - Mem0 uses Supabase edge function (mem0-proxy)")
+        print("🤖 [AICoach] Initialized — using Supabase openai-proxy (same as iOS)")
     }
     
     // MARK: - Run Arc Builder
@@ -377,10 +382,8 @@ class AICoachManager: NSObject, ObservableObject {
         startCoachingTimer()
     }
     
-    /// End-of-run coaching — story-style debrief, 120 words max
-    /// Performance Analyzer only (no Coach Strategy RAG)
-    /// Includes Run Arc (race shape), coaching response summary, strategies used
-    /// Post-run: generates Coach Notes and Coaching DNA for deep learning
+    /// End-of-run coaching — story-style debrief, up to 150 words
+    /// Waits for any active coaching to finish (up to 120s) before starting — never skips the debrief.
     func endOfRunCoaching(
         for stats: RunningStatsUpdate,
         session: RunSession,
@@ -388,11 +391,20 @@ class AICoachManager: NSObject, ObservableObject {
         voiceManager: VoiceManager,
         healthManager: HealthManager? = nil
     ) {
-        guard !isCoaching else { return }
         currentTrigger = .runEnd
         print("🏁 [AICoach] End-of-run coaching — next-gen debrief")
         
         Task {
+            // Wait for any active coaching/TTS to finish (up to 120s) — mirrors iOS pipeline
+            var waitTicks = 0
+            while isCoaching && waitTicks < 480 {
+                try? await Task.sleep(nanoseconds: 250_000_000)
+                waitTicks += 1
+            }
+            if waitTicks > 0 {
+                print("🏁 [AICoach] Waited \(Double(waitTicks) * 0.25)s for prior coaching to finish")
+            }
+            
             let userId = currentUserIdFromDefaults() ?? "watch_user"
             let (insights, name) = await fetchMem0InsightsWithName(for: userId)
             self.runnerName = name
@@ -496,7 +508,7 @@ class AICoachManager: NSObject, ObservableObject {
         MEM0 PERSONALIZED INSIGHTS:
         \(mem0Insights.isEmpty ? "First tracked run!" : mem0Insights)
         
-        DEBRIEF TASK (weave into a cohesive story, max 120 words):
+        DEBRIEF TASK (weave into a cohesive story, up to ~150 words):
         1. Result vs target — ahead, on, or behind?
         2. Race shape — how the run unfolded (negative split, fade, steady?)
         3. HR story — efficiency, drift, zones
@@ -511,7 +523,7 @@ class AICoachManager: NSObject, ObservableObject {
         - Use numbers to explain meaning, not to list data
         - Reference the runner's name "\(runnerName)" naturally
         - Match personality and energy settings
-        - Max 120 words
+        - Up to ~150 words
         
         NOW GENERATE THE END-OF-RUN DEBRIEF:
         """
@@ -1229,61 +1241,66 @@ class AICoachManager: NSObject, ObservableObject {
         
         let wordLimit: String
         switch currentTrigger {
-        case .runStart, .interval: wordLimit = "100 words max"
-        case .runEnd: wordLimit = "120 words max"
+        case .runStart, .interval: wordLimit = "~100 words"
+        case .runEnd: wordLimit = "up to ~150 words"
         }
         
         return """
         You are an expert running coach with mastery of race strategy, biomechanics, physiology, and training adaptation. \(personalityHint)\(languageInstruction)
         
-        Your expertise includes pacing dynamics, cardiovascular efficiency, fatigue control, biomechanical economy, mental resilience, and race execution. You synthesize multiple data streams and analyze past performances to spot trends, improvement, and recurring issues. You deep-learn from every run through Coaching DNA and Coach Notes. Adapt guidance based on runner's evolving ability and learned patterns.
+        Your expertise includes pacing dynamics, cardiovascular efficiency, fatigue control, biomechanical economy, mental resilience, and race execution. You synthesize multiple data streams and analyze past performances to spot trends, improvement, and recurring issues. Adapt guidance based on runner's performance data and evolving ability.
         
-        Generate natural, conversational feedback (\(wordLimit)), authentic, critical & insightful, and actionable. No emojis.
+        Generate natural, conversational feedback: mid-run \(wordLimit); end-of-run debrief \(wordLimit). Be authentic, critical, insightful, and actionable. No emojis.
         """
     }
     
     // MARK: - OpenAI API
     private func requestAICoachingFeedback(_ prompt: String, energy: CoachEnergy, personality: CoachPersonality, language: SupportedLanguage, trigger: CoachingTrigger = .interval) async -> String {
-        guard !openAIKey.isEmpty else {
+        let proxyURL = "\(supabaseURL)/functions/v1/openai-proxy"
+        guard !supabaseURL.isEmpty, !supabaseAnonKey.isEmpty else {
+            // Fall back to direct OpenAI if proxy not configured
+            if !openAIKey.isEmpty {
+                return await requestAICoachingFeedbackDirect(prompt, energy: energy, personality: personality, language: language, trigger: trigger)
+            }
             return "Great job, keep it up!"
         }
         
         do {
-            let url = URL(string: "https://api.openai.com/v1/chat/completions")!
+            let url = URL(string: proxyURL)!
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
-            request.setValue("Bearer \(openAIKey)", forHTTPHeaderField: "Authorization")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue("Bearer \(supabaseAnonKey)", forHTTPHeaderField: "Authorization")
             
-            let temperature: Double = energy == .high ? 0.9 : energy == .medium ? 0.7 : 0.5
             let maxTokens: Int
+            let timeout: TimeInterval
             switch trigger {
-            case .runStart, .interval: maxTokens = 200
-            case .runEnd: maxTokens = 240
+            case .runStart, .interval:
+                maxTokens = 150
+                timeout = 12.0
+            case .runEnd:
+                maxTokens = 520
+                timeout = 55.0
             }
+            
             let systemPrompt = buildSystemPrompt(personality: personality, language: language)
             let body: [String: Any] = [
                 "model": "gpt-4o-mini",
                 "messages": [
-                    [
-                        "role": "system",
-                        "content": systemPrompt
-                    ],
-                    [
-                        "role": "user",
-                        "content": prompt
-                    ]
+                    ["role": "system", "content": systemPrompt],
+                    ["role": "user", "content": prompt]
                 ],
-                "temperature": temperature,
-                "max_tokens": maxTokens
+                "temperature": 0.8,
+                "max_tokens": maxTokens,
+                "presence_penalty": 0.3,
+                "frequency_penalty": 0.3
             ]
             
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
-            request.timeoutInterval = 30.0 // 30 second timeout for older devices
+            request.timeoutInterval = timeout
             
-            print("📤 [AICoach] Sending request to OpenAI (prompt length: \(prompt.count) chars, max_tokens: \(maxTokens))")
+            print("📤 [AICoach] Sending to Supabase proxy (prompt: \(prompt.count) chars, max_tokens: \(maxTokens), timeout: \(timeout)s)")
             let (data, response) = try await URLSession.shared.data(for: request)
-            print("📥 [AICoach] Received response (data size: \(data.count) bytes)")
             
             if let httpResponse = response as? HTTPURLResponse {
                 print("📊 [AICoach] HTTP Status: \(httpResponse.statusCode)")
@@ -1294,29 +1311,67 @@ class AICoachManager: NSObject, ObservableObject {
                        let message = firstChoice["message"] as? [String: Any],
                        let content = message["content"] as? String {
                         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-                        print("📝 [AICoach] Full feedback received: \(trimmed.count) characters, \(trimmed.split(separator: " ").count) words")
-                        print("📝 [AICoach] Complete feedback: \"\(trimmed)\"")
+                        print("📝 [AICoach] Feedback: \(trimmed.count) chars, \(trimmed.split(separator: " ").count) words")
                         if trimmed.count < 50 {
-                            print("⚠️ [AICoach] WARNING: Feedback seems truncated (only \(trimmed.count) chars)")
+                            print("⚠️ [AICoach] WARNING: Feedback seems truncated")
                         }
                         return trimmed
-                    } else {
-                        print("❌ [AICoach] Failed to parse response JSON")
-                        if let jsonString = String(data: data, encoding: .utf8) {
-                            print("📄 [AICoach] Raw response: \(jsonString.prefix(500))")
-                        }
                     }
                 } else {
-                    print("❌ [AICoach] HTTP Error: \(httpResponse.statusCode)")
                     if let errorData = String(data: data, encoding: .utf8) {
-                        print("📄 [AICoach] Error response: \(errorData.prefix(500))")
+                        print("❌ [AICoach] Proxy error \(httpResponse.statusCode): \(errorData.prefix(500))")
                     }
                 }
             }
         } catch {
-            print("❌ [AICoach] OpenAI API error: \(error)")
+            print("❌ [AICoach] Proxy API error: \(error.localizedDescription)")
         }
         
+        // Retry via direct OpenAI if proxy fails
+        if !openAIKey.isEmpty {
+            print("🔄 [AICoach] Retrying via direct OpenAI…")
+            return await requestAICoachingFeedbackDirect(prompt, energy: energy, personality: personality, language: language, trigger: trigger)
+        }
+        return "Stay strong and keep your pace!"
+    }
+    
+    /// Fallback: direct OpenAI (used if Supabase proxy is down)
+    private func requestAICoachingFeedbackDirect(_ prompt: String, energy: CoachEnergy, personality: CoachPersonality, language: SupportedLanguage, trigger: CoachingTrigger) async -> String {
+        guard !openAIKey.isEmpty else { return "Keep going!" }
+        do {
+            let url = URL(string: "https://api.openai.com/v1/chat/completions")!
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(openAIKey)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            
+            let maxTokens = trigger == .runEnd ? 520 : 150
+            let systemPrompt = buildSystemPrompt(personality: personality, language: language)
+            let body: [String: Any] = [
+                "model": "gpt-4o-mini",
+                "messages": [
+                    ["role": "system", "content": systemPrompt],
+                    ["role": "user", "content": prompt]
+                ],
+                "temperature": 0.8,
+                "max_tokens": maxTokens,
+                "presence_penalty": 0.3,
+                "frequency_penalty": 0.3
+            ]
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            request.timeoutInterval = trigger == .runEnd ? 55.0 : 12.0
+            
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, http.statusCode == 200,
+               let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let choices = json["choices"] as? [[String: Any]],
+               let msg = choices.first?["message"] as? [String: Any],
+               let content = msg["content"] as? String {
+                return content.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        } catch {
+            print("❌ [AICoach] Direct OpenAI error: \(error.localizedDescription)")
+        }
         return "Stay strong and keep your pace!"
     }
     
