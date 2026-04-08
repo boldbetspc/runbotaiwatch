@@ -12,6 +12,12 @@ class AICoachManager: NSObject, ObservableObject {
     @Published var isCoaching = false
     @Published var currentFeedback = ""
     @Published var coachingTimeRemaining: Double = 0.0
+    /// iOS-compatible run arc lines for cumulative vs-target curve (watch carousel).
+    @Published var runArcForUI: [String] = []
+    /// Latest RAG running-quality line (fatigue); mirrors iOS Run Story energy page input.
+    @Published var lastFatigueLevel: String = "—"
+    /// Latest injury-risk signals joined; "—" when none.
+    @Published var lastInjuryRiskFlag: String = "—"
     
     private var coachingTimer: Timer?
     private var feedbackTimer: Timer?
@@ -61,12 +67,32 @@ class AICoachManager: NSObject, ObservableObject {
         runArc = intervals.map { interval in
             let km = interval.index + 1
             let paceStr = formatPace(interval.paceMinPerKm)
-            let diff = interval.paceMinPerKm - targetPace
-            let status: String
-            if abs(diff) < 0.08 { status = "on" }
-            else if diff < 0 { status = "ahead" }
-            else { status = "behind" }
-            return "\(km)km: \(paceStr) \(status)"
+            guard targetPace > 0, interval.paceMinPerKm > 0 else {
+                return "[\(km)km: \(paceStr), ahead +0s]"
+            }
+            let targetSec = targetPace * 60.0
+            let actualSec = interval.paceMinPerKm * 60.0
+            let aheadSec = Int(round(targetSec - actualSec))
+            if abs(aheadSec) < 2 {
+                return "[\(km)km: \(paceStr), ahead +0s]"
+            }
+            if aheadSec > 0 {
+                return "[\(km)km: \(paceStr), ahead +\(aheadSec)s]"
+            }
+            return "[\(km)km: \(paceStr), behind \(abs(aheadSec))s]"
+        }
+        DispatchQueue.main.async { [weak self] in
+            self?.runArcForUI = self?.runArc ?? []
+        }
+    }
+
+    private func applyRunStorySignalsFromRAG(_ analysis: RAGPerformanceAnalyzer.RAGAnalysisResult) {
+        let injury = analysis.injuryRiskSignals.isEmpty
+            ? "—"
+            : analysis.injuryRiskSignals.joined(separator: "; ")
+        DispatchQueue.main.async { [weak self] in
+            self?.lastFatigueLevel = analysis.runningQualityAssessment.isEmpty ? "—" : analysis.runningQualityAssessment
+            self?.lastInjuryRiskFlag = injury
         }
     }
     
@@ -199,6 +225,11 @@ class AICoachManager: NSObject, ObservableObject {
     
     private func resetRunState() {
         runArc = []
+        DispatchQueue.main.async { [weak self] in
+            self?.runArcForUI = []
+            self?.lastFatigueLevel = "—"
+            self?.lastInjuryRiskFlag = "—"
+        }
         lastCoachingStats = nil
         lastCoachingMessage = nil
         cuesFollowed = 0
@@ -341,6 +372,9 @@ class AICoachManager: NSObject, ObservableObject {
                     stats: stats, preferences: preferences, healthManager: healthManager,
                     intervals: intervals, runStartTime: startTime, userId: userId
                 )
+                if let rag = ragAnalysis {
+                    applyRunStorySignalsFromRAG(rag)
+                }
             }
             
             // Coach Strategy RAG (tactical)

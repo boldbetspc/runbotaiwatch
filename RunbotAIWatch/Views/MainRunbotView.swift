@@ -249,13 +249,16 @@ struct MainRunbotView: View {
         case heartZoneChart   // New page for pie chart
         case energyPulse      // ECG-style pace visualization
         case splitIntervals   // Split intervals timeline
+        case runStoryETA      // Cumulative vs target + race ETAs (iOS Run Story–style)
+        case runRouteMap      // Compact live route map
+        case runFatigueInjury // Fatigue + injury meters (RAG)
         case connections      // Network & Workout connections
         case spotifyConfig    // Spotify device settings
         case settings
     }
     
     private var carouselPages: [CarouselPage] {
-        [.startStop, .aiCoach, .aiFeedbackText, .runEmotion, .runStats, .heartZone, .heartZoneChart, .energyPulse, .splitIntervals, .connections, .spotifyConfig, .settings]
+        [.startStop, .aiCoach, .aiFeedbackText, .runEmotion, .runStats, .heartZone, .heartZoneChart, .energyPulse, .splitIntervals, .runStoryETA, .runRouteMap, .runFatigueInjury, .connections, .spotifyConfig, .settings]
     }
     
     var body: some View {
@@ -373,7 +376,7 @@ struct MainRunbotView: View {
                 carouselSelection = .aiCoach
             }
         }
-        // Auto-rotate carousel every 30 seconds (skipping aiFeedbackText page)
+        // Auto-rotate carousel every 10 seconds (skipping aiFeedbackText page)
         .onChange(of: isRunning) { oldValue, newValue in
             if newValue {
                 // Start carousel auto-switch timer when run starts
@@ -475,6 +478,17 @@ struct MainRunbotView: View {
             energyPulseViewPage()
         case .splitIntervals:
             splitIntervalsPage()
+        case .runStoryETA:
+            WatchDisplacementETAPage(
+                runTracker: runTracker,
+                aiCoach: aiCoach,
+                userSettings: userPreferences.settings,
+                currentZone: healthManager.currentZone
+            )
+        case .runRouteMap:
+            WatchRouteMapPage(locations: runTracker.currentSession?.locations ?? [])
+        case .runFatigueInjury:
+            WatchFatigueInjuryPage(aiCoach: aiCoach)
         case .connections:
             ConnectionsView(networkMonitor: networkMonitor)
                 .environmentObject(healthManager)
@@ -1613,7 +1627,7 @@ struct MainRunbotView: View {
     // MARK: - Carousel Auto-Switch
     private func startCarouselTimer() {
         stopCarouselTimer() // Stop any existing timer
-        carouselTimer = Timer.scheduledTimer(withTimeInterval: 30.0, repeats: true) { [self] _ in
+        carouselTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [self] _ in
             // Skip aiFeedbackText page when auto-switching
             // Don't auto-switch if AI coaching is active (let user see the coach)
             if !aiCoach.isCoaching && !voiceManager.isSpeaking {

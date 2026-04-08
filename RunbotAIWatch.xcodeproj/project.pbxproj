@@ -79,6 +79,8 @@
 				Views/RunEmotionView.swift,
 				Views/RunningView.swift,
 				Views/SettingsView.swift,
+				Views/WatchRunCarouselPages.swift,
+				Views/WatchRunStoryHelpers.swift,
 			);
 			target = 261B1A882EE30D150041BB64 /* RunbotAIWatch */;
 		};
