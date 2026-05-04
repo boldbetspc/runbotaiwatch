@@ -1,5 +1,8 @@
 import SwiftUI
 
+/// Matches iOS `FatigueScoreClient.featureFlagKey` — watch target does not compile the iOS client.
+private let kFatigueScoreV2UserDefaultsKey = "fatigueScoreV2Enabled"
+
 struct SettingsView: View {
     @Environment(\.dismiss) var dismiss
     @EnvironmentObject var userPreferences: UserPreferences
@@ -119,6 +122,30 @@ struct SettingsView: View {
                                     )
                                 }
                             }
+                        }
+                        .padding(10)
+                        .background(Color.black.opacity(0.5))
+                        .cornerRadius(8)
+
+                        // Fatigue Pulse — same UserDefaults key as iOS; calls shared Supabase `fatigue-score` + Mistral.
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Load & risk AI")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(.cyan)
+                            Toggle(isOn: Binding(
+                                get: { UserDefaults.standard.bool(forKey: kFatigueScoreV2UserDefaultsKey) },
+                                set: { UserDefaults.standard.set($0, forKey: kFatigueScoreV2UserDefaultsKey) }
+                            )) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Fatigue Pulse")
+                                        .font(.system(size: 11, weight: .semibold))
+                                        .foregroundColor(.white)
+                                    Text("Mistral + weekly load from iPhone")
+                                        .font(.system(size: 8))
+                                        .foregroundColor(.gray)
+                                }
+                            }
+                            .tint(.cyan)
                         }
                         .padding(10)
                         .background(Color.black.opacity(0.5))
