@@ -224,6 +224,7 @@ struct MainRunbotView: View {
     @StateObject private var voiceManager = VoiceManager()
     @StateObject private var networkMonitor = NetworkMonitor()
     @StateObject private var moodController = SpotifyMoodController()
+    @ObservedObject private var physiologyManager = PhysiologyProfileManager.shared
     private let spotifyManager = SpotifyManager.shared
     private let appleMusicManager = AppleMusicManager.shared
     
@@ -541,6 +542,7 @@ struct MainRunbotView: View {
                         
                         // Start run tracker (creates session, starts location, starts HR monitoring)
                         runTracker.startRun(mode: .run, shadowData: nil)
+                        physiologyManager.beginRun()
                         
                         // Set running state
                         isRunning = true
@@ -1421,7 +1423,13 @@ struct MainRunbotView: View {
                             .foregroundColor(.white.opacity(0.7))
                     }
                 }
-                .padding(.bottom, 4)
+                .padding(.bottom, 2)
+
+                if physiologyManager.isTracking || physiologyManager.thresholdHR != nil {
+                    watchPhysiologyCompactRow
+                        .padding(.horizontal, 4)
+                        .padding(.bottom, 4)
+                }
                 
                 Spacer()
             }
@@ -1457,6 +1465,43 @@ struct MainRunbotView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+    }
+
+    private var watchPhysiologyCompactRow: some View {
+        VStack(spacing: 3) {
+            HStack(spacing: 6) {
+                if let vo2 = physiologyManager.vo2Max {
+                    watchPhysiologyChip(title: "VO₂", value: String(format: "%.0f", vo2))
+                }
+                if let lt = physiologyManager.thresholdHR {
+                    watchPhysiologyChip(title: "LT", value: "\(lt)")
+                }
+                if physiologyManager.isTracking {
+                    watchPhysiologyChip(
+                        title: ">LT",
+                        value: String(format: "%.0f%%", physiologyManager.percentAboveThreshold)
+                    )
+                }
+            }
+            Text(physiologyManager.hrSourceLabel)
+                .font(.system(size: 8, weight: .medium))
+                .foregroundColor(.white.opacity(0.4))
+                .lineLimit(1)
+        }
+    }
+
+    private func watchPhysiologyChip(title: String, value: String) -> some View {
+        VStack(spacing: 0) {
+            Text(title)
+                .font(.system(size: 8, weight: .bold))
+                .foregroundColor(.white.opacity(0.45))
+            Text(value)
+                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .foregroundColor(.rbAccent)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 3)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color.white.opacity(0.06)))
     }
     
     // MARK: - Split Intervals Page
@@ -2006,6 +2051,7 @@ struct MainRunbotView: View {
         // This ensures we have the absolute latest distance, pace, HR, etc.
         let sessionSnapshot = runTracker.currentSession
         let statsSnapshot = runTracker.getCurrentStats()
+        physiologyManager.endRun(runId: sessionSnapshot?.id)
         
         // Log captured data for verification
         if let session = sessionSnapshot {
@@ -2048,29 +2094,79 @@ struct MainRunbotView: View {
                 )
             }
             
-            // Final save to Supabase - all three tables
+            // Final save to Supabase - all three tables.
+            //
+            // Mirrors the iOS post-run flush so the Run History “Run Story
+            // Timeline” always lights up:
+            //   1. Save / upsert run_activities (parent row).
+            //   2. Save run_hr (best effort).
+            //   3. Normalize splits (one row per km, run_id = session.id) and
+            //      flush run_intervals with awaited upsert + per-row retry.
+            //   If step 1 fails but we have splits to upload, we retry the
+            //   parent save once before flushing intervals, otherwise the FK
+            //   on run_intervals.run_id will reject every row.
             let userId = authManager.currentUser?.id ?? "watch_user"
             Task {
                 print("💾 [MainRunbotView] Saving run to Supabase - run_activities, run_hr, run_intervals")
-                
+
                 // 1. Save/Update run_activities (UPSERT)
-                let runSuccess = await supabaseManager.saveRunActivity(
+                var runSuccess = await supabaseManager.saveRunActivity(
                     session,
                     userId: userId,
                     healthManager: healthManager
                 )
                 print(runSuccess ? "✅ [MainRunbotView] run_activities saved" : "❌ [MainRunbotView] run_activities save failed")
-                
+
                 // 2. Save run_hr (UPSERT)
                 let hrSuccess = await supabaseManager.saveRunHR(session.id, healthManager: healthManager)
                 print(hrSuccess ? "✅ [MainRunbotView] run_hr saved" : "⚠️ [MainRunbotView] run_hr save skipped (no HR data)")
-                
-                // 3. Save run_intervals (batch UPSERT)
-                if !session.intervals.isEmpty {
-                    let intervalsSuccess = await supabaseManager.saveRunIntervals(session.intervals, userId: userId)
-                    print(intervalsSuccess ? "✅ [MainRunbotView] run_intervals saved (\(session.intervals.count) intervals)" : "❌ [MainRunbotView] run_intervals save failed")
+
+                // 3. Normalize + save run_intervals (batch UPSERT with fallback).
+                let normalizedIntervals = Self.normalizedSplitsForFinalUpload(
+                    intervals: session.intervals,
+                    expectedRunId: session.id
+                )
+
+                if normalizedIntervals.isEmpty {
+                    print("⚠️ [MainRunbotView] No intervals to save (live splits = \(session.intervals.count))")
                 } else {
-                    print("⚠️ [MainRunbotView] No intervals to save")
+                    // If parent row didn't land yet, retry once before flushing
+                    // splits so FK enforcement on run_intervals.run_id passes.
+                    if !runSuccess {
+                        print("🔄 [MainRunbotView] Retrying run_activities save before interval flush")
+                        try? await Task.sleep(nanoseconds: 400_000_000)
+                        runSuccess = await supabaseManager.saveRunActivity(
+                            session,
+                            userId: userId,
+                            healthManager: healthManager
+                        )
+                        print(runSuccess
+                              ? "✅ [MainRunbotView] run_activities saved on retry"
+                              : "⚠️ [MainRunbotView] run_activities still failing — interval upload may be rejected by FK")
+                    }
+
+                    let uniqueKm = Set(normalizedIntervals.map { $0.index + 1 }).count
+                    print("📊 [MainRunbotView] Flushing \(normalizedIntervals.count) intervals (\(uniqueKm) unique km) for run \(session.id)")
+
+                    let intervalsSuccess = await supabaseManager.saveRunIntervals(
+                        normalizedIntervals,
+                        userId: userId
+                    )
+
+                    if intervalsSuccess {
+                        print("✅ [MainRunbotView] run_intervals flushed (\(normalizedIntervals.count) rows)")
+                    } else {
+                        // One last retry after a short delay in case of a transient blip.
+                        print("🔄 [MainRunbotView] Retrying run_intervals flush after delay")
+                        try? await Task.sleep(nanoseconds: 600_000_000)
+                        let retrySuccess = await supabaseManager.saveRunIntervals(
+                            normalizedIntervals,
+                            userId: userId
+                        )
+                        print(retrySuccess
+                              ? "✅ [MainRunbotView] run_intervals flushed on retry"
+                              : "❌ [MainRunbotView] run_intervals flush failed after retry")
+                    }
                 }
                 
                 await MainActor.run {
@@ -2111,7 +2207,45 @@ struct MainRunbotView: View {
     }
     
     // Train mode removed - createShadowRunData no longer needed
-    
+
+    /// Cleans up the in-memory `intervals` array before the final post-run
+    /// upload. Mirrors the iOS `normalizedSplitsForFinalUpload` helper:
+    ///   • Forces every split's `runId` to match the parent run id (so the
+    ///     FK on `run_intervals.run_id` is never broken by stale rows).
+    ///   • De-duplicates by kilometer (`index + 1`); last entry wins so a
+    ///     re-saved split overwrites the earlier copy.
+    ///   • Returns the rows in km order so the timeline reads sequentially.
+    static func normalizedSplitsForFinalUpload(
+        intervals: [RunInterval],
+        expectedRunId: String
+    ) -> [RunInterval] {
+        guard !intervals.isEmpty else { return [] }
+
+        var byKm: [Int: RunInterval] = [:]
+        for raw in intervals {
+            let km = raw.index + 1
+            // Rebuild the interval if its runId drifted (e.g. paused/resumed
+            // session) so the upsert always points to the right parent row.
+            let normalized: RunInterval
+            if raw.runId == expectedRunId {
+                normalized = raw
+            } else {
+                normalized = RunInterval(
+                    id: raw.id,
+                    runId: expectedRunId,
+                    index: raw.index,
+                    startTime: raw.startTime,
+                    endTime: raw.endTime,
+                    distanceMeters: raw.distanceMeters,
+                    durationSeconds: raw.durationSeconds,
+                    paceMinPerKm: raw.paceMinPerKm
+                )
+            }
+            byKm[km] = normalized
+        }
+        return byKm.keys.sorted().compactMap { byKm[$0] }
+    }
+
     private func savePreferencesToSupabase() {
         let userId = authManager.currentUser?.id ?? "watch_user"
         Task {

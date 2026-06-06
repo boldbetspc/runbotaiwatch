@@ -295,45 +295,91 @@ class SupabaseManager: ObservableObject {
     }
     
     // MARK: - Run Intervals (batch save)
+    /// Batch upsert into `run_intervals`. Differences vs the previous version
+    /// (mirrors the iOS-app fix so Run History / Run Story finds rows reliably):
+    ///   • URL includes `on_conflict=id` so PostgREST runs a true upsert
+    ///     (without it, retried POSTs return 409 and the row never persists).
+    ///   • `Prefer` header combined with `addValue` so BOTH `return=minimal`
+    ///     and `resolution=merge-duplicates` are sent (the prior `setValue`
+    ///     overwrote the first hint).
+    ///   • `kilometer` saved as 1-indexed (`index + 1`) to match iOS rows so
+    ///     the iOS Run Detail “Run Story” reads consistent km labels.
+    ///   • If the batch upsert fails, falls back to per-row upsert with a
+    ///     short retry so a single bad row no longer drops the whole flush.
     func saveRunIntervals(_ intervals: [RunInterval], userId: String) async -> Bool {
         guard isInitialized, !intervals.isEmpty else { return false }
-        
-        do {
-            var payloads: [[String: Any]] = []
-            for interval in intervals {
-                // NOTE: pace_per_km is a GENERATED COLUMN - don't send it
-                let payload: [String: Any] = [
-                    "id": interval.id,
-                    "run_id": interval.runId,
-                    "user_id": userId,
-                    "kilometer": interval.index,
-                    "duration_s": interval.durationSeconds,
-                    "time_recorded": ISO8601DateFormatter().string(from: interval.endTime),
-                    "created_at": ISO8601DateFormatter().string(from: Date())
-                ]
-                payloads.append(payload)
+
+        // Build the upserted payload once.
+        let formatter = ISO8601DateFormatter()
+        let payloads: [[String: Any]] = intervals.map { interval in
+            // NOTE: pace_per_km is a GENERATED COLUMN - don't send it
+            return [
+                "id": interval.id,
+                "run_id": interval.runId,
+                "user_id": userId,
+                // iOS saves km 1..n; watch was 0-indexed. Align here so the
+                // iOS history timeline renders the same labels.
+                "kilometer": interval.index + 1,
+                "duration_s": interval.durationSeconds,
+                "time_recorded": formatter.string(from: interval.endTime),
+                "created_at": formatter.string(from: Date())
+            ]
+        }
+
+        let batchOK = await postRunIntervalsBatch(payloads: payloads)
+        if batchOK {
+            print("✅ \(intervals.count) run interval(s) saved to Supabase (batch upsert)")
+            return true
+        }
+
+        // Per-row fallback so a single bad row (e.g. transient 409 / RLS race)
+        // doesn't take the rest of the post-run flush down with it.
+        print("🔄 [Supabase] Batch interval upsert failed — retrying per-row")
+        var saved = 0
+        for payload in payloads {
+            if await postRunIntervalsBatch(payloads: [payload]) {
+                saved += 1
+            } else {
+                try? await Task.sleep(nanoseconds: 300_000_000)
+                if await postRunIntervalsBatch(payloads: [payload]) {
+                    saved += 1
+                }
             }
-            
-            let url = URL(string: "\(baseURL)/rest/v1/run_intervals")!
+        }
+        print(saved == intervals.count
+              ? "✅ \(saved)/\(intervals.count) intervals saved (per-row fallback)"
+              : "⚠️ \(saved)/\(intervals.count) intervals saved (per-row fallback)")
+        return saved == intervals.count
+    }
+
+    /// Internal helper — sends one upsert POST to `run_intervals` and returns success.
+    private func postRunIntervalsBatch(payloads: [[String: Any]]) async -> Bool {
+        guard !payloads.isEmpty else { return true }
+        do {
+            // `on_conflict=id` is required for PostgREST to honour
+            // `Prefer: resolution=merge-duplicates` on duplicate primary keys.
+            let url = URL(string: "\(baseURL)/rest/v1/run_intervals?on_conflict=id")!
             var request = URLRequest(url: url)
             request.httpMethod = "POST"
             request.setValue(anonKey, forHTTPHeaderField: "apikey")
             request.setValue(getAuthHeader(), forHTTPHeaderField: "Authorization")
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("return=minimal", forHTTPHeaderField: "Prefer")
-            // Upsert: if row with same id exists, update it
-            request.setValue("resolution=merge-duplicates", forHTTPHeaderField: "Prefer")
+            // Combine Prefer values — `setValue` would clobber the first hint.
+            request.addValue("return=minimal", forHTTPHeaderField: "Prefer")
+            request.addValue("resolution=merge-duplicates", forHTTPHeaderField: "Prefer")
             request.httpBody = try JSONSerialization.data(withJSONObject: payloads)
-            
-            let (_, response) = try await session.data(for: request)
-            
+
+            let (data, response) = try await session.data(for: request)
             if let httpResponse = response as? HTTPURLResponse,
-               (httpResponse.statusCode == 200 || httpResponse.statusCode == 201) {
-                print("✅ \(intervals.count) run interval(s) saved to Supabase")
+               (httpResponse.statusCode == 200 || httpResponse.statusCode == 201 || httpResponse.statusCode == 204) {
                 return true
             }
+            if let httpResponse = response as? HTTPURLResponse {
+                let body = String(data: data, encoding: .utf8) ?? ""
+                print("❌ [Supabase] run_intervals upsert failed: \(httpResponse.statusCode) \(body.prefix(160))")
+            }
         } catch {
-            print("❌ Error saving run intervals: \(error)")
+            print("❌ [Supabase] Error upserting run_intervals: \(error.localizedDescription)")
         }
         return false
     }

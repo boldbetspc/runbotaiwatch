@@ -1043,6 +1043,10 @@ class HealthManager: NSObject, ObservableObject {
         // Update zone tracking
         print("💓 [HealthManager] Updating zone tracking...")
         updateZoneTracking(newHeartRate: heartRate)
+
+        Task { @MainActor in
+            PhysiologyProfileManager.shared.recordHeartRate(heartRate)
+        }
         
         // Add to samples for average/min/max
         let heartRateType = HKQuantityType.quantityType(forIdentifier: .heartRate)!

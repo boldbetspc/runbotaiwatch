@@ -108,6 +108,33 @@ class WatchConnectivityManager: NSObject, ObservableObject {
         }
     }
     
+    /// Ask the iPhone to START Spotify playback on its own active device (most reliable fallback when
+    /// the Watch can't find a Connect device). Returns true only if the iPhone confirms playback started.
+    /// Requires a reachable iPhone — standalone runs skip this and keep the Watch's direct Web API path.
+    func requestIPhonePlaySpotify(trackURIs: [String], playlistId: String?) async -> Bool {
+        guard let session = session, session.activationState == .activated, session.isReachable else { return false }
+        var payload: [String: Any] = ["command": "spotifyPlayTracks"]
+        if !trackURIs.isEmpty { payload["trackURIs"] = trackURIs }
+        if let pid = playlistId { payload["playlistId"] = pid }
+        return await withCheckedContinuation { (cont: CheckedContinuation<Bool, Never>) in
+            var resumed = false
+            session.sendMessage(payload, replyHandler: { reply in
+                if !resumed { resumed = true; cont.resume(returning: (reply["ok"] as? Bool) ?? false) }
+            }, errorHandler: { error in
+                print("⚠️ [WatchConnectivity] spotifyPlayTracks bridge error: \(error.localizedDescription)")
+                if !resumed { resumed = true; cont.resume(returning: false) }
+            })
+        }
+    }
+
+    /// Ask the iPhone to pause its Spotify playback (paired with the play bridge).
+    func requestIPhoneStopSpotify() {
+        guard let session = session, session.isReachable else { return }
+        session.sendMessage(["command": "spotifyStop"], replyHandler: nil) { error in
+            print("⚠️ [WatchConnectivity] spotifyStop bridge error: \(error.localizedDescription)")
+        }
+    }
+
     /// Ask runbot-ios on iPhone to open the Spotify app so Spotify Connect sees an active device for playback.
     func requestIPhoneOpenSpotifyApp() {
         guard let session = session, session.activationState == .activated else { return }

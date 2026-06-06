@@ -150,16 +150,33 @@ enum WatchRunStoryHelpers {
             )
         }
         let basePace = targetPace > 0 ? targetPace : averagePace
+        let trendPace: Double = {
+            if currentPace > 0, currentPace < 20 { return currentPace }
+            if averagePace > 0 { return averagePace }
+            return basePace
+        }()
+        let pushPace = max(2.5, min(trendPace * 0.93, trendPace - 0.04))
+        let easyPace = max(trendPace * 1.07, basePace * 1.10)
+
         var rows: [ETAScenarioRow] = []
         if let avg = buildRow(title: "Avg", pace: averagePace, color: Color(red: 0.57, green: 0.67, blue: 1.0)) { rows.append(avg) }
         if let target = buildRow(title: "Tgt", pace: basePace, color: Color(red: 0.38, green: 0.98, blue: 0.72), isTargetAnchor: true) { rows.append(target) }
-        if let easy = buildRow(title: "Easy", pace: basePace * 1.10, color: Color(red: 1.0, green: 0.74, blue: 0.34)) { rows.append(easy) }
+        if let easy = buildRow(title: "Easy", pace: easyPace, color: Color(red: 1.0, green: 0.74, blue: 0.34)) { rows.append(easy) }
         if let cur = buildRow(title: "Now", pace: currentPace, color: Color(red: 0.24, green: 0.92, blue: 1.0)) { rows.append(cur) }
-        if let push = buildRow(title: "Push", pace: basePace * 0.92, color: Color(red: 1.0, green: 0.5, blue: 0.56)) { rows.append(push) }
+        if let push = buildRow(title: "Push", pace: pushPace, color: Color(red: 1.0, green: 0.5, blue: 0.56)) { rows.append(push) }
         return rows
     }
 
-    static func etaSmartScenarioIndex(rows: [ETAScenarioRow], fatigueRaw: String, injuryRaw: String, currentZone: Int?) -> Int? {
+    static func etaSmartScenarioIndex(
+        rows: [ETAScenarioRow],
+        fatigueRaw: String,
+        injuryRaw: String,
+        currentZone: Int?,
+        coveredKm: Double = 0,
+        currentPace: Double = 0,
+        averagePace: Double = 0,
+        targetPace: Double = 0
+    ) -> Int? {
         guard !rows.isEmpty else { return nil }
         let fatigue = fatigueBucket(fatigueRaw).0
         let injury = injuryBucket(injuryRaw).0
@@ -169,6 +186,22 @@ enum WatchRunStoryHelpers {
         if let z = currentZone, z >= 5 {
             return rows.firstIndex { $0.title == "Avg" } ?? rows.firstIndex { $0.isTargetAnchor }
         }
+
+        let livePace: Double = {
+            if coveredKm < 0.8 { return averagePace }
+            if currentPace > 0, currentPace < 20 { return currentPace }
+            return averagePace
+        }()
+        if targetPace > 0, livePace > 0 {
+            let paceRatio = livePace / targetPace
+            if paceRatio < 0.88 {
+                return rows.firstIndex { $0.title == "Now" } ?? rows.firstIndex { $0.title == "Avg" }
+            }
+            if paceRatio > 1.12 {
+                return rows.firstIndex { $0.title == "Easy" } ?? rows.firstIndex { $0.isTargetAnchor }
+            }
+        }
+
         return rows.firstIndex { $0.isTargetAnchor } ?? rows.firstIndex { $0.title == "Avg" }
     }
 
@@ -203,5 +236,74 @@ enum WatchRunStoryHelpers {
             return cumulativeSeconds >= 0
         }()
         return (entries, waveY, cumulativeSeconds, badgeMeters, badgeAhead)
+    }
+
+    struct GoalConfidence {
+        let percent: Int
+        let statusLine: String
+    }
+
+    /// Predictive % chance of finishing at or under target-pace goal time for the full race.
+    static func goalMeetConfidence(
+        targetDistanceKm: Double,
+        coveredKm: Double,
+        elapsedSeconds: TimeInterval,
+        targetPaceMinPerKm: Double,
+        averagePace: Double,
+        currentPace: Double,
+        fatigueTier: Int,
+        injuryTier: Int,
+        hrZone: Int?,
+        deltaKmVsTarget: Double?
+    ) -> GoalConfidence {
+        guard targetDistanceKm > 0.1, targetPaceMinPerKm > 0 else {
+            return GoalConfidence(percent: 0, statusLine: "Set goal")
+        }
+        let remainingKm = max(0, targetDistanceKm - coveredKm)
+        let elapsedSec = max(0, elapsedSeconds)
+        let progress = min(1.0, max(0, coveredKm / targetDistanceKm))
+        let targetFinishSec = targetPaceMinPerKm * targetDistanceKm * 60.0
+
+        if remainingKm <= 0.05 {
+            let met = elapsedSec <= targetFinishSec * 1.01
+            return GoalConfidence(percent: met ? 100 : 1, statusLine: met ? "Goal met" : "Over goal")
+        }
+
+        let predictivePace: Double = {
+            if coveredKm < 0.5 { return averagePace > 0 ? averagePace : targetPaceMinPerKm }
+            let cur = (currentPace > 0 && currentPace < 20) ? currentPace : averagePace
+            let avg = averagePace > 0 ? averagePace : cur
+            let avgWeight = 0.35 + 0.45 * progress
+            return avg * avgWeight + cur * (1.0 - avgWeight)
+        }()
+
+        let projectedFinishSec = elapsedSec + remainingKm * predictivePace * 60.0
+        let slackSec = targetFinishSec - projectedFinishSec
+        var probability = 1.0 / (1.0 + exp(-slackSec / 90.0))
+        if let dk = deltaKmVsTarget {
+            probability += min(0.22, max(-0.22, dk * 0.12))
+        }
+        var penalty = 0.0
+        if fatigueTier >= 2 { penalty += 0.18 }
+        else if fatigueTier >= 1 { penalty += 0.08 }
+        if injuryTier >= 2 { penalty += 0.12 }
+        else if injuryTier >= 1 { penalty += 0.05 }
+        if let z = hrZone {
+            if z >= 5 { penalty += 0.10 }
+            else if z >= 4 { penalty += 0.04 }
+        }
+        probability = max(0.02, min(0.98, probability - penalty))
+        let certainty = min(1.0, 0.28 + 0.72 * progress)
+        probability = 0.5 + (probability - 0.5) * certainty
+        if slackSec > 180 { probability = max(probability, 0.90) }
+        if slackSec < -180 { probability = min(probability, 0.18) }
+
+        let percent = max(1, min(99, Int((probability * 100).rounded())))
+        let statusLine: String
+        if percent >= 75 { statusLine = "On goal" }
+        else if percent >= 50 { statusLine = "Hold steady" }
+        else if percent >= 30 { statusLine = "At risk" }
+        else { statusLine = "Unlikely" }
+        return GoalConfidence(percent: percent, statusLine: statusLine)
     }
 }

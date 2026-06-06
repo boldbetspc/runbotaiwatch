@@ -49,6 +49,13 @@ class HeartZoneCalculator {
         }
     }
     
+    /// Lactate-threshold proxy: lower bound of Z4 (80% HRR).
+    static func thresholdHeartRate(age: Int, restingHeartRate: Int) -> Int {
+        let maxHR = 220 - age
+        let hrr = max(1, maxHR - restingHeartRate)
+        return restingHeartRate + Int((Double(hrr) * 0.80).rounded())
+    }
+
     /// Get zone name from zone number
     static func zoneName(for zone: Int) -> String {
         switch zone {

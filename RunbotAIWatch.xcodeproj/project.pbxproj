@@ -57,6 +57,7 @@
 				Models/HeartZoneCalculator.swift,
 				Models/KeychainManager.swift,
 				Models/Mem0Manager.swift,
+				Models/PhysiologyProfileManager.swift,
 				Models/RAGPerformanceAnalyzer.swift,
 				Models/RunDataModels.swift,
 				Models/RunEmotionMusicSource.swift,

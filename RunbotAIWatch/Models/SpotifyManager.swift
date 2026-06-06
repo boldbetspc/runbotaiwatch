@@ -74,6 +74,9 @@ final class SpotifyManager: NSObject, ObservableObject {
     // Volume ducking
     private var originalVolume: Int = 100
     private var isDucked = false
+
+    /// Locked local-mobile device for this run (iPhone Spotify app — never Chrome/web/cast).
+    private var runSessionDeviceId: String?
     
     // Listener for tokens coming back from iOS via WatchConnectivity
     private var authTokenObserver: NSObjectProtocol?
@@ -496,6 +499,49 @@ final class SpotifyManager: NSObject, ObservableObject {
     }
     
     // MARK: - Device Discovery
+
+    private func isWebPlayerDevice(_ device: [String: Any]) -> Bool {
+        let name = (device["name"] as? String ?? "").lowercased()
+        let type = (device["type"] as? String ?? "").lowercased()
+        return name.contains("web player") || name.contains("chrome") || type == "web_player"
+    }
+
+    /// Native Spotify on iPhone only — excludes web/Chrome, computers, speakers, cast.
+    private func isLocalMobileDevice(_ device: [String: Any]) -> Bool {
+        if isWebPlayerDevice(device) { return false }
+        let name = (device["name"] as? String ?? "").lowercased()
+        let type = (device["type"] as? String ?? "").lowercased()
+        if type == "computer" || type == "tv" || type == "cast" || type == "avr" || type == "stereo" {
+            return false
+        }
+        if name.contains("chrome") || name.contains("edge") || name.contains("firefox") {
+            return false
+        }
+        return type == "smartphone" || name.contains("iphone") || name.contains("this iphone")
+    }
+
+    private func pickLocalMobileDevice(from devices: [[String: Any]]) -> [String: Any]? {
+        let usable = devices.filter { ($0["is_restricted"] as? Bool) != true }
+        let mobile = usable.filter { isLocalMobileDevice($0) }
+        guard !mobile.isEmpty else { return nil }
+        // Never prefer Chrome just because it's the active device.
+        if let activeLocal = mobile.first(where: { ($0["is_active"] as? Bool) == true }) {
+            return activeLocal
+        }
+        return mobile.first(where: { ($0["type"] as? String)?.lowercased() == "smartphone" }) ?? mobile.first
+    }
+
+    private func transferPlaybackToDevice(id: String, token: String, play: Bool) async {
+        guard let url = URL(string: "\(spotifyAPIBase)/me/player") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 10
+        request.httpBody = try? JSONSerialization.data(withJSONObject: ["device_ids": [id], "play": play])
+        _ = try? await session.data(for: request)
+        try? await Task.sleep(nanoseconds: 500_000_000)
+    }
     
     func discoverActiveDevice() async -> String? {
         guard await ensureValidToken(), let token = accessToken else { return nil }
@@ -510,23 +556,22 @@ final class SpotifyManager: NSObject, ObservableObject {
             guard let http = response as? HTTPURLResponse, http.statusCode == 200 else { return nil }
             
             if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let devices = json["devices"] as? [[String: Any]] {
-                // Prefer active device, then smartphone, then any
-                let active = devices.first(where: { $0["is_active"] as? Bool == true })
-                let phone = devices.first(where: { ($0["type"] as? String)?.lowercased() == "smartphone" })
-                let chosen = active ?? phone ?? devices.first
-                
-                if let device = chosen,
-                   let id = device["id"] as? String,
-                   let name = device["name"] as? String {
-                    await MainActor.run {
-                        self.activeDeviceId = id
-                        self.activeDeviceName = name
-                    }
-                    print("🎵 [Spotify] Active device: \(name) (\(id.prefix(8))...)")
-                    return id
+               let devices = json["devices"] as? [[String: Any]],
+               let device = pickLocalMobileDevice(from: devices),
+               let id = device["id"] as? String,
+               let name = device["name"] as? String {
+                if (device["is_active"] as? Bool) != true {
+                    await transferPlaybackToDevice(id: id, token: token, play: false)
                 }
+                await MainActor.run {
+                    self.activeDeviceId = id
+                    self.activeDeviceName = name
+                    self.runSessionDeviceId = id
+                }
+                print("🎵 [Spotify] Local mobile device: \(name) (\(id.prefix(8))...)")
+                return id
             }
+            print("⚠️ [Spotify] No local mobile device (Chrome/web/cast ignored)")
         } catch {
             print("❌ [Spotify] Device discovery error: \(error.localizedDescription)")
         }
@@ -572,18 +617,35 @@ final class SpotifyManager: NSObject, ObservableObject {
         }
         let finalPlaylistId = playlistId ?? masterPlaylistId
         
-        // Discover device
-        let deviceId: String?
-        if let active = activeDeviceId {
-            deviceId = active
-        } else {
-            deviceId = await discoverActiveDevice()
-        }
-        
-        if deviceId == nil {
+        // Always resolve a local mobile device (never Chrome/web/cast).
+        _ = await discoverActiveDevice()
+        if activeDeviceId == nil {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
             _ = await discoverActiveDevice()
         }
+
+        // FALLBACK (paired mode): if the Watch still has no Connect device, let the iPhone play on its
+        // own device — it reliably wakes Spotify and starts playback. Standalone (iPhone unreachable)
+        // skips this and keeps the Watch's direct Web API path below, so standalone never changes.
+        if activeDeviceId == nil, WatchConnectivityManager.shared.isReachable {
+            print("🎵 [Spotify] No Connect device — requesting iPhone to play via bridge…")
+            await MainActor.run { connectionError = "Starting on iPhone…" }
+            let bridged = await WatchConnectivityManager.shared.requestIPhonePlaySpotify(
+                trackURIs: trackURIs ?? [],
+                playlistId: finalPlaylistId
+            )
+            if bridged {
+                await MainActor.run {
+                    self.isPlaying = true
+                    self.connectionError = nil
+                }
+                startTrackPolling()
+                print("▶️ [Spotify] Playback started on iPhone (Watch bridge)")
+                return true
+            }
+            print("🎵 [Spotify] iPhone bridge couldn't start — falling back to open-Spotify retry")
+        }
+
         if activeDeviceId == nil {
             print("🎵 [Spotify] No Connect device — asking iPhone to open Spotify, then retrying…")
             await MainActor.run { connectionError = "Open Spotify on iPhone…" }
@@ -630,6 +692,7 @@ final class SpotifyManager: NSObject, ObservableObject {
                     await MainActor.run {
                         self.isPlaying = true
                         self.connectionError = nil
+                        self.runSessionDeviceId = device
                     }
                     startTrackPolling()
                     print("▶️ [Spotify] Playback started on \(activeDeviceName)")
@@ -660,7 +723,10 @@ final class SpotifyManager: NSObject, ObservableObject {
             let (_, response) = try await session.data(for: request)
             if let http = response as? HTTPURLResponse,
                http.statusCode == 200 || http.statusCode == 204 {
-                await MainActor.run { self.isPlaying = false }
+                await MainActor.run {
+                    self.isPlaying = false
+                    self.runSessionDeviceId = nil
+                }
                 stopTrackPolling()
                 print("⏸ [Spotify] Playback paused")
             }
@@ -723,12 +789,39 @@ final class SpotifyManager: NSObject, ObservableObject {
         
         await setVolume(originalVolume, token: token)
         isDucked = false
+        await resumePlaybackOnRunDevice(token: token)
         print("🔊 [Spotify] Volume restored: \(originalVolume)%")
+    }
+
+    private func resumePlaybackOnRunDevice(token: String) async {
+        guard let deviceId = runSessionDeviceId ?? activeDeviceId else { return }
+        let urlStr = "\(spotifyAPIBase)/me/player/play?device_id=\(deviceId)"
+        guard let url = URL(string: urlStr) else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "PUT"
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = 10
+        if !currentTrackURI.isEmpty {
+            request.httpBody = try? JSONSerialization.data(withJSONObject: ["uris": [currentTrackURI]])
+        }
+        guard let (_, response) = try? await session.data(for: request),
+              let http = response as? HTTPURLResponse,
+              http.statusCode == 200 || http.statusCode == 204 else {
+            print("⚠️ [Spotify] Post-coaching resume failed on local device")
+            return
+        }
+        await MainActor.run { self.isPlaying = true }
+        print("▶️ [Spotify] Resumed on local device after coaching")
     }
     
     private func setVolume(_ percent: Int, token: String) async {
         let clamped = min(100, max(0, percent))
-        let url = URL(string: "\(spotifyAPIBase)/me/player/volume?volume_percent=\(clamped)")!
+        guard let deviceId = runSessionDeviceId ?? activeDeviceId else {
+            print("⚠️ [Spotify] Volume set skipped — no local mobile device")
+            return
+        }
+        let url = URL(string: "\(spotifyAPIBase)/me/player/volume?volume_percent=\(clamped)&device_id=\(deviceId)")!
         var request = URLRequest(url: url)
         request.httpMethod = "PUT"
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")

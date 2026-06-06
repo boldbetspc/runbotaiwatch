@@ -35,7 +35,26 @@ struct WatchDisplacementETAPage: View {
             rows: rows,
             fatigueRaw: aiCoach.lastFatigueLevel,
             injuryRaw: aiCoach.lastInjuryRiskFlag,
-            currentZone: currentZone
+            currentZone: currentZone,
+            coveredKm: coveredKm,
+            currentPace: curPace,
+            averagePace: avgPace,
+            targetPace: targetPace
+        )
+        let deltaKm: Double? = (targetPace > 0 && elapsedMin > 0)
+            ? (coveredKm - elapsedMin / targetPace)
+            : nil
+        let goalConfidence = WatchRunStoryHelpers.goalMeetConfidence(
+            targetDistanceKm: targetRaceKm,
+            coveredKm: coveredKm,
+            elapsedSeconds: runTracker.currentSession?.duration ?? 0,
+            targetPaceMinPerKm: targetPace,
+            averagePace: avgPace,
+            currentPace: curPace,
+            fatigueTier: WatchRunStoryHelpers.fatigueBucket(aiCoach.lastFatigueLevel).0,
+            injuryTier: WatchRunStoryHelpers.injuryBucket(aiCoach.lastInjuryRiskFlag).0,
+            hrZone: currentZone,
+            deltaKmVsTarget: deltaKm
         )
 
         ScrollView {
@@ -75,6 +94,20 @@ struct WatchDisplacementETAPage: View {
                                 .font(.system(size: 11, weight: .black, design: .monospaced))
                                 .foregroundColor(r.color)
                         }
+                    }
+
+                    if targetRaceKm > 0, goalConfidence.percent > 0 {
+                        HStack(spacing: 4) {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 7, weight: .semibold))
+                                .foregroundColor(goalConfidence.percent >= 75 ? .green : (goalConfidence.percent >= 50 ? .yellow : .orange))
+                            Text("\(goalConfidence.percent)% · \(goalConfidence.statusLine)")
+                                .font(.system(size: 8, weight: .bold, design: .monospaced))
+                                .foregroundColor(.white.opacity(0.75))
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                        }
+                        .padding(.top, 1)
                     }
 
                     VStack(alignment: .leading, spacing: 3) {

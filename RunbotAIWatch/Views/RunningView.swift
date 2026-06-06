@@ -295,14 +295,53 @@ struct RunningView: View {
         aiCoachManager.stopCoaching()
         voiceManager.stopSpeaking()
         runTracker.stopRun()
-        
+
+        // Mirror MainRunbotView's post-run flush so the Run History timeline
+        // populates: parent row first (with retry if FK isn't satisfied yet),
+        // then a normalized run_intervals upsert.
         if let session = runTracker.currentSession,
            let userId = authManager.currentUser?.id {
             Task {
-                _ = await supabaseManager.saveRunActivity(session, userId: userId)
+                var runSuccess = await supabaseManager.saveRunActivity(session, userId: userId)
+                print(runSuccess ? "✅ [RunningView] run_activities saved"
+                                 : "❌ [RunningView] run_activities save failed")
+
+                let normalizedIntervals = MainRunbotView.normalizedSplitsForFinalUpload(
+                    intervals: session.intervals,
+                    expectedRunId: session.id
+                )
+                guard !normalizedIntervals.isEmpty else {
+                    print("⚠️ [RunningView] No intervals to save (live splits = \(session.intervals.count))")
+                    return
+                }
+
+                if !runSuccess {
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                    runSuccess = await supabaseManager.saveRunActivity(session, userId: userId)
+                    print(runSuccess
+                          ? "✅ [RunningView] run_activities saved on retry"
+                          : "⚠️ [RunningView] run_activities still failing — interval upload may be rejected by FK")
+                }
+
+                let intervalsSuccess = await supabaseManager.saveRunIntervals(
+                    normalizedIntervals,
+                    userId: userId
+                )
+                if intervalsSuccess {
+                    print("✅ [RunningView] run_intervals flushed (\(normalizedIntervals.count) rows)")
+                } else {
+                    try? await Task.sleep(nanoseconds: 600_000_000)
+                    let retry = await supabaseManager.saveRunIntervals(
+                        normalizedIntervals,
+                        userId: userId
+                    )
+                    print(retry
+                          ? "✅ [RunningView] run_intervals flushed on retry"
+                          : "❌ [RunningView] run_intervals flush failed after retry")
+                }
             }
         }
-        
+
         runTracker.resetSession()
     }
 }
