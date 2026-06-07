@@ -57,8 +57,15 @@ class CoachStrategyRAGManager {
         let energy_level: String // 'low' | 'medium' | 'high'
         let user_id: String
         let run_id: String?
-        // Note: 'goal' parameter is for logging/future use - edge function doesn't use it yet
-        // Edge function selects strategies based on distance category, runner level, and situation
+        // Coach Logic routing (optional, omitted when nil): the edge function pre-filters the
+        // KB by cluster + phase and uses intent_label as selector context.
+        let cluster: String?       // strategy cluster routed by the on-watch diagnosis engine
+        let phase: String?         // start | early | mid | late | finish
+        let intent_label: String?  // short human-readable coaching intent
+        let feedback_type: String? // start | interval | end
+        let recent_strategies: [String]?
+        let runner_strategy_fx: String?
+        let previous_strategy: String?
     }
     
     struct StrategyResponse: Codable {
@@ -94,7 +101,11 @@ class CoachStrategyRAGManager {
         energyLevel: String,
         userId: String,
         runId: String? = nil,
-        goal: String
+        goal: String,
+        feedbackType: String = "interval",
+        recentStrategies: [String] = [],
+        runnerStrategyFx: String? = nil,
+        previousStrategy: String? = nil
     ) async -> StrategyResponse.Strategy? {
         guard !supabaseURL.isEmpty else {
             print("❌ [CoachStrategyRAG] Supabase URL not configured")
@@ -125,12 +136,28 @@ class CoachStrategyRAGManager {
             // It selects strategies based on distance category, runner level, and situation automatically
             // Graph RAG leverages graph-based embeddings for enhanced strategy matching
             // We pass goal for logging purposes
+            // Coach Logic routing: derive a structured diagnosis (cluster + intent + phase)
+            // from the performance analysis and route the KB query. Additive — falls back to
+            // the edge function's standard selection if these are nil.
+            let diag = WatchDiagnosisEngine.diagnose(pa: performanceAnalysis, goal: goal)
+            let routedCluster = (goal == "tactical")
+                ? WatchDiagnosisEngine.confirmedCluster(runId: runId, raw: diag.cluster, urgency: diag.urgency, confidence: diag.confidence)
+                : diag.cluster
+            print("📚 [CoachStrategyRAG] Diagnosis → cluster=\(routedCluster), phase=\(diag.phase), intent=\(diag.intent)")
+
             let strategyRequest = StrategyRequest(
                 performance_analysis: performanceAnalysis,
                 personality: personality,
                 energy_level: energyLevel,
                 user_id: userId,
-                run_id: runId
+                run_id: runId,
+                cluster: routedCluster,
+                phase: diag.phase,
+                intent_label: diag.intent,
+                feedback_type: feedbackType,
+                recent_strategies: recentStrategies.isEmpty ? nil : recentStrategies,
+                runner_strategy_fx: runnerStrategyFx,
+                previous_strategy: previousStrategy
             )
             
             request.httpBody = try JSONEncoder().encode(strategyRequest)
@@ -269,6 +296,193 @@ class CoachStrategyRAGManager {
             return "Bearer \(token)"
         }
         return "Bearer \(supabaseKey)"
+    }
+}
+
+// MARK: - Watch Run Diagnosis Engine
+//
+// Mirrors the iOS RunDiagnosisEngine: turns the performance analysis into one typed
+// diagnosis (cluster + intent + phase) with evidence-weighted confidence and a forward
+// projection. Internal routing only — no prompt or response-schema changes.
+//
+// The watch has no per-km HR, so the HR dimension uses the coarse hr_trend label while
+// pace rate-of-change (slope) and variability come from interval_paces.
+
+struct WatchRunDiagnosis {
+    let cluster: String
+    let intent: String
+    let phase: String
+    let urgency: Int        // 0 none … 5 critical
+    let confidence: Double  // 0–1
+}
+
+enum WatchDiagnosisEngine {
+
+    private static let stateKeyPrefix = "watch_coachlogic_state_"
+
+    // MARK: Numeric helpers
+
+    static func slope(_ y: [Double]) -> Double {
+        let n = y.count
+        guard n >= 2 else { return 0 }
+        let xs = (0..<n).map { Double($0) }
+        let mx = xs.reduce(0, +) / Double(n)
+        let my = y.reduce(0, +) / Double(n)
+        var num = 0.0, den = 0.0
+        for i in 0..<n {
+            num += (xs[i] - mx) * (y[i] - my)
+            den += (xs[i] - mx) * (xs[i] - mx)
+        }
+        return den == 0 ? 0 : num / den
+    }
+
+    static func cv(_ y: [Double]) -> Double {
+        let n = y.count
+        guard n >= 2 else { return 0 }
+        let mean = y.reduce(0, +) / Double(n)
+        guard mean != 0 else { return 0 }
+        let varc = y.map { ($0 - mean) * ($0 - mean) }.reduce(0, +) / Double(n)
+        return sqrt(varc) / abs(mean)
+    }
+
+    static func trendConfidence(_ n: Int) -> Double { min(1.0, max(0.0, Double(n - 1) / 3.0)) }
+
+    // MARK: Phase
+
+    static func derivePhase(pa: CoachStrategyRAGManager.PerformanceAnalysis, goal: String) -> String {
+        if goal == "race_strategy" { return "start" }
+        if goal == "learning" { return "finish" }
+        if pa.target_distance > 0 {
+            let frac = pa.current_distance / pa.target_distance
+            if frac >= 0.9 { return "finish" }
+            if frac >= 0.6 { return "late" }
+            if frac >= 0.25 { return "mid" }
+            return "early"
+        }
+        return "mid"
+    }
+
+    // MARK: Diagnose
+
+    static func diagnose(pa: CoachStrategyRAGManager.PerformanceAnalysis, goal: String) -> WatchRunDiagnosis {
+        let phase = derivePhase(pa: pa, goal: goal)
+
+        // Start: open with a pacing intent based on direction vs target.
+        if phase == "start" {
+            let status = pa.target_status.lowercased()
+            let intent: String
+            if status.contains("ahead") { intent = "Settle a hot start — pull back to plan pace" }
+            else if status.contains("behind") { intent = "Lift gently to plan pace — conservative start" }
+            else { intent = "Execute the race plan — lock target effort" }
+            return WatchRunDiagnosis(cluster: "pace_control", intent: intent, phase: phase, urgency: 1, confidence: 0.7)
+        }
+
+        // Signed pace gap (+ slower, − faster) from target_status direction + magnitude.
+        let status = pa.target_status.lowercased()
+        let mag = abs(pa.pace_deviation)
+        let paceGapPct: Double = status.contains("behind") ? mag : (status.contains("ahead") ? -mag : 0)
+
+        let paceSlopeSecPerKm = slope(pa.interval_paces.filter { $0 > 0 }) * 60.0
+        let paceCV = cv(pa.interval_paces.filter { $0 > 0 })
+        let n = pa.completed_intervals
+        let tconf = trendConfidence(n)
+
+        let fat = pa.fatigue_level.lowercased()
+        let zone = pa.current_zone ?? 0
+        let effort = zone >= 4 ? "high" : (zone == 3 ? "moderate" : "low")
+        let unsustainable = fat.contains("critical") || zone >= 5
+        let hr = pa.hr_trend.lowercased()
+        let hrRising = hr.contains("ris") || hr.contains("drift") || hr.contains("spik")
+        let hrFalling = hr.contains("recover") || hr.contains("fall") || hr.contains("drop")
+        let slowing = paceSlopeSecPerKm > 4.0
+        let isLate = (phase == "late" || phase == "finish")
+
+        struct Cand { let cluster: String; let intent: String; let urgency: Int; let confidence: Double
+            var score: Double { Double(urgency) + min(confidence, 1.0) * 0.99 } }
+        var cands: [Cand] = []
+
+        // A. Wall (critical)
+        if isLate && unsustainable {
+            cands.append(Cand(cluster: "wall_management", intent: "Manage the wall — protect form, target the finish", urgency: 5, confidence: fat.contains("critical") ? 0.9 : max(0.6, tconf)))
+        }
+        // B. Bonk — HR falling + pace falling (critical)
+        if hrFalling && slowing {
+            cands.append(Cand(cluster: "fatigue_management", intent: "Fuel and ease — bonk pattern (HR falling with pace)", urgency: 5, confidence: max(0.5, tconf)))
+        }
+        // C. Fatigue — HR rising + pace falling (high)
+        if hrRising && slowing {
+            cands.append(Cand(cluster: "fatigue_management", intent: "Reduce effort — fatigue (HR up, pace down)", urgency: 4, confidence: max(0.5, tconf)))
+        }
+        // D. HR drift — HR rising while holding/faster (high)
+        if hrRising && !slowing {
+            cands.append(Cand(cluster: "hr_management", intent: "Manage HR drift — protect aerobic ceiling", urgency: 4, confidence: 0.55))
+        }
+        // G. Way behind + high cost (high)
+        if paceGapPct > 10 && (effort == "high" || unsustainable) {
+            cands.append(Cand(cluster: "goal_management", intent: "Pivot to a realistic goal", urgency: 4, confidence: 0.7))
+        }
+        // E. Forward-looking positive-split risk (medium)
+        if !isLate && slowing && paceGapPct > 2 {
+            cands.append(Cand(cluster: "pace_control", intent: "Arrest the drift now — heading for a positive split", urgency: 3, confidence: max(0.45, tconf)))
+        }
+        // F. Volatile pacing (medium)
+        if paceCV > 0.06 {
+            cands.append(Cand(cluster: "pace_control", intent: "Stabilise pace — hold consistent effort", urgency: 3, confidence: min(0.85, 0.4 + paceCV * 4 + tconf * 0.2)))
+        }
+        // H. Recoverable deficit (medium)
+        if paceGapPct > 2 && paceGapPct <= 10 && (effort == "low" || effort == "moderate") && !hrRising {
+            cands.append(Cand(cluster: "goal_management", intent: "Recover the deficit within HR headroom", urgency: 3, confidence: 0.6))
+        }
+        // I. Exploit surplus (opportunity)
+        if paceGapPct < -2 && (fat.contains("fresh") || fat.contains("moderate")) && effort != "high" && !hrRising {
+            cands.append(Cand(cluster: "pacing_architecture", intent: "Exploit surplus — controlled acceleration within HR ceiling", urgency: 2, confidence: max(0.45, tconf)))
+        }
+        // J. Finish kick (high)
+        if phase == "finish" && !fat.contains("critical") && paceGapPct <= 5 && !slowing {
+            cands.append(Cand(cluster: "finish", intent: "Commit the finish kick", urgency: 4, confidence: 0.7))
+        }
+
+        guard let best = cands.max(by: { $0.score < $1.score }) else {
+            return WatchRunDiagnosis(cluster: "pace_control", intent: "Hold the race plan — stay disciplined", phase: phase, urgency: 0, confidence: 0.5)
+        }
+        return WatchRunDiagnosis(cluster: best.cluster, intent: best.intent, phase: phase, urgency: best.urgency, confidence: min(0.95, max(0.3, best.confidence)))
+    }
+
+    // MARK: Confirmation guard (per-run, persisted)
+
+    private struct State: Codable { var pendingCluster: String; var pendingCount: Int; var activeCluster: String }
+
+    private static func additionalConfirm(cluster: String, urgency: Int, confidence: Double) -> Int {
+        if cluster == "wall_management" || cluster == "finish" { return 0 }
+        if urgency >= 5 || confidence >= 0.8 { return 0 }
+        return 1
+    }
+
+    static func confirmedCluster(runId: String?, raw: String, urgency: Int, confidence: Double) -> String {
+        let key = stateKeyPrefix + (runId ?? "default")
+        var state: State
+        if let data = UserDefaults.standard.data(forKey: key), let s = try? JSONDecoder().decode(State.self, from: data) {
+            state = s
+        } else {
+            state = State(pendingCluster: "", pendingCount: 0, activeCluster: "")
+        }
+
+        let result: String
+        if raw == "pace_control" || raw == state.activeCluster {
+            state.activeCluster = raw; state.pendingCluster = raw; state.pendingCount = 1
+            result = raw
+        } else {
+            if state.pendingCluster == raw { state.pendingCount += 1 }
+            else { state.pendingCluster = raw; state.pendingCount = 1 }
+            if state.pendingCount > additionalConfirm(cluster: raw, urgency: urgency, confidence: confidence) {
+                state.activeCluster = raw; result = raw
+            } else {
+                result = state.activeCluster.isEmpty ? "pace_control" : state.activeCluster
+            }
+        }
+
+        if let data = try? JSONEncoder().encode(state) { UserDefaults.standard.set(data, forKey: key) }
+        return result
     }
 }
 

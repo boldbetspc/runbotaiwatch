@@ -105,6 +105,14 @@ final class SpotifyMoodController: ObservableObject {
     private var lastAIFeedbackTime: Date = .distantPast
     private let aiFeedbackCooldown: TimeInterval = 60
     
+    // MARK: - Analytics (post-run batch ingest)
+    private var runStartTime: Date?
+    private var moodWallSeconds: [Mood: TimeInterval] = [:]
+    private var moodSegmentMood: Mood?
+    private var moodSegmentStart: Date?
+    private var moodTimeline: [[String: Any]] = []
+    private var pendingAnalyticsEvents: [[String: Any]] = []
+
     // MARK: - Cancellables
     private var cancellables = Set<AnyCancellable>()
     
@@ -183,6 +191,12 @@ final class SpotifyMoodController: ObservableObject {
     func start() {
         guard !isActive else { return }
         isActive = true
+        runStartTime = Date()
+        moodWallSeconds = [:]
+        moodTimeline = []
+        pendingAnalyticsEvents = []
+        moodSegmentMood = nil
+        moodSegmentStart = nil
         stateAnalyzer.reset()
         startUpdateTimer()
         print("🎭 [MoodController] Started")
@@ -267,6 +281,7 @@ final class SpotifyMoodController: ObservableObject {
     private func executeMoodSwitch(to newMood: Mood, reason: String, result: RunnerStateAnalyzer.AnalysisResult) {
         let previousMood = currentMood
         
+        recordMoodSegment(newMood)
         currentMood = newMood
         moodColor = newMood.color
         bpmRange = newMood.bpmRangeString
@@ -444,7 +459,69 @@ final class SpotifyMoodController: ObservableObject {
             feedback.score = max(-5, min(5, feedback.score + scoreChange))
             trackScores[currentURI] = feedback
             currentTrackScore = feedback.score
+            let elapsed = Int(Date().timeIntervalSince(runStartTime ?? Date()))
+            let tempo = estimateTrackBPM(RunEmotionTrack(id: currentURI, name: currentURI, artist: "", durationMs: 180000))
+            pendingAnalyticsEvents.append([
+                "mood": currentMood.rawValue,
+                "track_uri": currentURI,
+                "track_name": currentURI,
+                "score_delta": scoreChange,
+                "music_source": RunEmotionMusicSource.current == .appleMusic ? "Apple Music" : "Spotify",
+                "genre": currentMood.genres.first ?? "",
+                "tempo_bpm": tempo,
+                "elapsed_run_sec": elapsed,
+                "pace_delta_pct": paceChange,
+                "hr_delta_pct": hrChange,
+                "platform": "watch",
+                "situation_context": ["runner_state": currentMood.rawValue]
+            ])
         }
+    }
+
+    private func recordMoodSegment(_ mood: Mood) {
+        let now = Date()
+        if let prev = moodSegmentMood, let start = moodSegmentStart {
+            moodWallSeconds[prev, default: 0] += now.timeIntervalSince(start)
+        }
+        moodSegmentMood = mood
+        moodSegmentStart = now
+        let elapsed = Int(now.timeIntervalSince(runStartTime ?? now))
+        moodTimeline.append(["mood": mood.rawValue, "elapsed_sec": elapsed])
+    }
+
+    private func moodTimePercentages() -> [String: Double] {
+        let now = Date()
+        var seconds = moodWallSeconds
+        if let m = moodSegmentMood, let start = moodSegmentStart {
+            seconds[m, default: 0] += now.timeIntervalSince(start)
+        }
+        let total = seconds.values.reduce(0, +)
+        guard total > 0.5 else { return [:] }
+        var pct: [String: Double] = [:]
+        for (mood, sec) in seconds {
+            pct[mood.rawValue] = sec / total * 100.0
+        }
+        return pct
+    }
+
+    /// Build summary + return pending events for post-run Supabase ingest.
+    func analyticsPayload(runnerLevel: String) -> (events: [[String: Any]], summary: [String: Any]) {
+        var events = pendingAnalyticsEvents
+        for i in events.indices {
+            events[i]["runner_level"] = runnerLevel
+        }
+        let pct = moodTimePercentages()
+        let top = pct.max { $0.value < $1.value }
+        let source = RunEmotionMusicSource.current == .appleMusic ? "Apple Music" : "Spotify"
+        var summary: [String: Any] = [
+            "mood_pct": pct,
+            "music_source": source,
+            "mood_timeline": moodTimeline,
+            "platform": "watch",
+            "runner_level": runnerLevel
+        ]
+        if let top { summary["top_mood"] = top.key }
+        return (events, summary)
     }
     
     private func finalizePreviousTrackScore() {

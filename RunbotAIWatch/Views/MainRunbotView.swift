@@ -1796,9 +1796,10 @@ struct MainRunbotView: View {
         print("✅ [MainRunbotView] Run Emotion started with 5s stats feed")
     }
     
-    private func stopRunEmotion() {
+    private func stopRunEmotion(runId: String? = nil, runnerLevel: String = "casual") {
         spotifyFeedTimer?.invalidate()
         spotifyFeedTimer = nil
+        let analytics = moodController.analyticsPayload(runnerLevel: runnerLevel)
         moodController.stop()
         
         Task {
@@ -1808,8 +1809,16 @@ struct MainRunbotView: View {
             }
         }
         
-        // Post-run: batch upsert track scores to Supabase
+        // Post-run: batch upsert track scores + emotion analytics to Supabase
         let userId = authManager.currentUser?.id ?? "watch_user"
+        if let rid = runId, !rid.isEmpty, !analytics.events.isEmpty || !(analytics.summary["mood_pct"] as? [String: Double] ?? [:]).isEmpty {
+            Task {
+                _ = await supabaseManager.ingestRunEmotionBatch(
+                    userId: userId, runId: rid,
+                    events: analytics.events, summary: analytics.summary
+                )
+            }
+        }
         let updatedScores = moodController.getUpdatedScores()
         if !updatedScores.isEmpty {
             let records = updatedScores.map { feedback in
@@ -2044,12 +2053,13 @@ struct MainRunbotView: View {
         // GUARDRAIL 1: Stop all ongoing coaching/voice immediately
         aiCoach.stopCoaching()
         voiceManager.stopSpeaking()
-        stopRunEmotion()
+        let sessionSnapshot = runTracker.currentSession
+        let runnerLevel = userPreferences.settings.targetDistance.displayName
+        stopRunEmotion(runId: sessionSnapshot?.id, runnerLevel: runnerLevel)
         print("✅ [MainRunbotView] Ongoing AI sessions and Run Emotion terminated")
         
         // CRITICAL: Capture session and stats AFTER final update, BEFORE stopping tracker
         // This ensures we have the absolute latest distance, pace, HR, etc.
-        let sessionSnapshot = runTracker.currentSession
         let statsSnapshot = runTracker.getCurrentStats()
         physiologyManager.endRun(runId: sessionSnapshot?.id)
         

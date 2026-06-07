@@ -46,6 +46,7 @@ class AICoachManager: NSObject, ObservableObject {
     private var raceIntelligenceBrief: String = ""
     private var startStrategyName: String = ""
     private var strategiesUsed: [String] = []
+    private var strategiesUsedDuringRun: [(strategyId: String, strategyName: String, feedbackType: String)] = []
     
     override init() {
         if let config = ConfigLoader.loadConfig() {
@@ -239,6 +240,63 @@ class AICoachManager: NSObject, ObservableObject {
         raceIntelligenceBrief = ""
         startStrategyName = ""
         strategiesUsed = []
+        strategiesUsedDuringRun = []
+    }
+
+    private func recentStrategyNames() -> [String] {
+        Array(strategiesUsedDuringRun.suffix(4).map { $0.strategyName }.filter { !$0.isEmpty })
+    }
+
+    private func updateStrategyOutcomes(stats: RunningStatsUpdate, durationSeconds: TimeInterval, preferences: UserPreferences.Settings) async {
+        guard !strategiesUsedDuringRun.isEmpty else { return }
+        guard stats.distance > 300 else { return }
+
+        let targetPace = preferences.targetPaceMinPerKm
+        let targetDistM = preferences.targetDistanceMeters
+        let isSuccess: Bool
+        if targetDistM > 0, targetPace > 0, stats.distance >= targetDistM * 0.95 {
+            let expectedSec = (targetDistM / 1000.0) * targetPace * 60.0
+            isSuccess = durationSeconds <= expectedSec * 1.05
+        } else if targetPace > 0 {
+            isSuccess = stats.effectivePace <= targetPace + 0.083
+        } else {
+            isSuccess = stats.distance >= targetDistM * 0.9
+        }
+
+        for (strategyId, _, _) in strategiesUsedDuringRun {
+            await incrementStrategyOutcome(strategyId: strategyId, outcome: isSuccess ? "success" : "partial")
+        }
+        strategiesUsedDuringRun = []
+    }
+
+    private func incrementStrategyOutcome(strategyId: String, outcome: String) async {
+        let score: Double = outcome == "success" ? 1.0 : (outcome == "partial" ? 0.5 : 0.0)
+        guard !supabaseURL.isEmpty else { return }
+        guard let url = URL(string: "\(supabaseURL)/rest/v1/rpc/increment_strategy_kb_outcome") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue(supabaseAnonKey, forHTTPHeaderField: "apikey")
+        request.setValue(getAuthHeaderForRPC(), forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: [
+            "p_strategy_id": strategyId,
+            "p_outcome_score": score
+        ])
+        do {
+            let (_, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
+                print("✅ [DeepLearning] Strategy \(strategyId) outcome recorded (\(outcome))")
+            }
+        } catch {
+            print("❌ [DeepLearning] Strategy outcome error: \(error)")
+        }
+    }
+
+    private func getAuthHeaderForRPC() -> String {
+        if let token = UserDefaults.standard.string(forKey: "sessionToken") {
+            return "Bearer \(token)"
+        }
+        return "Bearer \(supabaseAnonKey)"
     }
     
     // MARK: - Coaching Control
@@ -299,11 +357,14 @@ class AICoachManager: NSObject, ObservableObject {
                 performanceAnalysis: perfAnalysis,
                 personality: preferences.coachPersonality.rawValue.lowercased(),
                 energyLevel: preferences.coachEnergy.rawValue.lowercased(),
-                userId: userId, runId: runSessionId, goal: "race_strategy"
+                userId: userId, runId: runSessionId, goal: "race_strategy",
+                feedbackType: "start",
+                recentStrategies: recentStrategyNames()
             )
             if let strategy = coachStrategy {
                 startStrategyName = strategy.strategy_name
                 strategiesUsed.append(strategy.strategy_name)
+                strategiesUsedDuringRun.append((strategyId: strategy.strategy_id, strategyName: strategy.strategy_name, feedbackType: "start"))
                 print("📚 [AICoach] Start strategy: \(strategy.strategy_name)")
             }
             
@@ -389,12 +450,16 @@ class AICoachManager: NSObject, ObservableObject {
                     performanceAnalysis: perfAnalysis,
                     personality: preferences.coachPersonality.rawValue.lowercased(),
                     energyLevel: preferences.coachEnergy.rawValue.lowercased(),
-                    userId: userId, runId: runSessionId, goal: "tactical"
+                    userId: userId, runId: runSessionId, goal: "tactical",
+                    feedbackType: "interval",
+                    recentStrategies: recentStrategyNames(),
+                    previousStrategy: strategiesUsed.last
                 )
                 if let strategy = coachStrategy {
                     if !strategiesUsed.contains(strategy.strategy_name) {
                         strategiesUsed.append(strategy.strategy_name)
                     }
+                    strategiesUsedDuringRun.append((strategyId: strategy.strategy_id, strategyName: strategy.strategy_name, feedbackType: "interval"))
                 }
             }
             
@@ -484,6 +549,8 @@ class AICoachManager: NSObject, ObservableObject {
                 preferences: preferences, ragAnalysis: ragEndOfRunAnalysis,
                 responseSummary: responseSummary
             )
+
+            await updateStrategyOutcomes(stats: stats, durationSeconds: session.duration, preferences: preferences)
             
             ragAnalyzer.clearRunContext()
             resetRunState()

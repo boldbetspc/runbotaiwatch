@@ -1208,6 +1208,41 @@ class SupabaseManager: ObservableObject {
         return false
     }
     
+    /// Post-run batch ingest for Run Emotion analytics (fire-and-forget; no coaching latency).
+    func ingestRunEmotionBatch(
+        userId: String,
+        runId: String,
+        events: [[String: Any]],
+        summary: [String: Any]
+    ) async -> Bool {
+        guard isInitialized, !userId.isEmpty, !runId.isEmpty else { return false }
+        guard !events.isEmpty || !summary.isEmpty else { return false }
+
+        do {
+            let url = URL(string: "\(baseURL)/rest/v1/rpc/ingest_run_emotion_batch")!
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.setValue(anonKey, forHTTPHeaderField: "apikey")
+            request.setValue(getAuthHeader(), forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "p_user_id": userId,
+                "p_run_id": runId,
+                "p_events": events,
+                "p_summary": summary
+            ])
+            request.timeoutInterval = 20
+            let (_, response) = try await session.data(for: request)
+            if let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) {
+                print("✅ [Supabase] Run emotion analytics ingested (\(events.count) events)")
+                return true
+            }
+        } catch {
+            print("❌ [Supabase] Run emotion ingest error: \(error.localizedDescription)")
+        }
+        return false
+    }
+
     struct TrackScoreRecord {
         let trackURI: String
         let score: Int
