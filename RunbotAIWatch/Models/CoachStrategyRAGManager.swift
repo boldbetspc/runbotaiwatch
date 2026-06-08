@@ -139,7 +139,18 @@ class CoachStrategyRAGManager {
             // Coach Logic routing: derive a structured diagnosis (cluster + intent + phase)
             // from the performance analysis and route the KB query. Additive — falls back to
             // the edge function's standard selection if these are nil.
-            let diag = WatchDiagnosisEngine.diagnose(pa: performanceAnalysis, goal: goal)
+            // Load previous confirmed cluster so the diagnosis engine can evaluate
+            // escalation paths (e.g. wall_management → run_walk rescue).
+            let prevCluster: String = {
+                if goal == "tactical", let rid = runId,
+                   let data = UserDefaults.standard.data(forKey: "watch_coachlogic_state_\(rid)"),
+                   let s = try? JSONDecoder().decode(WatchDiagnosisEngine.ExposedState.self, from: data) {
+                    return s.activeCluster
+                }
+                return ""
+            }()
+
+            let diag = WatchDiagnosisEngine.diagnose(pa: performanceAnalysis, goal: goal, previousCluster: prevCluster)
             let routedCluster = (goal == "tactical")
                 ? WatchDiagnosisEngine.confirmedCluster(runId: runId, raw: diag.cluster, urgency: diag.urgency, confidence: diag.confidence)
                 : diag.cluster
@@ -310,10 +321,11 @@ class CoachStrategyRAGManager {
 
 struct WatchRunDiagnosis {
     let cluster: String
-    let intent: String
+    let intent: String      // enriched with meta context for the LLM
     let phase: String
     let urgency: Int        // 0 none … 5 critical
     let confidence: Double  // 0–1
+    let shouldAct: Bool     // confidence gate result
 }
 
 enum WatchDiagnosisEngine {
@@ -364,20 +376,21 @@ enum WatchDiagnosisEngine {
 
     // MARK: Diagnose
 
-    static func diagnose(pa: CoachStrategyRAGManager.PerformanceAnalysis, goal: String) -> WatchRunDiagnosis {
+    /// Diagnose the current run situation and return a structured cluster + intent.
+    /// Pass `previousCluster` (last confirmed cluster) to enable wall → run_walk escalation.
+    static func diagnose(pa: CoachStrategyRAGManager.PerformanceAnalysis, goal: String, previousCluster: String = "") -> WatchRunDiagnosis {
         let phase = derivePhase(pa: pa, goal: goal)
 
-        // Start: open with a pacing intent based on direction vs target.
+        // Start: use pace_control as default but allow planned run-walk routing via runnerPatterns.
         if phase == "start" {
             let status = pa.target_status.lowercased()
             let intent: String
             if status.contains("ahead") { intent = "Settle a hot start — pull back to plan pace" }
             else if status.contains("behind") { intent = "Lift gently to plan pace — conservative start" }
             else { intent = "Execute the race plan — lock target effort" }
-            return WatchRunDiagnosis(cluster: "pace_control", intent: intent, phase: phase, urgency: 1, confidence: 0.7)
+            return WatchRunDiagnosis(cluster: "pace_control", intent: intent, phase: phase, urgency: 1, confidence: 0.7, shouldAct: true)
         }
 
-        // Signed pace gap (+ slower, − faster) from target_status direction + magnitude.
         let status = pa.target_status.lowercased()
         let mag = abs(pa.pace_deviation)
         let paceGapPct: Double = status.contains("behind") ? mag : (status.contains("ahead") ? -mag : 0)
@@ -396,6 +409,81 @@ enum WatchDiagnosisEngine {
         let hrFalling = hr.contains("recover") || hr.contains("fall") || hr.contains("drop")
         let slowing = paceSlopeSecPerKm > 4.0
         let isLate = (phase == "late" || phase == "finish")
+        let isMidOrLater = (phase == "mid" || phase == "late" || phase == "finish")
+        let distKm = pa.target_distance / 1000.0
+        let isLongRace = distKm >= 10
+        let isMarathon = distKm >= 30
+        let wallActive = previousCluster == "wall_management"
+
+        // ── Meta Assessment (inline — mirrors CoachMetaAssessment on iOS) ─────────────
+
+        // 1. Goal mode
+        let goalMode: String
+        if phase == "finish" || (isLate && fat.contains("critical") && paceGapPct > 8) {
+            goalMode = "survival"
+        } else if isLate && paceGapPct > 6 && (fat.contains("high") || unsustainable) {
+            goalMode = "protect"
+        } else if isMidOrLater && paceGapPct > 3 {
+            goalMode = "adjust_pacing"
+        } else if paceGapPct < -3 && !hrRising && !fat.contains("high") {
+            goalMode = "upgrade"
+        } else {
+            goalMode = "pursue"
+        }
+
+        // 2. Signal pattern
+        let signalPattern: String
+        if n < 2 {
+            signalPattern = "insufficient"
+        } else if n >= 3 && slowing && tconf >= 0.5 {
+            signalPattern = "structural"
+        } else {
+            signalPattern = "temporary"
+        }
+
+        // 3. Fatigue source
+        let fatigueSource: String
+        if hrFalling && slowing { fatigueSource = "glycogen_depletion" }
+        else if hrRising && slowing && fat.contains("high") { fatigueSource = "cardiovascular" }
+        else if hrRising && slowing { fatigueSource = "muscular" }
+        else if paceCV > 0.10 && !hrRising { fatigueSource = "pacing_error" }
+        else if fat.contains("high") && !hrRising { fatigueSource = "muscular" }
+        else { fatigueSource = "unknown" }
+
+        // 4. Escalation rung
+        let escalationRung: Int
+        switch previousCluster {
+        case "": escalationRung = 0
+        case "pace_control", "pacing_architecture": escalationRung = 1
+        case "hr_management": escalationRung = 2
+        case "goal_management", "fatigue_management": escalationRung = 3
+        case "run_walk": escalationRung = 4
+        case "wall_management", "finish": escalationRung = 5
+        default: escalationRung = 1
+        }
+
+        // 5. Recovery potential
+        let recoveryPotential: String
+        if phase == "finish" || (isLate && fat.contains("critical")) { recoveryPotential = "minimal" }
+        else if isLate && fat.contains("high") { recoveryPotential = "low" }
+        else if fat.contains("moderate") || !isLate { recoveryPotential = "moderate" }
+        else { recoveryPotential = "high" }
+
+        // 6. Reserve capacity
+        let reserveCapacity: String
+        if paceGapPct < -3 && !hrRising && !fat.contains("high") { reserveCapacity = "available" }
+        else if paceGapPct <= 0 && !hrRising { reserveCapacity = "marginal" }
+        else { reserveCapacity = "depleted" }
+
+        // 7. Confidence gate (shouldAct)
+        let shouldAct: Bool
+        switch signalPattern {
+        case "insufficient": shouldAct = false
+        case "temporary": shouldAct = (goalMode == "protect" || goalMode == "survival")
+        default: shouldAct = tconf >= 0.4 || goalMode == "protect" || goalMode == "survival"
+        }
+
+        let metaCtx = "META[\(goalMode)|\(fatigueSource)|\(signalPattern)|rec:\(recoveryPotential)|res:\(reserveCapacity)|rung:\(escalationRung)|\(shouldAct ? "ACT" : "HOLD")]"
 
         struct Cand { let cluster: String; let intent: String; let urgency: Int; let confidence: Double
             var score: Double { Double(urgency) + min(confidence, 1.0) * 0.99 } }
@@ -405,55 +493,121 @@ enum WatchDiagnosisEngine {
         if isLate && unsustainable {
             cands.append(Cand(cluster: "wall_management", intent: "Manage the wall — protect form, target the finish", urgency: 5, confidence: fat.contains("critical") ? 0.9 : max(0.6, tconf)))
         }
-        // B. Bonk — HR falling + pace falling (critical)
-        if hrFalling && slowing {
-            cands.append(Cand(cluster: "fatigue_management", intent: "Fuel and ease — bonk pattern (HR falling with pace)", urgency: 5, confidence: max(0.5, tconf)))
+        // B. Reactive run-walk rescue — severe pace drop + fatigue, or escalating from wall
+        let paceDropSevere = paceSlopeSecPerKm > 8.0 || (slowing && paceGapPct > 10)
+        let fatigueSevere = fat.contains("critical") || (fat.contains("high") && unsustainable)
+        if (paceDropSevere && fatigueSevere) || (wallActive && fat.contains("high")) {
+            let rwConf = fat.contains("critical") ? 0.9 : max(0.65, tconf)
+            cands.append(Cand(cluster: "run_walk", intent: "Switch to run-walk now — continuous running is accelerating the collapse", urgency: 5, confidence: rwConf))
         }
-        // C. Fatigue — HR rising + pace falling (high)
+        // B2. Reactive run-walk proactive — moderate fade, effort rising, mid+
+        let paceFadingModerate = paceSlopeSecPerKm > 4.0 && paceGapPct > 8
+        let effortRising = hrRising && (effort == "high" || unsustainable)
+        if isMidOrLater && paceFadingModerate && effortRising && !fat.contains("fresh") {
+            cands.append(Cand(cluster: "run_walk", intent: "Introduce run-walk intervals — protect the second half before fatigue compounds", urgency: 4, confidence: max(0.55, tconf)))
+        }
+        // C. Bonk — HR falling + pace falling → fuelling cluster
+        if hrFalling && slowing {
+            cands.append(Cand(cluster: "fuelling", intent: "Fuel emergency — bonk pattern (HR + pace both dropping), calories + ease", urgency: 5, confidence: max(0.6, tconf)))
+        }
+        // D. Fatigue — HR rising + pace falling (high)
         if hrRising && slowing {
             cands.append(Cand(cluster: "fatigue_management", intent: "Reduce effort — fatigue (HR up, pace down)", urgency: 4, confidence: max(0.5, tconf)))
         }
-        // D. HR drift — HR rising while holding/faster (high)
+        // E. HR drift — HR rising while holding/faster (high)
         if hrRising && !slowing {
             cands.append(Cand(cluster: "hr_management", intent: "Manage HR drift — protect aerobic ceiling", urgency: 4, confidence: 0.55))
+        }
+        // F. Fuelling window — long race proactive
+        if isLongRace && isMidOrLater && !fat.contains("fresh") {
+            cands.append(Cand(
+                cluster: "fuelling",
+                intent: isMarathon ? "Fuel window — take calories now, absorption takes 15-20 min before km30 wall" : "Mid-race fuel check — take gel if planned",
+                urgency: isMarathon ? 3 : 2,
+                confidence: isMarathon ? 0.65 : 0.5))
         }
         // G. Way behind + high cost (high)
         if paceGapPct > 10 && (effort == "high" || unsustainable) {
             cands.append(Cand(cluster: "goal_management", intent: "Pivot to a realistic goal", urgency: 4, confidence: 0.7))
         }
-        // E. Forward-looking positive-split risk (medium)
+        // H. Forward-looking positive-split risk (medium)
         if !isLate && slowing && paceGapPct > 2 {
             cands.append(Cand(cluster: "pace_control", intent: "Arrest the drift now — heading for a positive split", urgency: 3, confidence: max(0.45, tconf)))
         }
-        // F. Volatile pacing (medium)
+        // I. Volatile pacing (medium)
         if paceCV > 0.06 {
             cands.append(Cand(cluster: "pace_control", intent: "Stabilise pace — hold consistent effort", urgency: 3, confidence: min(0.85, 0.4 + paceCV * 4 + tconf * 0.2)))
         }
-        // H. Recoverable deficit (medium)
+        // J. Recoverable deficit (medium)
         if paceGapPct > 2 && paceGapPct <= 10 && (effort == "low" || effort == "moderate") && !hrRising {
             cands.append(Cand(cluster: "goal_management", intent: "Recover the deficit within HR headroom", urgency: 3, confidence: 0.6))
         }
-        // I. Exploit surplus (opportunity)
+        // K. Exploit surplus (opportunity)
         if paceGapPct < -2 && (fat.contains("fresh") || fat.contains("moderate")) && effort != "high" && !hrRising {
             cands.append(Cand(cluster: "pacing_architecture", intent: "Exploit surplus — controlled acceleration within HR ceiling", urgency: 2, confidence: max(0.45, tconf)))
         }
-        // J. Finish kick (high)
+        // L. Finish kick (high)
         if phase == "finish" && !fat.contains("critical") && paceGapPct <= 5 && !slowing {
             cands.append(Cand(cluster: "finish", intent: "Commit the finish kick", urgency: 4, confidence: 0.7))
         }
 
-        guard let best = cands.max(by: { $0.score < $1.score }) else {
-            return WatchRunDiagnosis(cluster: "pace_control", intent: "Hold the race plan — stay disciplined", phase: phase, urgency: 0, confidence: 0.5)
+        // ── Confidence gate: hold & monitor if evidence is insufficient ──────────────────
+        let criticalPresent = cands.contains { $0.urgency >= 5 }
+        if !shouldAct && !criticalPresent {
+            let holdIntent = "Hold and monitor — \(signalPattern) signal, not yet actionable. \(metaCtx)"
+            return WatchRunDiagnosis(cluster: "pace_control", intent: holdIntent, phase: phase, urgency: 1, confidence: 0.6, shouldAct: false)
         }
-        return WatchRunDiagnosis(cluster: best.cluster, intent: best.intent, phase: phase, urgency: best.urgency, confidence: min(0.95, max(0.3, best.confidence)))
+
+        // ── Meta score modifiers ─────────────────────────────────────────────────────────
+        let scored: [(Cand, Double)] = cands.map { c in
+            var boost = 0.0
+            // Goal mode boosts
+            if goalMode == "protect" || goalMode == "survival" {
+                if c.cluster == "wall_management" || c.cluster == "run_walk" { boost += (goalMode == "survival" ? 2.0 : 1.5) }
+                if c.cluster == "pacing_architecture" { boost -= 1.5 }
+            } else if goalMode == "upgrade" {
+                if c.cluster == "pacing_architecture" || c.cluster == "finish" { boost += 0.5 }
+            }
+            // Fatigue source boosts
+            if fatigueSource == "glycogen_depletion" && c.cluster == "fuelling" { boost += 2.0 }
+            if fatigueSource == "cardiovascular" && c.cluster == "hr_management" { boost += 0.8 }
+            if fatigueSource == "muscular" && (c.cluster == "fatigue_management" || c.cluster == "run_walk") { boost += 0.5 }
+            if fatigueSource == "pacing_error" && c.cluster == "pace_control" { boost += 0.8 }
+            // Recovery potential suppresses goal-pursuit when running out of race
+            if (recoveryPotential == "minimal" || recoveryPotential == "low") && c.cluster == "goal_management" { boost -= 0.8 }
+            // Reserve capacity gates aggressive clusters
+            if reserveCapacity == "available" && c.cluster == "pacing_architecture" { boost += 0.4 }
+            if reserveCapacity == "depleted" && c.cluster == "pacing_architecture" { boost -= 0.5 }
+            // Escalation guard: penalise >2 rung jumps
+            let clusterRung: Int
+            switch c.cluster {
+            case "pace_control", "pacing_architecture": clusterRung = 1
+            case "hr_management": clusterRung = 2
+            case "goal_management", "fatigue_management": clusterRung = 3
+            case "run_walk": clusterRung = 4
+            default: clusterRung = 5
+            }
+            let jump = clusterRung - escalationRung
+            if jump > 2 { boost -= Double(jump - 2) * 0.8 }
+            return (c, c.score + boost)
+        }
+
+        guard let (best, _) = scored.max(by: { $0.1 < $1.1 }) else {
+            return WatchRunDiagnosis(cluster: "pace_control", intent: "Hold the race plan — stay disciplined. \(metaCtx)", phase: phase, urgency: 0, confidence: 0.5, shouldAct: false)
+        }
+        return WatchRunDiagnosis(cluster: best.cluster, intent: "\(best.intent) \(metaCtx)", phase: phase, urgency: best.urgency, confidence: min(0.95, max(0.3, best.confidence)), shouldAct: true)
     }
 
     // MARK: Confirmation guard (per-run, persisted)
 
+    private static let immediateActClusters: Set<String> = ["wall_management", "finish", "run_walk", "fuelling"]
+
+    /// Exposed only for the caller to read `activeCluster` without accessing full internals.
+    struct ExposedState: Codable { var pendingCluster: String; var pendingCount: Int; var activeCluster: String }
     private struct State: Codable { var pendingCluster: String; var pendingCount: Int; var activeCluster: String }
 
     private static func additionalConfirm(cluster: String, urgency: Int, confidence: Double) -> Int {
-        if cluster == "wall_management" || cluster == "finish" { return 0 }
+        if immediateActClusters.contains(cluster) { return 0 }
         if urgency >= 5 || confidence >= 0.8 { return 0 }
         return 1
     }
@@ -467,8 +621,11 @@ enum WatchDiagnosisEngine {
             state = State(pendingCluster: "", pendingCount: 0, activeCluster: "")
         }
 
+        // Wall → run_walk escalation: allow immediately without confirmation guard.
+        let isWallToRunWalk = state.activeCluster == "wall_management" && raw == "run_walk"
+
         let result: String
-        if raw == "pace_control" || raw == state.activeCluster {
+        if raw == "pace_control" || raw == state.activeCluster || isWallToRunWalk {
             state.activeCluster = raw; state.pendingCluster = raw; state.pendingCount = 1
             result = raw
         } else {
