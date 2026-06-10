@@ -9,15 +9,19 @@ final class VoiceManager: NSObject, ObservableObject {
     
     // MARK: - Published State
     @Published var isSpeaking = false
+    @Published var isPreparingSpeech = false
     @Published var currentText = ""
     
     // MARK: - Private Properties
     private let synthesizer = AVSpeechSynthesizer()
     private var currentUtterance: AVSpeechUtterance?
     private var audioPlayer: AVAudioPlayer?
+    private var pendingSpeechText = ""
+    private var prewarmedSegmentEndKm: Int = -1
     
     // Speech completion callback
     var onSpeechFinished: (() -> Void)?
+    var onSpeechStarted: (() -> Void)?
     
     // Configuration
     private let openAIKey: String
@@ -54,8 +58,10 @@ final class VoiceManager: NSObject, ObservableObject {
     func speak(_ text: String, using voiceOption: VoiceOption, rate: Float = 0.50) {
         stopSpeaking()
 
-        currentText = text
-        isSpeaking = true
+        pendingSpeechText = text
+        isPreparingSpeech = true
+        isSpeaking = false
+        currentText = ""
 
         // Activate audio session right before speaking (not at idle)
         activateAudioSession()
@@ -94,11 +100,44 @@ final class VoiceManager: NSObject, ObservableObject {
         audioPlayer?.stop()
         audioPlayer = nil
         isSpeaking = false
+        isPreparingSpeech = false
         currentText = ""
+        pendingSpeechText = ""
         // Release audio session so .duckOthers disengages and Spotify can restore at full volume.
         // AVAudioPlayer.stop() and AVSpeechSynthesizer.stopSpeaking() do NOT trigger delegate
         // callbacks that call speechFinished(), so we must deactivate here explicitly.
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+    
+    func resetAudioPrewarmTracking() {
+        prewarmedSegmentEndKm = -1
+    }
+    
+    /// Tier 4: warm the audio stack ~85% toward the next km cue (no sustained ducking).
+    func prewarmAudioIfApproachingInterval(distanceMeters: Double, intervalKm: Int) {
+        guard intervalKm > 0, !isSpeaking, !isPreparingSpeech else { return }
+        let distKm = distanceMeters / 1000.0
+        let freq = Double(intervalKm)
+        let segmentStart = floor(distKm / freq) * freq
+        let progress = distKm - segmentStart
+        let segmentEndKm = Int(segmentStart + freq)
+        guard progress >= freq * 0.85,
+              progress < freq - 0.02,
+              prewarmedSegmentEndKm != segmentEndKm else { return }
+        prewarmedSegmentEndKm = segmentEndKm
+        prewarmAudioSession()
+    }
+    
+    private func prewarmAudioSession() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .voicePrompt, options: [.duckOthers])
+            try session.setActive(true)
+            try session.setActive(false, options: .notifyOthersOnDeactivation)
+            print("🔊 [Voice] Audio session pre-warmed for upcoming coaching cue")
+        } catch {
+            print("⚠️ [Voice] Audio pre-warm skipped: \(error.localizedDescription)")
+        }
     }
     
     
@@ -162,23 +201,21 @@ final class VoiceManager: NSObject, ObservableObject {
         
         Task {
             do {
-                print("🎙️ [Voice] Requesting OpenAI TTS audio...")
-                let audioData = try await requestOpenAITTS(text)
+                print("🎙️ [Voice] Requesting OpenAI TTS audio (tts-1)...")
+                let audioData = try await requestOpenAITTS(text, model: "tts-1")
                 print("🎙️ [Voice] ✅ OpenAI TTS audio received: \(audioData.count) bytes")
-                await playAudioData(audioData)
+                await playAudioData(audioData, spokenText: text)
                 print("🎙️ [Voice] ✅✅✅ OpenAI GPT-4 Mini TTS playback started ✅✅✅")
             } catch {
-                print("❌ [Voice] ========== OPENAI TTS ERROR ==========")
-                print("❌ [Voice] Error: \(error.localizedDescription)")
-                print("❌ [Voice] Error type: \(type(of: error))")
-                if let nsError = error as NSError? {
-                    print("❌ [Voice] Error domain: \(nsError.domain)")
-                    print("❌ [Voice] Error code: \(nsError.code)")
-                }
-                print("❌ [Voice] Falling back to Apple TTS...")
-                // Fall back to Apple TTS
-                await MainActor.run {
-                    speakWithAppleTTS(text, rate: 0.50)
+                print("⚠️ [Voice] tts-1 failed: \(error.localizedDescription) — retrying tts-1-hd")
+                do {
+                    let audioData = try await requestOpenAITTS(text, model: "tts-1-hd")
+                    await playAudioData(audioData, spokenText: text)
+                } catch {
+                    print("❌ [Voice] OpenAI TTS failed — falling back to Apple TTS")
+                    await MainActor.run {
+                        self.speakWithAppleTTS(text, rate: 0.50)
+                    }
                 }
             }
         }
@@ -187,7 +224,7 @@ final class VoiceManager: NSObject, ObservableObject {
     /// Request OpenAI TTS via Supabase edge function (shared with iOS app)
     /// Uses the 'openai-proxy' edge function which has OPENAI_API_KEY in Supabase secrets
     /// URLSession automatically uses best connection: watch cellular → iPhone connection
-    private func requestOpenAITTS(_ text: String) async throws -> Data {
+    private func requestOpenAITTS(_ text: String, model: String = "tts-1") async throws -> Data {
         print("🎙️ [Voice] ========== REQUESTING OPENAI TTS ==========")
         
         guard !supabaseURL.isEmpty else {
@@ -216,7 +253,7 @@ final class VoiceManager: NSObject, ObservableObject {
         let body: [String: Any] = [
             "endpoint": "audio/speech",
             "input": text,
-            "model": "tts-1-hd",  // HD model for highest quality coaching audio
+            "model": model,
             "voice": "nova",
             "response_format": "mp3",
             "speed": 1.0
@@ -224,7 +261,7 @@ final class VoiceManager: NSObject, ObservableObject {
         print("🎙️ [Voice] Request body (matching edge function format):")
         print("   - endpoint: audio/speech (TTS request)")
         print("   - input: \(text.count) characters")
-        print("   - model: tts-1")
+        print("   - model: \(model)")
         print("   - voice: nova")
         print("   - response_format: mp3")
         print("   - speed: 1.0")
@@ -275,7 +312,7 @@ final class VoiceManager: NSObject, ObservableObject {
         throw NSError(domain: "VoiceManager", code: -1, userInfo: [NSLocalizedDescriptionKey: "Invalid response from edge function"])
     }
     
-    private func playAudioData(_ data: Data) async {
+    private func playAudioData(_ data: Data, spokenText: String) async {
         await MainActor.run {
             do {
                 // Re-activate audio session — may have been deactivated during the network round-trip
@@ -289,13 +326,22 @@ final class VoiceManager: NSObject, ObservableObject {
                 audioPlayer?.enableRate = true
                 audioPlayer?.rate = 1.0
                 audioPlayer?.prepareToPlay()
+                markSpeechStarted(text: spokenText)
                 audioPlayer?.play()
-                print("🎙️ [Voice] OpenAI TTS HD playing (volume 1.0)")
+                print("🎙️ [Voice] OpenAI TTS playing (volume 1.0)")
             } catch {
                 print("❌ [Voice] Audio playback error: \(error.localizedDescription)")
                 isSpeaking = false
+                isPreparingSpeech = false
             }
         }
+    }
+    
+    private func markSpeechStarted(text: String) {
+        isPreparingSpeech = false
+        isSpeaking = true
+        currentText = text
+        onSpeechStarted?()
     }
     
     // MARK: - Helpers
@@ -315,7 +361,9 @@ final class VoiceManager: NSObject, ObservableObject {
     
     private func speechFinished() {
         isSpeaking = false
+        isPreparingSpeech = false
         currentText = ""
+        pendingSpeechText = ""
         // Deactivate audio session so .duckOthers releases and Spotify volume restores
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         DispatchQueue.main.async {
@@ -331,7 +379,7 @@ extension VoiceManager: AVSpeechSynthesizerDelegate {
     
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
         DispatchQueue.main.async {
-            self.isSpeaking = true
+            self.markSpeechStarted(text: self.pendingSpeechText.isEmpty ? utterance.speechString : self.pendingSpeechText)
         }
         playHaptic(.click)
         print("🎤 [Voice] Speech started")
@@ -346,7 +394,9 @@ extension VoiceManager: AVSpeechSynthesizerDelegate {
     func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
         DispatchQueue.main.async {
             self.isSpeaking = false
+            self.isPreparingSpeech = false
             self.currentText = ""
+            self.pendingSpeechText = ""
         }
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         print("⏹️ [Voice] Speech cancelled")

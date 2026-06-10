@@ -65,7 +65,11 @@ class CoachStrategyRAGManager {
         let feedback_type: String? // start | interval | end
         let recent_strategies: [String]?
         let runner_strategy_fx: String?
+        let run_session_fx: String?
+        let diagnosis_tags: [String]?
         let previous_strategy: String?
+        let runner_patterns: String?   // Coaching DNA — lets the edge AI profile the runner at start
+        let race_history: String?      // compact recent-run history for start race-plan profiling
     }
     
     struct StrategyResponse: Codable {
@@ -81,6 +85,7 @@ class CoachStrategyRAGManager {
             let confidence_score: Double
             let expected_outcome: String
             let strategy_id: String
+            let strategy_cluster: String?
         }
     }
     
@@ -105,7 +110,10 @@ class CoachStrategyRAGManager {
         feedbackType: String = "interval",
         recentStrategies: [String] = [],
         runnerStrategyFx: String? = nil,
-        previousStrategy: String? = nil
+        runSessionFx: String? = nil,
+        previousStrategy: String? = nil,
+        runnerPatterns: String? = nil,
+        raceHistory: String? = nil
     ) async -> StrategyResponse.Strategy? {
         guard !supabaseURL.isEmpty else {
             print("❌ [CoachStrategyRAG] Supabase URL not configured")
@@ -168,7 +176,11 @@ class CoachStrategyRAGManager {
                 feedback_type: feedbackType,
                 recent_strategies: recentStrategies.isEmpty ? nil : recentStrategies,
                 runner_strategy_fx: runnerStrategyFx,
-                previous_strategy: previousStrategy
+                run_session_fx: runSessionFx,
+                diagnosis_tags: diag.diagnosisTags.isEmpty ? nil : diag.diagnosisTags,
+                previous_strategy: previousStrategy,
+                runner_patterns: runnerPatterns,
+                race_history: raceHistory
             )
             
             request.httpBody = try JSONEncoder().encode(strategyRequest)
@@ -326,6 +338,7 @@ struct WatchRunDiagnosis {
     let urgency: Int        // 0 none … 5 critical
     let confidence: Double  // 0–1
     let shouldAct: Bool     // confidence gate result
+    let diagnosisTags: [String]
 }
 
 enum WatchDiagnosisEngine {
@@ -388,7 +401,8 @@ enum WatchDiagnosisEngine {
             if status.contains("ahead") { intent = "Settle a hot start — pull back to plan pace" }
             else if status.contains("behind") { intent = "Lift gently to plan pace — conservative start" }
             else { intent = "Execute the race plan — lock target effort" }
-            return WatchRunDiagnosis(cluster: "pace_control", intent: intent, phase: phase, urgency: 1, confidence: 0.7, shouldAct: true)
+            return WatchRunDiagnosis(cluster: "pace_control", intent: intent, phase: phase, urgency: 1, confidence: 0.7, shouldAct: true,
+                diagnosisTags: ["pace_control", "race_start"])
         }
 
         let status = pa.target_status.lowercased()
@@ -555,7 +569,8 @@ enum WatchDiagnosisEngine {
         let criticalPresent = cands.contains { $0.urgency >= 5 }
         if !shouldAct && !criticalPresent {
             let holdIntent = "Hold and monitor — \(signalPattern) signal, not yet actionable. \(metaCtx)"
-            return WatchRunDiagnosis(cluster: "pace_control", intent: holdIntent, phase: phase, urgency: 1, confidence: 0.6, shouldAct: false)
+            return WatchRunDiagnosis(cluster: "pace_control", intent: holdIntent, phase: phase, urgency: 1, confidence: 0.6, shouldAct: false,
+                diagnosisTags: buildDiagnosisTags(cluster: "pace_control", paceGapPct: paceGapPct, fatigue: fat, hrRising: hrRising, hrFalling: hrFalling, slowing: slowing))
         }
 
         // ── Meta score modifiers ─────────────────────────────────────────────────────────
@@ -593,9 +608,27 @@ enum WatchDiagnosisEngine {
         }
 
         guard let (best, _) = scored.max(by: { $0.1 < $1.1 }) else {
-            return WatchRunDiagnosis(cluster: "pace_control", intent: "Hold the race plan — stay disciplined. \(metaCtx)", phase: phase, urgency: 0, confidence: 0.5, shouldAct: false)
+            return WatchRunDiagnosis(cluster: "pace_control", intent: "Hold the race plan — stay disciplined. \(metaCtx)", phase: phase, urgency: 0, confidence: 0.5, shouldAct: false,
+                diagnosisTags: buildDiagnosisTags(cluster: "pace_control", paceGapPct: paceGapPct, fatigue: fat, hrRising: hrRising, hrFalling: hrFalling, slowing: slowing))
         }
-        return WatchRunDiagnosis(cluster: best.cluster, intent: "\(best.intent) \(metaCtx)", phase: phase, urgency: best.urgency, confidence: min(0.95, max(0.3, best.confidence)), shouldAct: true)
+        return WatchRunDiagnosis(cluster: best.cluster, intent: "\(best.intent) \(metaCtx)", phase: phase, urgency: best.urgency, confidence: min(0.95, max(0.3, best.confidence)), shouldAct: true,
+            diagnosisTags: buildDiagnosisTags(cluster: best.cluster, paceGapPct: paceGapPct, fatigue: fat, hrRising: hrRising, hrFalling: hrFalling, slowing: slowing))
+    }
+
+    static func buildDiagnosisTags(cluster: String, paceGapPct: Double, fatigue: String, hrRising: Bool, hrFalling: Bool, slowing: Bool) -> [String] {
+        var tags = [cluster]
+        if paceGapPct > 5 { tags.append("behind_pace") }
+        if paceGapPct > 8 { tags.append("goal_pivot") }
+        if paceGapPct < -2 { tags.append("ahead_pace") }
+        if slowing { tags.append("pace_fade") }
+        if hrRising { tags.append("hr_drift") }
+        if hrFalling && slowing { tags.append("bonk") }
+        if fatigue.contains("critical") { tags.append("critical_fatigue") }
+        else if fatigue.contains("high") { tags.append("high_fatigue") }
+        if cluster == "run_walk" { tags.append("run_walk") }
+        if cluster == "fuelling" { tags.append("fuelling") }
+        if cluster == "goal_management" { tags.append("goal_management") }
+        return Array(Set(tags))
     }
 
     // MARK: Confirmation guard (per-run, persisted)
@@ -608,6 +641,7 @@ enum WatchDiagnosisEngine {
 
     private static func additionalConfirm(cluster: String, urgency: Int, confidence: Double) -> Int {
         if immediateActClusters.contains(cluster) { return 0 }
+        if cluster == "goal_management" && urgency >= 4 { return 0 }
         if urgency >= 5 || confidence >= 0.8 { return 0 }
         return 1
     }

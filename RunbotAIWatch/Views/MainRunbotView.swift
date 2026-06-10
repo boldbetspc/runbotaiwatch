@@ -338,6 +338,9 @@ struct MainRunbotView: View {
         .onReceive(runTracker.$statsUpdate.compactMap { $0 }) { stats in
             let km = Int(stats.distance / 1000.0)
             let freq = userPreferences.settings.feedbackFrequency
+            if isRunning, freq > 0 {
+                voiceManager.prewarmAudioIfApproachingInterval(distanceMeters: stats.distance, intervalKm: freq)
+            }
             if freq > 0, km > lastCoachingKm, km % freq == 0 {
                 // Train mode removed - always use run mode
                 // RAG-enhanced interval coaching with full performance analysis
@@ -360,6 +363,11 @@ struct MainRunbotView: View {
             if newValue && isRunning {
                 // Switch to AI coach page when coaching starts
                 print("🎯 [MainRunbotView] AI coaching started - switching to AI coach page")
+                carouselSelection = .aiCoach
+            }
+        }
+        .onChange(of: aiCoach.isGeneratingFeedback) { _, generating in
+            if generating && isRunning {
                 carouselSelection = .aiCoach
             }
         }
@@ -438,7 +446,7 @@ struct MainRunbotView: View {
             // Skip if AI feedback expected within 60s
             if moodController.isAIFeedbackExpectedSoon() { return }
             // Skip if AI is currently speaking
-            if voiceManager.isSpeaking || aiCoach.isCoaching { return }
+            if voiceManager.isSpeaking || aiCoach.isGeneratingFeedback || aiCoach.isPreparingSpeech { return }
             
             let announcement = "\(reason). Switching to \(newMood). Let's play \(trackName) \(energyWord)."
             // Max 15s, no volume ducking (music continues)
@@ -548,6 +556,7 @@ struct MainRunbotView: View {
                         isRunning = true
                         didTriggerInitialCoaching = false
                         lastCoachingKm = 0
+                        voiceManager.resetAudioPrewarmTracking()
                         
                         print("🟢 [MainRunbotView] Run started, isRunning = true")
                         
@@ -637,9 +646,9 @@ struct MainRunbotView: View {
                 Spacer().frame(height: 8)
                 }
                 
-            // AI Coach Image with pulsing rings - clean, no background
+            // AI Coach Image — pulse only when TTS is actually playing
                 ZStack {
-                    if aiCoach.isCoaching || voiceManager.isSpeaking {
+                    if voiceManager.isSpeaking {
                         PulsingRings(isActive: true)
                         .frame(width: 120, height: 120)
                             .transition(.scale(scale: 0.9).combined(with: .opacity))
@@ -659,21 +668,21 @@ struct MainRunbotView: View {
                         .clipShape(Circle())
                 }
                 .shadow(color: Color.cyan.opacity(0.7), radius: 10)
-                .offset(y: (aiCoach.isCoaching || voiceManager.isSpeaking) ? sin(wavePhase * 0.12) * 3 : 0)
+                .offset(y: voiceManager.isSpeaking ? sin(wavePhase * 0.12) * 3 : 0)
                 .rotationEffect(.degrees((voiceManager.isSpeaking ? sin(wavePhase * 0.3) * 1.5 : 0)))
-                .scaleEffect((aiCoach.isCoaching || voiceManager.isSpeaking) ? 1.15 : 1.0)
+                .scaleEffect(voiceManager.isSpeaking ? 1.15 : 1.0)
                     .animation(
-                            (aiCoach.isCoaching || voiceManager.isSpeaking) ?
+                            voiceManager.isSpeaking ?
                                 Animation.easeInOut(duration: 0.55).repeatForever(autoreverses: true) :
                             Animation.easeInOut(duration: 0.3),
-                            value: aiCoach.isCoaching || voiceManager.isSpeaking
+                            value: voiceManager.isSpeaking
                     )
             }
             .padding(.vertical, 8)
             
             // Coaching feedback text below - scrollable
             ScrollView {
-                Text(aiCoach.currentFeedback.isEmpty ? "AI coaching will appear here..." : aiCoach.currentFeedback)
+                Text(feedbackDisplayText())
                     .font(.system(size: 11, weight: .regular))
                     .foregroundColor(.white.opacity(0.9))
                     .multilineTextAlignment(.center)
@@ -693,13 +702,13 @@ struct MainRunbotView: View {
     private func aiCoachPageWithGIF() -> some View {
         // Use @ObservedObject to ensure updates
         let isSpeaking = voiceManager.isSpeaking
-        let isActive = aiCoach.isCoaching || isSpeaking
+        let isThinking = aiCoach.isGeneratingFeedback || aiCoach.isPreparingSpeech || voiceManager.isPreparingSpeech
         let feedbackText = aiCoach.currentFeedback
         
-        // Show animation during TTS, static icon otherwise
+        // Pulse/GIF only during actual TTS; subtle thinking state while LLM/TTS fetch runs
         VStack(spacing: 6) {
-                    // Background glow when active
-                    if isActive {
+                    // Background glow when speaking
+                    if isSpeaking {
                         RadialGradient(
                             colors: [Color.rbSecondary.opacity(0.2), Color.clear],
                             center: .center,
@@ -780,15 +789,15 @@ struct MainRunbotView: View {
                                 .foregroundColor(.rbAccent)
                         }
                         .padding(.top, 4)
-                    } else if isActive {
-                        Text("AI Coach Active")
+                    } else if isThinking {
+                        Text("Coach thinking…")
                             .font(.system(size: 9, weight: .semibold))
                             .foregroundColor(.rbSecondary)
                             .padding(.top, 4)
                     }
                     
                     // Placeholder text when no feedback
-                    if feedbackText.isEmpty {
+                    if feedbackText.isEmpty && !isThinking {
                         Text(isRunning ? "Waiting for feedback..." : "Start a run for AI coaching")
                             .font(.system(size: 11, weight: .regular))
                             .foregroundColor(.white.opacity(0.4))
@@ -800,10 +809,21 @@ struct MainRunbotView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
     
+    private func feedbackDisplayText() -> String {
+        if aiCoach.isGeneratingFeedback || aiCoach.isPreparingSpeech || voiceManager.isPreparingSpeech {
+            return "Coach thinking…"
+        }
+        if aiCoach.currentFeedback.isEmpty {
+            return "AI coaching will appear here..."
+        }
+        return aiCoach.currentFeedback
+    }
+    
     // MARK: - 📝 AI Feedback Text Page
     @ViewBuilder
     private func aiFeedbackTextPage() -> some View {
-        let feedbackText = aiCoach.currentFeedback
+        let feedbackText = feedbackDisplayText()
+        let hasFeedback = !aiCoach.currentFeedback.isEmpty
         
         VStack(spacing: 8) {
             // Header
@@ -813,7 +833,7 @@ struct MainRunbotView: View {
                 .padding(.top, 8)
             
             // Scrollable feedback text
-            if !feedbackText.isEmpty {
+            if hasFeedback || aiCoach.isGeneratingFeedback || aiCoach.isPreparingSpeech {
                 ScrollView {
                     Text(feedbackText)
                         .font(.system(size: 13, weight: .medium))
@@ -1675,7 +1695,7 @@ struct MainRunbotView: View {
         carouselTimer = Timer.scheduledTimer(withTimeInterval: 10.0, repeats: true) { [self] _ in
             // Skip aiFeedbackText page when auto-switching
             // Don't auto-switch if AI coaching is active (let user see the coach)
-            if !aiCoach.isCoaching && !voiceManager.isSpeaking {
+            if !aiCoach.isCoachBusy && !voiceManager.isSpeaking {
                 switchToNextPage()
             }
         }

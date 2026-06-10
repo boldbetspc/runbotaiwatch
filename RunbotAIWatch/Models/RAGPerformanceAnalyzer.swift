@@ -835,7 +835,9 @@ class RAGPerformanceAnalyzer: ObservableObject {
         healthManager: HealthManager?,
         intervals: [RunInterval],
         runStartTime: Date,
-        userId: String
+        userId: String,
+        skipAnalysisLLM: Bool = false,
+        skipMem0Fetch: Bool = false
     ) async -> RAGAnalysisResult {
         
         // Use cached preferences if available (set at run start), otherwise use passed-in
@@ -851,23 +853,83 @@ class RAGPerformanceAnalyzer: ObservableObject {
             runStartTime: runStartTime
         )
         
-        // 2. Query similar past runs via vector search (RAG) - dynamic per interval
-        let similarRuns = await querySimilarRuns(snapshot: snapshot, userId: effectiveUserId)
+        // 2+3. Similar runs + Mem0 in parallel (Mem0 skipped on interval — caller already fetched for feedback)
+        async let similarRunsTask = querySimilarRuns(snapshot: snapshot, userId: effectiveUserId)
+        async let mem0Task: String = {
+            if skipMem0Fetch { return "" }
+            print("🔄 [RAG] Fetching fresh Mem0 insights (may include recent coaching feedback)")
+            return await fetchMem0Insights(userId: effectiveUserId, snapshot: snapshot)
+        }()
+        let similarRuns = await similarRunsTask
+        let mem0Insights = await mem0Task
         
-        // 3. Fetch fresh Mem0 insights at each interval (incremental updates during run)
-        // Note: Not cached because coaching feedback is stored to Mem0 after each interval
-        print("🔄 [RAG] Fetching fresh Mem0 insights (may include recent coaching feedback)")
-        let mem0Insights = await fetchMem0Insights(userId: effectiveUserId, snapshot: snapshot)
-        
-        // 4. Generate AI-powered comprehensive analysis
-        let analysis = await generateAIPoweredAnalysis(
-            snapshot: snapshot,
-            similarRuns: similarRuns,
-            mem0Insights: mem0Insights,
-            preferences: effectivePreferences
-        )
+        // 4. Analysis — skip extra LLM on interval (main coaching LLM still runs)
+        let analysis: RAGAnalysisResult
+        if skipAnalysisLLM {
+            analysis = generateComprehensiveAnalysis(
+                snapshot: snapshot,
+                similarRuns: similarRuns,
+                preferences: effectivePreferences
+            )
+        } else {
+            analysis = await generateAIPoweredAnalysis(
+                snapshot: snapshot,
+                similarRuns: similarRuns,
+                mem0Insights: mem0Insights,
+                preferences: effectivePreferences
+            )
+        }
         
         return analysis
+    }
+    
+    /// Rule-based analysis from live telemetry only — safe for strategy RAG while enrichment runs.
+    func buildCoreAnalysis(
+        stats: RunningStatsUpdate,
+        preferences: UserPreferences.Settings,
+        healthManager: HealthManager?,
+        intervals: [RunInterval],
+        runStartTime: Date
+    ) -> RAGAnalysisResult {
+        let effectivePreferences = cachedPreferences ?? preferences
+        let snapshot = buildPerformanceSnapshot(
+            stats: stats,
+            preferences: effectivePreferences,
+            healthManager: healthManager,
+            intervals: intervals,
+            runStartTime: runStartTime
+        )
+        return generateComprehensiveAnalysis(
+            snapshot: snapshot,
+            similarRuns: [],
+            preferences: effectivePreferences
+        )
+    }
+    
+    /// Historical similar-run context layered onto core telemetry for the main coaching LLM.
+    func enrichAnalysis(
+        stats: RunningStatsUpdate,
+        preferences: UserPreferences.Settings,
+        healthManager: HealthManager?,
+        intervals: [RunInterval],
+        runStartTime: Date,
+        userId: String
+    ) async -> RAGAnalysisResult {
+        let effectivePreferences = cachedPreferences ?? preferences
+        let effectiveUserId = cachedUserId ?? userId
+        let snapshot = buildPerformanceSnapshot(
+            stats: stats,
+            preferences: effectivePreferences,
+            healthManager: healthManager,
+            intervals: intervals,
+            runStartTime: runStartTime
+        )
+        let similarRuns = await querySimilarRuns(snapshot: snapshot, userId: effectiveUserId)
+        return generateComprehensiveAnalysis(
+            snapshot: snapshot,
+            similarRuns: similarRuns,
+            preferences: effectivePreferences
+        )
     }
     
     // MARK: - Performance Snapshot Builder

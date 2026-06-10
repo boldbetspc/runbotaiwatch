@@ -10,7 +10,13 @@ enum CoachingTrigger {
 
 class AICoachManager: NSObject, ObservableObject {
     @Published var isCoaching = false
+    /// LLM + RAG pipeline in flight (before TTS).
+    @Published var isGeneratingFeedback = false
+    /// TTS audio being fetched (OpenAI path).
+    @Published var isPreparingSpeech = false
     @Published var currentFeedback = ""
+    
+    var isCoachBusy: Bool { isGeneratingFeedback || isPreparingSpeech || isCoaching }
     @Published var coachingTimeRemaining: Double = 0.0
     /// iOS-compatible run arc lines for cumulative vs-target curve (watch carousel).
     @Published var runArcForUI: [String] = []
@@ -46,7 +52,27 @@ class AICoachManager: NSObject, ObservableObject {
     private var raceIntelligenceBrief: String = ""
     private var startStrategyName: String = ""
     private var strategiesUsed: [String] = []
-    private var strategiesUsedDuringRun: [(strategyId: String, strategyName: String, feedbackType: String)] = []
+    private var strategiesUsedDuringRun: [(strategyId: String, strategyName: String, feedbackType: String, strategyCluster: String?)] = []
+
+    // Live + lifetime strategy learning (selection only — never touches feedback prompts).
+    private struct StrategyFx: Codable { var net: Int; var uses: Int }
+    private static let strategyFxDefaultsKey = "watch_coach_strategy_fx_v1"
+    private var strategyFx: [String: StrategyFx] = AICoachManager.loadStrategyFx()
+    private var runSessionStrategyFx: [String: StrategyFx] = [:]
+    private var runSessionClusterFx: [String: StrategyFx] = [:]
+    private var previousStrategyCluster: String?
+
+    private static func loadStrategyFx() -> [String: StrategyFx] {
+        guard let data = UserDefaults.standard.data(forKey: strategyFxDefaultsKey),
+              let decoded = try? JSONDecoder().decode([String: StrategyFx].self, from: data) else { return [:] }
+        return decoded
+    }
+
+    private func saveStrategyFx() {
+        if let data = try? JSONEncoder().encode(strategyFx) {
+            UserDefaults.standard.set(data, forKey: Self.strategyFxDefaultsKey)
+        }
+    }
     
     override init() {
         if let config = ConfigLoader.loadConfig() {
@@ -241,10 +267,104 @@ class AICoachManager: NSObject, ObservableObject {
         startStrategyName = ""
         strategiesUsed = []
         strategiesUsedDuringRun = []
+        runSessionStrategyFx = [:]
+        runSessionClusterFx = [:]
+        previousStrategyCluster = nil
+    }
+
+    private func strategyEffectivenessFragment() -> String {
+        guard !strategyFx.isEmpty else { return "" }
+        let ranked = strategyFx.sorted { $0.value.net > $1.value.net }
+        let top = ranked.prefix(3).filter { $0.value.net > 0 }
+            .map { "\($0.key)(+\($0.value.net)/\($0.value.uses))" }
+        let bottom = ranked.reversed().prefix(2).filter { $0.value.net < 0 }
+            .map { "\($0.key)(\($0.value.net)/\($0.value.uses))" }
+        var parts: [String] = []
+        if !top.isEmpty { parts.append("works:" + top.joined(separator: ",")) }
+        if !bottom.isEmpty { parts.append("weak:" + bottom.joined(separator: ",")) }
+        return parts.joined(separator: ";")
+    }
+
+    private func runSessionFxFragment() -> String {
+        guard !runSessionStrategyFx.isEmpty || !runSessionClusterFx.isEmpty else { return "" }
+        var parts: [String] = []
+        let ranked = runSessionStrategyFx.sorted { $0.value.net > $1.value.net }
+        let top = ranked.prefix(3).filter { $0.value.net > 0 }
+            .map { "\($0.key)(+\($0.value.net)/\($0.value.uses))" }
+        let bottom = ranked.reversed().prefix(2).filter { $0.value.net < 0 }
+            .map { "\($0.key)(\($0.value.net)/\($0.value.uses))" }
+        if !top.isEmpty { parts.append("works:" + top.joined(separator: ",")) }
+        if !bottom.isEmpty { parts.append("weak:" + bottom.joined(separator: ",")) }
+        let clusterRanked = runSessionClusterFx.sorted { $0.value.net > $1.value.net }
+        let cTop = clusterRanked.prefix(2).filter { $0.value.net > 0 }
+            .map { "\($0.key)(+\($0.value.net)/\($0.value.uses))" }
+        let cBottom = clusterRanked.reversed().prefix(2).filter { $0.value.net < 0 }
+            .map { "\($0.key)(\($0.value.net)/\($0.value.uses))" }
+        if !cTop.isEmpty { parts.append("cluster_works:" + cTop.joined(separator: ",")) }
+        if !cBottom.isEmpty { parts.append("cluster_weak:" + cBottom.joined(separator: ",")) }
+        return parts.joined(separator: ";")
+    }
+
+    private func recordSessionFx(strategyName: String, cluster: String?, outcome: Int) {
+        var fx = runSessionStrategyFx[strategyName] ?? StrategyFx(net: 0, uses: 0)
+        fx.net = max(-10, min(10, fx.net + outcome))
+        fx.uses += 1
+        runSessionStrategyFx[strategyName] = fx
+        if let c = cluster, !c.isEmpty {
+            var cfx = runSessionClusterFx[c] ?? StrategyFx(net: 0, uses: 0)
+            cfx.net = max(-10, min(10, cfx.net + outcome))
+            cfx.uses += 1
+            runSessionClusterFx[c] = cfx
+        }
+    }
+
+    /// Grade last interval's strategy from pace/HR response — runs before next strategy pick.
+    private func gradeLastStrategyLive(currentStats: RunningStatsUpdate, currentHR: Double?) {
+        guard let last = lastCoachingStats else { return }
+        guard let strat = strategiesUsed.last, !strat.isEmpty else { return }
+        guard last.pace > 0, currentStats.pace > 0 else { return }
+
+        let paceChange = last.pace - currentStats.pace
+        var outcome = paceChange > 0.05 ? 1 : (paceChange < -0.05 ? -1 : 0)
+        if outcome == 0, let prevHR = last.hr, let hr = currentHR, prevHR > 0 {
+            let hrDrop = prevHR - hr
+            if hrDrop >= 3 && paceChange >= -0.03 { outcome = 1 }
+            else if hrDrop <= -5 && paceChange <= 0.03 { outcome = -1 }
+        }
+
+        var fx = strategyFx[strat] ?? StrategyFx(net: 0, uses: 0)
+        fx.net = max(-30, min(30, fx.net + outcome))
+        fx.uses += 1
+        strategyFx[strat] = fx
+        saveStrategyFx()
+        recordSessionFx(strategyName: strat, cluster: previousStrategyCluster, outcome: outcome)
+
+        if outcome != 0 {
+            print("📊 [LiveLearn] \(strat) → \(outcome > 0 ? "worked" : "failed") this run (watch)")
+        }
     }
 
     private func recentStrategyNames() -> [String] {
         Array(strategiesUsedDuringRun.suffix(4).map { $0.strategyName }.filter { !$0.isEmpty })
+    }
+
+    /// Opening strategies used across the last few RUNS (persisted) — lets the start selector
+    /// rotate the race-day brief so it doesn't resolve to the same KB row every run.
+    private static let recentOpeningStrategiesKey = "recent_opening_strategies"
+
+    private func recentOpeningStrategyNames() -> [String] {
+        UserDefaults.standard.stringArray(forKey: Self.recentOpeningStrategiesKey) ?? []
+    }
+
+    /// Record the opening strategy chosen for this run; keeps the last 5 (most recent last).
+    private func recordOpeningStrategy(_ name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        var history = recentOpeningStrategyNames()
+        history.removeAll { $0.caseInsensitiveCompare(trimmed) == .orderedSame }
+        history.append(trimmed)
+        if history.count > 5 { history = Array(history.suffix(5)) }
+        UserDefaults.standard.set(history, forKey: Self.recentOpeningStrategiesKey)
     }
 
     private func updateStrategyOutcomes(stats: RunningStatsUpdate, durationSeconds: TimeInterval, preferences: UserPreferences.Settings) async {
@@ -263,7 +383,8 @@ class AICoachManager: NSObject, ObservableObject {
             isSuccess = stats.distance >= targetDistM * 0.9
         }
 
-        for (strategyId, _, _) in strategiesUsedDuringRun {
+        for (strategyId, _, _, strategyCluster) in strategiesUsedDuringRun {
+            guard strategyCluster != nil else { continue }
             await incrementStrategyOutcome(strategyId: strategyId, outcome: isSuccess ? "success" : "partial")
         }
         strategiesUsedDuringRun = []
@@ -313,12 +434,15 @@ class AICoachManager: NSObject, ObservableObject {
         healthManager: HealthManager? = nil,
         runStartTime: Date? = nil
     ) {
-        guard !isCoaching else { return }
+        guard !isCoachBusy else { return }
         currentTrigger = .runStart
         resetRunState()
         print("🏁 [AICoach] Start-of-run coaching — next-gen flow (RAG + Strategy)")
         
         Task {
+            await MainActor.run { self.isGeneratingFeedback = true }
+            defer { Task { @MainActor in self.isGeneratingFeedback = false } }
+            
             let userId = currentUserIdFromDefaults() ?? "watch_user"
             
             // All fetches in parallel
@@ -359,12 +483,22 @@ class AICoachManager: NSObject, ObservableObject {
                 energyLevel: preferences.coachEnergy.rawValue.lowercased(),
                 userId: userId, runId: runSessionId, goal: "race_strategy",
                 feedbackType: "start",
-                recentStrategies: recentStrategyNames()
+                recentStrategies: recentOpeningStrategyNames(),
+                runnerStrategyFx: strategyEffectivenessFragment(),
+                runnerPatterns: coachingDNA.isEmpty ? nil : coachingDNA.prefix(3).joined(separator: " | "),
+                raceHistory: raceIntelligenceBrief.isEmpty ? nil : raceIntelligenceBrief
             )
             if let strategy = coachStrategy {
                 startStrategyName = strategy.strategy_name
                 strategiesUsed.append(strategy.strategy_name)
-                strategiesUsedDuringRun.append((strategyId: strategy.strategy_id, strategyName: strategy.strategy_name, feedbackType: "start"))
+                strategiesUsedDuringRun.append((
+                    strategyId: strategy.strategy_id,
+                    strategyName: strategy.strategy_name,
+                    feedbackType: "start",
+                    strategyCluster: strategy.strategy_cluster
+                ))
+                previousStrategyCluster = strategy.strategy_cluster
+                recordOpeningStrategy(strategy.strategy_name)
                 print("📚 [AICoach] Start strategy: \(strategy.strategy_name)")
             }
             
@@ -382,8 +516,6 @@ class AICoachManager: NSObject, ObservableObject {
             let strategyLog = "Start strategy: \(startStrategyName). \(feedback.prefix(80)). Target \(formatPace(preferences.targetPaceMinPerKm))."
             Mem0Manager.shared.add(userId: userId, text: strategyLog, category: "ai_coaching_feedback", metadata: ["type": "start_strategy"])
         }
-        
-        startCoachingTimer()
     }
     
     /// Interval coaching — action-first, 100 words max
@@ -399,15 +531,20 @@ class AICoachManager: NSObject, ObservableObject {
         intervals: [RunInterval] = [],
         runStartTime: Date? = nil
     ) {
-        guard !isCoaching else { return }
+        guard !isCoachBusy else { return }
         currentTrigger = .interval
         print("🎯 [AICoach] Interval coaching triggered — next-gen flow")
         
         Task {
+            await MainActor.run { self.isGeneratingFeedback = true }
+            defer { Task { @MainActor in self.isGeneratingFeedback = false } }
+            
             let userId = currentUserIdFromDefaults() ?? "watch_user"
-            let (insights, name) = await fetchMem0InsightsWithName(for: userId)
+            async let insightsFetch = fetchMem0InsightsWithName(for: userId)
+            async let aggregatesFetch = SupabaseManager().fetchRunAggregates(userId: userId)
+            let (insights, name) = await insightsFetch
             self.runnerName = name
-            let aggregates = await SupabaseManager().fetchRunAggregates(userId: userId)
+            let aggregates = await aggregatesFetch
             
             // Update Run Arc with latest intervals
             updateRunArc(intervals: intervals, targetPace: preferences.targetPaceMinPerKm)
@@ -426,40 +563,84 @@ class AICoachManager: NSObject, ObservableObject {
             let phase = progress < 0.33 ? "early" : progress < 0.67 ? "middle" : "closing"
             let dnaWatchFor = dnaWatchForPhase(phase)
             
-            // RAG Performance Analysis
+            // RAG Performance Analysis — tier 3: strategy on core telemetry while similar-run enrichment runs
             var ragAnalysis: RAGPerformanceAnalyzer.RAGAnalysisResult? = nil
-            if let startTime = runStartTime {
-                ragAnalysis = await ragAnalyzer.analyzePerformance(
-                    stats: stats, preferences: preferences, healthManager: healthManager,
-                    intervals: intervals, runStartTime: startTime, userId: userId
-                )
-                if let rag = ragAnalysis {
-                    applyRunStorySignalsFromRAG(rag)
-                }
-            }
-            
-            // Coach Strategy RAG (tactical)
             var coachStrategy: CoachStrategyRAGManager.StrategyResponse.Strategy? = nil
-            if let analysis = ragAnalysis, let startTime = runStartTime {
-                let elapsedTime = Date().timeIntervalSince(startTime)
-                let perfAnalysis = CoachStrategyRAGManager.shared.createPerformanceAnalysis(
-                    from: analysis, stats: stats, preferences: preferences,
-                    healthManager: healthManager, intervals: intervals, elapsedTime: elapsedTime
-                )
-                coachStrategy = await CoachStrategyRAGManager.shared.getStrategy(
-                    performanceAnalysis: perfAnalysis,
-                    personality: preferences.coachPersonality.rawValue.lowercased(),
-                    energyLevel: preferences.coachEnergy.rawValue.lowercased(),
-                    userId: userId, runId: runSessionId, goal: "tactical",
-                    feedbackType: "interval",
-                    recentStrategies: recentStrategyNames(),
-                    previousStrategy: strategiesUsed.last
-                )
+            if let startTime = runStartTime {
+                if !intervals.isEmpty {
+                    let coreRag = ragAnalyzer.buildCoreAnalysis(
+                        stats: stats, preferences: preferences, healthManager: healthManager,
+                        intervals: intervals, runStartTime: startTime
+                    )
+                    applyRunStorySignalsFromRAG(coreRag)
+                    
+                    gradeLastStrategyLive(currentStats: stats, currentHR: healthManager?.currentHeartRate)
+                    
+                    let elapsedTime = Date().timeIntervalSince(startTime)
+                    let corePerfAnalysis = CoachStrategyRAGManager.shared.createPerformanceAnalysis(
+                        from: coreRag, stats: stats, preferences: preferences,
+                        healthManager: healthManager, intervals: intervals, elapsedTime: elapsedTime
+                    )
+                    
+                    async let enrichmentTask = ragAnalyzer.enrichAnalysis(
+                        stats: stats, preferences: preferences, healthManager: healthManager,
+                        intervals: intervals, runStartTime: startTime, userId: userId
+                    )
+                    async let strategyTask = CoachStrategyRAGManager.shared.getStrategy(
+                        performanceAnalysis: corePerfAnalysis,
+                        personality: preferences.coachPersonality.rawValue.lowercased(),
+                        energyLevel: preferences.coachEnergy.rawValue.lowercased(),
+                        userId: userId, runId: runSessionId, goal: "tactical",
+                        feedbackType: "interval",
+                        recentStrategies: recentStrategyNames(),
+                        runnerStrategyFx: strategyEffectivenessFragment(),
+                        runSessionFx: runSessionFxFragment(),
+                        previousStrategy: strategiesUsed.last
+                    )
+                    
+                    ragAnalysis = await enrichmentTask
+                    coachStrategy = await strategyTask
+                } else {
+                    ragAnalysis = await ragAnalyzer.analyzePerformance(
+                        stats: stats, preferences: preferences, healthManager: healthManager,
+                        intervals: intervals, runStartTime: startTime, userId: userId,
+                        skipAnalysisLLM: false,
+                        skipMem0Fetch: true
+                    )
+                    applyRunStorySignalsFromRAG(ragAnalysis!)
+                    gradeLastStrategyLive(currentStats: stats, currentHR: healthManager?.currentHeartRate)
+                }
+                
+                if coachStrategy == nil, let analysis = ragAnalysis {
+                    let elapsedTime = Date().timeIntervalSince(startTime)
+                    let perfAnalysis = CoachStrategyRAGManager.shared.createPerformanceAnalysis(
+                        from: analysis, stats: stats, preferences: preferences,
+                        healthManager: healthManager, intervals: intervals, elapsedTime: elapsedTime
+                    )
+                    coachStrategy = await CoachStrategyRAGManager.shared.getStrategy(
+                        performanceAnalysis: perfAnalysis,
+                        personality: preferences.coachPersonality.rawValue.lowercased(),
+                        energyLevel: preferences.coachEnergy.rawValue.lowercased(),
+                        userId: userId, runId: runSessionId, goal: "tactical",
+                        feedbackType: "interval",
+                        recentStrategies: recentStrategyNames(),
+                        runnerStrategyFx: strategyEffectivenessFragment(),
+                        runSessionFx: runSessionFxFragment(),
+                        previousStrategy: strategiesUsed.last
+                    )
+                }
+                
                 if let strategy = coachStrategy {
                     if !strategiesUsed.contains(strategy.strategy_name) {
                         strategiesUsed.append(strategy.strategy_name)
                     }
-                    strategiesUsedDuringRun.append((strategyId: strategy.strategy_id, strategyName: strategy.strategy_name, feedbackType: "interval"))
+                    strategiesUsedDuringRun.append((
+                        strategyId: strategy.strategy_id,
+                        strategyName: strategy.strategy_name,
+                        feedbackType: "interval",
+                        strategyCluster: strategy.strategy_cluster
+                    ))
+                    previousStrategyCluster = strategy.strategy_cluster
                 }
             }
             
@@ -477,8 +658,6 @@ class AICoachManager: NSObject, ObservableObject {
             snapshotStatsForDelta(stats: stats, hr: healthManager?.currentHeartRate, feedback: feedback)
             await persistFeedback(userId: userId, runSessionId: runSessionId, feedback: feedback, stats: stats, preferences: preferences)
         }
-        
-        startCoachingTimer()
     }
     
     /// End-of-run coaching — story-style debrief, up to 150 words
@@ -494,9 +673,12 @@ class AICoachManager: NSObject, ObservableObject {
         print("🏁 [AICoach] End-of-run coaching — next-gen debrief")
         
         Task {
+            await MainActor.run { self.isGeneratingFeedback = true }
+            defer { Task { @MainActor in self.isGeneratingFeedback = false } }
+            
             // Wait for any active coaching/TTS to finish (up to 120s) — mirrors iOS pipeline
             var waitTicks = 0
-            while isCoaching && waitTicks < 480 {
+            while isCoachBusy && waitTicks < 480 {
                 try? await Task.sleep(nanoseconds: 250_000_000)
                 waitTicks += 1
             }
@@ -556,8 +738,6 @@ class AICoachManager: NSObject, ObservableObject {
             resetRunState()
             print("🧹 [AICoach] Run state cleared after end-of-run")
         }
-        
-        startCoachingTimer()
     }
     
     /// Generate end-of-run feedback — Performance Analyzer only, story-style, 120 words
@@ -696,7 +876,7 @@ class AICoachManager: NSObject, ObservableObject {
         
         feedbackTimer = Timer.scheduledTimer(withTimeInterval: intervalSeconds, repeats: true) { [weak self] _ in
             guard let self = self else { return }
-            guard !self.isCoaching else { return }
+            guard !self.isCoachBusy else { return }
             
             guard let stats = getStats() else { return }
             let prefs = preferencesProvider()
@@ -745,6 +925,8 @@ class AICoachManager: NSObject, ObservableObject {
     func stopCoaching() {
         print("⏹️ [AICoach] Stopping coaching (auto-terminate or manual)")
         isCoaching = false
+        isGeneratingFeedback = false
+        isPreparingSpeech = false
         coachingTimer?.invalidate()
         coachingTimer = nil
         // Keep currentFeedback visible for at least 3 mins; only replace when next feedback is delivered in deliverFeedback()
@@ -1496,11 +1678,19 @@ class AICoachManager: NSObject, ObservableObject {
         print("🎤 [AICoach] Voice mapping: voiceAIModel=\(preferences.voiceAIModel.rawValue) -> voiceOption=\(voiceOption.rawValue)")
         
         await MainActor.run {
+            self.isGeneratingFeedback = false
+            self.isPreparingSpeech = true
+            
+            voiceManager.onSpeechStarted = { [weak self] in
+                guard let self else { return }
+                self.isPreparingSpeech = false
+                self.currentFeedback = trimmed
+                self.startCoachingTimer()
+            }
+            
             if let last = self.lastDeliveredFeedback,
                last.caseInsensitiveCompare(trimmed) == .orderedSame {
-                self.currentFeedback = trimmed
-                self.isCoaching = true
-                if !voiceManager.isSpeaking {
+                if !voiceManager.isSpeaking && !voiceManager.isPreparingSpeech {
                     print("🎤 [AICoach] Speaking duplicate feedback using \(voiceOption.rawValue)")
                     voiceManager.speak(trimmed, using: voiceOption, rate: 0.48)
                 }
@@ -1508,8 +1698,6 @@ class AICoachManager: NSObject, ObservableObject {
             }
             
             self.lastDeliveredFeedback = trimmed
-            self.currentFeedback = trimmed
-            self.isCoaching = true
             print("🎤 [AICoach] Delivering NEW feedback using \(preferences.voiceAIModel.displayName) (mapped to \(voiceOption.rawValue))")
             print("📝 [AICoach] Feedback length: \(trimmed.count) characters, words: ~\(trimmed.split(separator: " ").count)")
             print("📝 [AICoach] Full feedback text: \(trimmed)")
