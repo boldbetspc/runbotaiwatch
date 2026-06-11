@@ -59,6 +59,7 @@
 				Models/Mem0Manager.swift,
 				Models/PhysiologyProfileManager.swift,
 				Models/RAGPerformanceAnalyzer.swift,
+				Models/RunnerProfile.swift,
 				Models/RunDataModels.swift,
 				Models/RunEmotionMusicSource.swift,
 				Models/RunEmotionTrack.swift,

@@ -47,6 +47,7 @@ class AICoachManager: NSObject, ObservableObject {
     private var cuesTotal: Int = 0
     
     // MARK: - Coaching DNA + Coach Notes + Race Brief (fetched at run start)
+    private var coachedRunnerProfile: CoachedRunnerProfile?
     private var coachingDNA: [String] = []
     private var coachNotes: [String] = []
     private var raceIntelligenceBrief: String = ""
@@ -178,9 +179,108 @@ class AICoachManager: NSObject, ObservableObject {
         return "Gap: \(gapStr). Projected finish: \(formatDuration(projectedFinishSec)) vs target \(formatDuration(targetFinishSec))."
     }
     
-    // MARK: - Coaching DNA fetch
+    // MARK: - Unified CoachedRunnerProfile (parity with iOS)
+
+    private func buildCoachedRunnerProfile(
+        userId: String,
+        preferences: UserPreferences.Settings,
+        aggregates: SupabaseManager.RunAggregates?,
+        lastRun: SupabaseManager.LastRunStats?
+    ) async -> CoachedRunnerProfile {
+        let raceType = preferences.targetDistance.displayName
+        async let combined = Mem0Manager.shared.search(
+            userId: userId,
+            query: "Last \(raceType) race: what happened, lesson promised, pacing weakness",
+            limit: 3
+        )
+        async let rollups = Mem0Manager.shared.search(
+            userId: userId,
+            query: "\(raceType) run_rollup RUNNER_BRAIN DNA COACH",
+            limit: 3
+        )
+        return CoachedRunnerProfileAssembler.assemble(
+            raceType: raceType,
+            targetPace: preferences.targetPaceMinPerKm,
+            combinedMemories: await combined,
+            rollups: await rollups,
+            lastRunInsights: LastRunMem0Insights.load(),
+            strategyEffectiveness: strategyEffectivenessFragment(),
+            aggregates: aggregates,
+            lastRun: lastRun
+        )
+    }
+
+    private func applyCoachedRunnerProfileToCaches(_ profile: CoachedRunnerProfile) {
+        coachedRunnerProfile = profile
+        coachingDNA = profile.dnaMemories.isEmpty ? profile.semanticMemories.prefix(3).map { $0 } : profile.dnaMemories
+        coachNotes = profile.coachNotesMemories
+        raceIntelligenceBrief = profile.raceIntelligenceBrief
+            .replacingOccurrences(of: "\nRACE INTELLIGENCE BRIEF: ", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        print("🧠 [AICoach] CoachedRunnerProfile applied — DNA \(coachingDNA.count), notes \(coachNotes.count)")
+    }
+
+    private func persistLastRunInsights(
+        coachNotes: String?,
+        endDebrief: String?,
+        dna: String?,
+        raceType: String,
+        distanceKm: Double,
+        inferredTags: InferredRunnerTags? = nil
+    ) {
+        var insights = LastRunMem0Insights(
+            coachNotes: coachNotes,
+            endDebrief: endDebrief.map { String($0.prefix(120)) },
+            dna: dna,
+            raceType: raceType,
+            distanceKm: distanceKm,
+            savedAt: Date().timeIntervalSince1970,
+            inferredTags: inferredTags
+        )
+        insights.save()
+        print("✅ [AICoach] Cached last-run insights for next start (watch)")
+    }
+
+    private func inferTagsForPersistedInsights(
+        dna: String?,
+        coachNotes: String?,
+        endDebrief: String?,
+        raceType: String,
+        targetPace: Double
+    ) -> InferredRunnerTags {
+        let stub = LastRunMem0Insights(
+            coachNotes: coachNotes, endDebrief: endDebrief, dna: dna,
+            raceType: raceType, distanceKm: 0, savedAt: Date().timeIntervalSince1970, inferredTags: nil
+        )
+        return InferredRunnerTags.infer(
+            lastRun: stub, dnaMemories: dna.map { [$0] } ?? [], coachNotes: coachNotes.map { [$0] } ?? [],
+            raceBrief: raceIntelligenceBrief, strategyEffectiveness: strategyEffectivenessFragment(),
+            targetPace: targetPace, raceType: raceType, aggregates: nil, lastRunStats: nil
+        )
+    }
+
+    private func writeRunRollupMem0(
+        userId: String,
+        raceType: String,
+        distanceKm: Double,
+        dna: String,
+        endDebrief: String,
+        coachNotes: String?
+    ) {
+        guard distanceKm >= 1.0 else { return }
+        var sections = ["DNA: \(dna)"]
+        if !endDebrief.isEmpty { sections.append("END_DEBRIEF: Today's close — \(String(endDebrief.prefix(120)))") }
+        if let notes = coachNotes, !notes.isEmpty { sections.append("COACH_NOTES: \(String(notes.prefix(280)))") }
+        let rollup = "RUN ROLLUP [\(raceType) \(String(format: "%.1f", distanceKm)) km] | " + sections.joined(separator: " | ")
+        Mem0Manager.shared.add(userId: userId, text: rollup, category: "RACE_PLANS_AND_INSIGHTS", metadata: [
+            "feedback_type": "run_rollup",
+            "distance_km": String(format: "%.2f", distanceKm),
+            "platform": "watchOS"
+        ])
+    }
     
     private func fetchCoachingDNA(userId: String, raceType: String) async {
+        if coachedRunnerProfile != nil { return }
         let dnaResults = await Mem0Manager.shared.search(
             userId: userId,
             query: "coaching DNA, what worked, pacing tendency, response to cues, \(raceType)",
@@ -216,6 +316,13 @@ class AICoachManager: NSObject, ObservableObject {
     
     // MARK: - Coach Notes fetch
     
+    private func mergeMem0InsightsWithProfile(base: String, profile: CoachedRunnerProfile) -> String {
+        let unified = profile.startFeedbackContext(prefsLine: "")
+        if unified.isEmpty { return base }
+        if base.isEmpty { return unified }
+        return "\(unified)\n\(base)"
+    }
+
     private func fetchCoachNotes(userId: String) async {
         let notes = await Mem0Manager.shared.search(
             userId: userId,
@@ -261,6 +368,7 @@ class AICoachManager: NSObject, ObservableObject {
         lastCoachingMessage = nil
         cuesFollowed = 0
         cuesTotal = 0
+        coachedRunnerProfile = nil
         coachingDNA = []
         coachNotes = []
         raceIntelligenceBrief = ""
@@ -445,23 +553,22 @@ class AICoachManager: NSObject, ObservableObject {
             
             let userId = currentUserIdFromDefaults() ?? "watch_user"
             
-            // All fetches in parallel
-            async let insightsFetch = fetchMem0InsightsWithName(for: userId)
             async let aggregatesFetch = SupabaseManager().fetchRunAggregates(userId: userId)
             async let lastRunFetch = SupabaseManager().fetchLastRun(userId: userId)
-            async let dnaFetch: () = fetchCoachingDNA(userId: userId, raceType: preferences.targetDistance.displayName)
-            async let notesFetch: () = fetchCoachNotes(userId: userId)
-            
-            let (insights, name) = await insightsFetch
+            async let insightsFetch = fetchMem0InsightsWithName(for: userId)
+
             let aggregates = await aggregatesFetch
             let lastRun = await lastRunFetch
-            _ = await dnaFetch
-            _ = await notesFetch
+            let profile = await buildCoachedRunnerProfile(
+                userId: userId, preferences: preferences,
+                aggregates: aggregates, lastRun: lastRun
+            )
+            let (insights, name) = await insightsFetch
+            applyCoachedRunnerProfileToCaches(profile)
             
             self.runnerName = name
             
             ragAnalyzer.initializeForRun(preferences: preferences, runnerName: name, userId: userId)
-            raceIntelligenceBrief = buildRaceIntelligenceBrief(aggregates: aggregates, lastRun: lastRun)
             
             // RAG Performance Analysis at start (lightweight — no intervals yet)
             let startTime = runStartTime ?? Date()
@@ -485,8 +592,8 @@ class AICoachManager: NSObject, ObservableObject {
                 feedbackType: "start",
                 recentStrategies: recentOpeningStrategyNames(),
                 runnerStrategyFx: strategyEffectivenessFragment(),
-                runnerPatterns: coachingDNA.isEmpty ? nil : coachingDNA.prefix(3).joined(separator: " | "),
-                raceHistory: raceIntelligenceBrief.isEmpty ? nil : raceIntelligenceBrief
+                runnerPatterns: profile.runnerPatternsForStrategy(),
+                raceHistory: profile.compactRaceHistory.isEmpty ? raceIntelligenceBrief : profile.compactRaceHistory
             )
             if let strategy = coachStrategy {
                 startStrategyName = strategy.strategy_name
@@ -503,7 +610,8 @@ class AICoachManager: NSObject, ObservableObject {
             }
             
             let feedback = await generateCoachingFeedback(
-                stats: stats, preferences: preferences, mem0Insights: insights,
+                stats: stats, preferences: preferences,
+                mem0Insights: mergeMem0InsightsWithProfile(base: insights, profile: profile),
                 aggregates: aggregates, lastRun: lastRun, trigger: .runStart,
                 runnerName: name, ragAnalysisContext: ragAnalysis.llmContext,
                 ragAnalysis: ragAnalysis, coachStrategy: coachStrategy
@@ -561,7 +669,13 @@ class AICoachManager: NSObject, ObservableObject {
             let distanceKm = stats.distance / 1000.0
             let progress = targetDistanceKm > 0 ? distanceKm / targetDistanceKm : 0
             let phase = progress < 0.33 ? "early" : progress < 0.67 ? "middle" : "closing"
-            let dnaWatchFor = dnaWatchForPhase(phase)
+            var dnaWatchFor = dnaWatchForPhase(phase)
+            if phase == "early", let focus = coachedRunnerProfile?.inferred.nextRunFocus, !focus.isEmpty {
+                dnaWatchFor = (dnaWatchFor.isEmpty ? "" : "\(dnaWatchFor). ") + "LAST RUN COMMITMENT: \(focus)"
+            }
+            if phase == "early", let tags = coachedRunnerProfile?.inferred.structuredBlock {
+                dnaWatchFor = (dnaWatchFor.isEmpty ? "" : "\(dnaWatchFor). ") + tags
+            }
             
             // RAG Performance Analysis — tier 3: strategy on core telemetry while similar-run enrichment runs
             var ragAnalysis: RAGPerformanceAnalyzer.RAGAnalysisResult? = nil
@@ -709,6 +823,17 @@ class AICoachManager: NSObject, ObservableObject {
             
             await deliverFeedback(feedback, voiceManager: voiceManager, preferences: preferences)
             await persistFeedback(userId: userId, runSessionId: session.id, feedback: feedback, stats: stats, preferences: preferences)
+
+            let distanceKm = stats.distance / 1000.0
+            if distanceKm >= 1.0 {
+                persistLastRunInsights(
+                    coachNotes: nil,
+                    endDebrief: String(feedback.prefix(120)),
+                    dna: nil,
+                    raceType: preferences.targetDistance.displayName,
+                    distanceKm: distanceKm
+                )
+            }
             
             // Store end-of-run analysis
             let detailedSummary = """
@@ -729,7 +854,7 @@ class AICoachManager: NSObject, ObservableObject {
             await generatePostRunCoachNotes(
                 userId: userId, session: session, stats: stats,
                 preferences: preferences, ragAnalysis: ragEndOfRunAnalysis,
-                responseSummary: responseSummary
+                responseSummary: responseSummary, endDebriefFeedback: feedback
             )
 
             await updateStrategyOutcomes(stats: stats, durationSeconds: session.duration, preferences: preferences)
@@ -818,7 +943,8 @@ class AICoachManager: NSObject, ObservableObject {
         stats: RunningStatsUpdate,
         preferences: UserPreferences.Settings,
         ragAnalysis: RAGPerformanceAnalyzer.EndOfRunAnalysis,
-        responseSummary: String
+        responseSummary: String,
+        endDebriefFeedback: String
     ) async {
         let raceShapeStr = runArc.joined(separator: ", ")
         let prompt = """
@@ -852,7 +978,6 @@ class AICoachManager: NSObject, ObservableObject {
             ])
             print("📋 [AICoach] Coach Notes stored for deep learning")
             
-            // Store Coaching DNA entry
             let dnaEntry = "DNA \(preferences.targetDistance.displayName): Race shape [\(raceShapeStr)]. \(responseSummary). Pace \(formatPace(session.pace)) vs target \(formatPace(preferences.targetPaceMinPerKm)). \(ragAnalysis.targetMet ? "Target met." : "Target missed.")"
             Mem0Manager.shared.add(userId: userId, text: dnaEntry, category: "coaching_dna", metadata: [
                 "type": "coaching_dna",
@@ -860,6 +985,23 @@ class AICoachManager: NSObject, ObservableObject {
                 "platform": "watchOS"
             ])
             print("🧬 [AICoach] Coaching DNA stored for deep learning")
+
+            let distanceKm = stats.distance / 1000.0
+            let raceType = preferences.targetDistance.displayName
+            let debriefHook = String(endDebriefFeedback.prefix(120))
+            let tags = inferTagsForPersistedInsights(
+                dna: dnaEntry, coachNotes: notes, endDebrief: debriefHook,
+                raceType: raceType, targetPace: preferences.targetPaceMinPerKm
+            )
+            persistLastRunInsights(
+                coachNotes: notes, endDebrief: debriefHook, dna: dnaEntry,
+                raceType: raceType, distanceKm: distanceKm, inferredTags: tags
+            )
+            writeRunRollupMem0(
+                userId: userId, raceType: raceType, distanceKm: distanceKm,
+                dna: dnaEntry, endDebrief: debriefHook, coachNotes: notes
+            )
+            await Mem0Manager.shared.flushNow()
         }
     }
     
